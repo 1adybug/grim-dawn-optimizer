@@ -1,0 +1,31 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GrimDawnOptimizer.Core", "src\GrimDawnOptimizer.Core\GrimDawnOptimizer.Core.csproj", "{7A65D6B1-4981-43AB-9C7F-0DDC421B5CB8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GrimDawnOptimizer.App", "src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj", "{6D4F2C5D-5E38-4964-844E-588DBAEF118D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GrimDawnOptimizer.Tests", "tests\GrimDawnOptimizer.Tests\GrimDawnOptimizer.Tests.csproj", "{D6D1B89B-E537-4F71-91AE-48C85C296234}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7A65D6B1-4981-43AB-9C7F-0DDC421B5CB8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7A65D6B1-4981-43AB-9C7F-0DDC421B5CB8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7A65D6B1-4981-43AB-9C7F-0DDC421B5CB8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7A65D6B1-4981-43AB-9C7F-0DDC421B5CB8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6D4F2C5D-5E38-4964-844E-588DBAEF118D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D4F2C5D-5E38-4964-844E-588DBAEF118D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D4F2C5D-5E38-4964-844E-588DBAEF118D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D4F2C5D-5E38-4964-844E-588DBAEF118D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D6D1B89B-E537-4F71-91AE-48C85C296234}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D6D1B89B-E537-4F71-91AE-48C85C296234}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D6D1B89B-E537-4F71-91AE-48C85C296234}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D6D1B89B-E537-4F71-91AE-48C85C296234}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,59 @@
+# Cairn Loadout Lab
+
+一个面向《恐怖黎明》的离线装备构筑求解器。程序从角色、背包、个人仓库和对应模式的共享仓库读取装备，按“硬约束 → 优先级层 → 层内权重”搜索数秒级最佳候选，并给出逐槽替换位置、期望 DPS、防御指标和固定种子的 Monte Carlo 区间。
+
+> 当前是可运行的工程版。开发机没有安装游戏或真实存档，因此 **尚未正式宣告 1.3.x /《阿斯特卡恩之牙》真实存档兼容**。内置演示数据和自动化测试已通过；正式兼容声明仍需按下文清单在普通、专家真实角色上验收。
+
+## 已实现
+
+- `.NET 8 + WPF`、MVVM、Windows x64、自包含单文件发布。
+- 自动发现 Steam、Steam Cloud、GOG/本地文档路径，并可手动选择目录。
+- 只读解析 `player.gdc`、`transfer.gst` / `transfer.gsh`、`ARZ`、`ARC`、中文/英文标签；数据库按输入文件 SHA-256 写入可删除的 SQLite 缓存。
+- 为每个实物构造稳定 ID，保留词缀、随机种子、组件、增幅、完成奖励、来源页和坐标；防止同一实物重复装备。
+- 等级/属性需求、双手武器、副手、双戒指、套装阈值、伤害转化、抗性削减、OA/DA、暴击、攻速、护甲、抗性/超抗、闪避、格挡、回复和吸血的确定性模型。
+- 合法附件变体、交互签名分组、Pareto 剪枝、确定性 Beam Search、一槽/两槽局部搜索、无可行解缺口标记。
+- 1–60 秒搜索预算、Top 1–50、固定种子 500–10,000 次抽样、进度与取消。
+- `schemaVersion: 1` 的本地 JSON 方案；程序无遥测、无自动更新、无网络请求。
+
+## 运行
+
+开发环境需要 Windows 和 .NET 8 SDK：
+
+```powershell
+dotnet test .\GrimDawnOptimizer.sln
+dotnet run --project .\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj
+```
+
+没有游戏也可以点击右上角“演示数据”验证完整搜索流程。
+
+生成无需安装 .NET 运行时的便携包：
+
+```powershell
+dotnet publish .\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj `
+  -c Release -r win-x64 --self-contained true `
+  -o .\artifacts\win-x64
+```
+
+启动 `artifacts\win-x64\GrimDawnOptimizer.App.exe` 即可。首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以安全删除并自动重建。方案也保存在该目录。
+
+## 评分与结果语义
+
+硬性约束先过滤；有可行解时，优先级层采用字典序，层内为加权和。若无可行解，先比较违反约束数量和总缺口，再比较优先级得分。连续值默认相对当前配装归一化；当前值为零时使用候选非零贡献中位数。抗性按 1 个百分点、技能等级按 1 级处理，界面可修改步长。
+
+搜索结果只称“最佳候选”。时间预算内的 Beam Search 不是穷举，也不提供虚假的全局最优性差距。
+
+## 当前建模边界
+
+第一版不计算宠物伤害、走位、投射物碰撞、动画取消和复杂手法循环。装备中无法识别的技能修正或触发会保留、列出并降低置信度，不会被当作真实零贡献。配方文件解析为保守的 best-effort；识别失败时只启用不要求配方的组件并给出警告。
+
+## 真实存档验收清单
+
+正式标注最新版本兼容前，需要在安装全部官方 DLC 的真实环境完成：
+
+1. 普通角色：穿戴、背包、个人仓库与 `transfer.gst` 数量及来源逐项核对。
+2. 专家角色：确认只合并 `transfer.gsh`，不混入普通共享仓库。
+3. 抽查带随机词缀、组件、增幅、遗物完成奖励和 Asterkarn 新字段的物品。
+4. 优化前后分别计算所有存档 SHA-256，确认字节完全不变。
+5. 与游戏面板及训练假人记录核对主要属性、DPS 与承伤趋势。
+
+第三方来源与许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
