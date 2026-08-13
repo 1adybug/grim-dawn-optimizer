@@ -39,6 +39,19 @@ dotnet publish .\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj `
 
 启动 `artifacts\win-x64\GrimDawnOptimizer.App.exe` 即可。首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以安全删除并自动重建。方案也保存在该目录。
 
+## 持续集成与发布
+
+GitHub Actions 会在提交到 `main`、创建或更新面向 `main` 的 Pull Request，以及手动运行工作流时执行 Release 构建和全部测试。
+
+推送以 `v` 开头的标签会在构建和测试通过后创建正式 GitHub Release，并附带 `GrimDawnOptimizer-<标签>-win-x64.zip` 便携包。例如：
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+所有 `v*` 标签都会创建正式版本，不会根据标签中的 `beta`、`rc` 或连字符自动标记为预发布版本。若同一标签的 Release 已经存在，工作流会保留现有 Release 和附件，不执行覆盖。
+
 ## 评分与结果语义
 
 硬性约束先过滤；有可行解时，优先级层采用字典序，层内为加权和。若无可行解，先比较违反约束数量和总缺口，再比较优先级得分。连续值默认相对当前配装归一化；当前值为零时使用候选非零贡献中位数。抗性按 1 个百分点、技能等级按 1 级处理，界面可修改步长。
