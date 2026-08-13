@@ -4,19 +4,33 @@ namespace GrimDawnOptimizer.App.ViewModels;
 
 public sealed class ResultViewModel
 {
+    private static readonly EquipmentSlot[] DisplaySlots =
+    [
+        EquipmentSlot.Head, EquipmentSlot.Shoulders, EquipmentSlot.Chest, EquipmentSlot.Hands,
+        EquipmentSlot.Legs, EquipmentSlot.Feet, EquipmentSlot.Waist, EquipmentSlot.Amulet,
+        EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight,
+        EquipmentSlot.MainHand, EquipmentSlot.OffHand
+    ];
+
     public ResultViewModel(LoadoutResult result, CharacterSnapshot character)
     {
         Model = result;
         var currentItems = character.CurrentLoadout.ToDictionary(
             x => x.Key,
             x => character.Items.FirstOrDefault(i => i.Id == x.Value)?.Name ?? "—");
-        SlotRows = result.Loadout.Slots.OrderBy(x => SlotOrder(x.Key)).Select(x => new SlotResultViewModel(
-            SlotName(x.Key),
-            currentItems.GetValueOrDefault(x.Key, "—"),
-            x.Value.Item.Name,
-            string.Join(" · ", new[] { x.Value.Component?.Name, x.Value.Augment?.Name }.Where(v => !string.IsNullOrWhiteSpace(v))),
-            x.Value.Item.Source.DisplayName,
-            currentItems.GetValueOrDefault(x.Key) != x.Value.Item.Name)).ToArray();
+        var usesTwoHands = result.Loadout.Slots.TryGetValue(EquipmentSlot.MainHand, out var mainHand) && mainHand.Item.IsTwoHanded;
+        SlotRows = DisplaySlots.Select(slot =>
+        {
+            var currentItem = currentItems.GetValueOrDefault(slot, "—");
+            if (result.Loadout.Slots.TryGetValue(slot, out var variant))
+                return new SlotResultViewModel(
+                    SlotName(slot), currentItem, variant.Item.Name,
+                    string.Join(" · ", new[] { variant.Component?.Name, variant.Augment?.Name }.Where(v => !string.IsNullOrWhiteSpace(v))),
+                    variant.Item.Source.DisplayName, currentItem != variant.Item.Name);
+
+            var candidate = slot == EquipmentSlot.OffHand && usesTwoHands ? "由双手武器占用" : "—（无可用装备）";
+            return new SlotResultViewModel(SlotName(slot), currentItem, candidate, string.Empty, "—", currentItem != "—");
+        }).ToArray();
         ConstraintRows = result.ConstraintViolations.Select(x => $"{x.Key} 缺口 {x.Value:0.##} 步").ToArray();
         WarningRows = result.Loadout.UnsupportedEffects.Select(x => $"{x.Description} · {x.Record}")
             .Concat(result.Loadout.ValidationErrors).ToArray();
@@ -26,6 +40,7 @@ public sealed class ResultViewModel
     public int Rank => Model.Rank;
     public string Title => $"候选 {Rank:00}";
     public string Dps => FormatNumber(Model.Simulation.ExpectedDps);
+    public string TimeToKill => double.IsPositiveInfinity(Model.Simulation.TimeToKillSeconds) ? "∞" : $"{Model.Simulation.TimeToKillSeconds:0.0}s";
     public string EffectiveHealth => FormatNumber(Model.Simulation.EffectiveHealth);
     public string TimeToDeath => double.IsPositiveInfinity(Model.Simulation.TimeToDeathSeconds) ? "∞" : $"{Model.Simulation.TimeToDeathSeconds:0.0}s";
     public string Confidence => Model.Confidence switch { ConfidenceLevel.High => "高置信度", ConfidenceLevel.Medium => "中置信度", _ => "低置信度" };
@@ -44,14 +59,6 @@ public sealed class ResultViewModel
         >= 1_000 => $"{value / 1_000:0.0}k",
         _ => $"{value:0}"
     };
-
-    private static int SlotOrder(EquipmentSlot slot) => Array.IndexOf(new[]
-    {
-        EquipmentSlot.Head, EquipmentSlot.Shoulders, EquipmentSlot.Chest, EquipmentSlot.Hands,
-        EquipmentSlot.Legs, EquipmentSlot.Feet, EquipmentSlot.Waist, EquipmentSlot.Amulet,
-        EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight,
-        EquipmentSlot.MainHand, EquipmentSlot.OffHand
-    }, slot);
 
     private static string SlotName(EquipmentSlot slot) => slot switch
     {

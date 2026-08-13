@@ -93,6 +93,72 @@ public sealed class ParserGoldenTests
     }
 
     [Fact]
+    public void LooseComponentsAndAugmentsEnterOwnedAttachmentPool()
+    {
+        var component = new RawItem
+        {
+            BaseRecord = "records/items/components/loose_component.dbr",
+            CompletionBonusRecord = "records/items/components/completion.dbr"
+        };
+        var augment = new RawItem { BaseRecord = "records/items/augments/loose_augment.dbr" };
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>(StringComparer.OrdinalIgnoreCase)
+            {
+                [component.BaseRecord] = new GameRecord
+                {
+                    RecordName = component.BaseRecord,
+                    RecordType = "ItemRelic"
+                },
+                [augment.BaseRecord] = new GameRecord
+                {
+                    RecordName = augment.BaseRecord,
+                    RecordType = "ItemEnchantment"
+                }
+            }
+        };
+
+        var owned = SaveReader.BuildOwnedAttachments([component, augment], catalog);
+
+        Assert.Contains(owned, x => x.RecordId == component.BaseRecord &&
+                                    x.Kind == AttachmentKind.Component &&
+                                    x.CompletionBonusRecord == component.CompletionBonusRecord);
+        Assert.Contains(owned, x => x.RecordId == augment.BaseRecord && x.Kind == AttachmentKind.Augment);
+    }
+
+    [Fact]
+    public void AllocatedSkillAndDevotionLevelsAreLockedIntoBaseline()
+    {
+        const string skillRecord = "records/skills/devotion/test.dbr";
+        var raw = new RawCharacter("test.gdc", "test", "class", 100, false)
+        {
+            Health = 100, Energy = 50, Physique = 10, Cunning = 10, Spirit = 10
+        };
+        raw.Skills.Add(new RawSkill(
+            skillRecord, 1, Enabled: false, Locked: false, DevotionLevel: 3,
+            Experience: 0, SubLevel: 0, Active: false, Transition: false,
+            AutoCastSkill: string.Empty, AutoCastController: string.Empty));
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [skillRecord] = new GameRecord
+                {
+                    RecordName = skillRecord,
+                    NumericSeries = new Dictionary<string, IReadOnlyList<double>>
+                    {
+                        ["characterLife"] = [10, 20, 30]
+                    }
+                }
+            }
+        };
+
+        var baseline = SaveReader.BuildBaseline(raw, catalog);
+
+        Assert.Equal(130, baseline["health"]);
+    }
+
+    [Fact]
     public async Task ArzFixtureAndSqliteCacheInvalidateByContentHash()
     {
         using var fixture = new TemporaryFixture();

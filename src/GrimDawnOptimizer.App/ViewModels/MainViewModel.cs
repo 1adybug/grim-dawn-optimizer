@@ -48,6 +48,7 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<GameInstallation> Installations { get; } = [];
     public ObservableCollection<SaveLocation> SaveLocations { get; } = [];
     public ObservableCollection<CharacterSnapshot> Characters { get; } = [];
+    public ObservableCollection<CharacterSkill> ActiveSkills { get; } = [];
     public ObservableCollection<MetricRule> Metrics { get; } = [];
     public ObservableCollection<ResultViewModel> Results { get; } = [];
 
@@ -78,8 +79,14 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _selectedCharacter, value)) return;
-            SelectedSkill = value?.Skills.FirstOrDefault(x => x.Enabled);
+            ActiveSkills.Clear();
+            if (value is not null)
+                foreach (var skill in value.Skills.Where(x => x.Level > 0 || x.DevotionLevel > 0))
+                    ActiveSkills.Add(skill);
+            SelectedSkill = ActiveSkills.FirstOrDefault();
+            ApplyAverageBossScenario();
             OnPropertyChanged(nameof(CharacterSummary));
+            OnPropertyChanged(nameof(BuildFoundationSummary));
             RefreshCommands();
         }
     }
@@ -123,7 +130,24 @@ public sealed class MainViewModel : ObservableObject
     public double ProgressValue { get => _progressValue; private set => SetProperty(ref _progressValue, value); }
     public string CharacterSummary => SelectedCharacter is null
         ? "选择角色后读取装备池"
-        : $"Lv.{SelectedCharacter.Level} · {(SelectedCharacter.IsHardcore ? "专家" : "普通")} · {SelectedCharacter.Items.Count:N0} 件可用装备";
+        : $"Lv.{SelectedCharacter.Level} · {(SelectedCharacter.IsHardcore ? "专家" : "普通")} · {SelectedCharacter.Items.Count:N0} 件装备 · {SelectedCharacter.OwnedAttachments.Count:N0} 件附件";
+    public string BuildFoundationSummary => SelectedCharacter is null
+        ? "尚未读取技能与信仰"
+        : $"锁定存档加点：{ActiveSkills.Count} 项技能/信仰 · {(SelectedCharacter.CanDualWield ? "可双持" : "常规副手规则")}";
+    public string EnemyProfileSummary
+    {
+        get
+        {
+            var scenario = Profile.Scenario;
+            var source = scenario.BossSampleCount > 0 ? $"{scenario.BossSampleCount} 类 BOSS" : "内置估算";
+            return $"{source} · 生命 {scenario.EnemyHealth:N0} · 护甲 {scenario.EnemyArmor:N0} · OA/DA {scenario.EnemyOffensiveAbility:N0}/{scenario.EnemyDefensiveAbility:N0}";
+        }
+    }
+    public string EnemyResistanceSummary => string.Join("  ", new[]
+    {
+        ("物", "physical"), ("穿", "pierce"), ("火", "fire"), ("冰", "cold"), ("电", "lightning"),
+        ("酸", "acid"), ("活", "vitality"), ("虚", "aether"), ("混", "chaos")
+    }.Select(x => $"{x.Item1}{Profile.Scenario.EnemyResistances.GetValueOrDefault(x.Item2):0.#}%"));
 
     public async Task InitializeAsync()
     {
@@ -221,16 +245,16 @@ public sealed class MainViewModel : ObservableObject
         ProgressValue = 0;
         Status = "正在生成装备与附件变体…";
         _cancellation = new CancellationTokenSource();
+        ApplyAverageBossScenario();
         SyncProfile();
         try
         {
             await SaveProfileAsync();
             var beforeHashes = await ComputeSourceHashesAsync(SelectedCharacter, _cancellation.Token);
+            var availableAttachments = _gameDataSource.GetUnlockedAttachments(SelectedCharacter, _catalog);
             var attachments = Profile.UseUnlockedAttachments
-                ? _gameDataSource.GetUnlockedAttachments(SelectedCharacter, _catalog)
-                : _catalog.Attachments.Where(x => SelectedCharacter.Items.Any(item =>
-                    string.Equals(item.ComponentRecord, x.Id, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(item.AugmentRecord, x.Id, StringComparison.OrdinalIgnoreCase))).ToArray();
+                ? availableAttachments
+                : availableAttachments.Where(x => x.IsOwned).ToArray();
             var progress = new Progress<SearchProgress>(x =>
             {
                 Status = x.Message;
@@ -266,6 +290,15 @@ public sealed class MainViewModel : ObservableObject
         Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 60);
         Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);
         Profile.MonteCarloTrials = Math.Clamp(Profile.MonteCarloTrials, 500, 10_000);
+    }
+
+    private void ApplyAverageBossScenario()
+    {
+        if (SelectedCharacter is null || _catalog is null) return;
+        BossScenarioFactory.ApplyAverageBoss(SelectedCharacter, _catalog, Profile.Scenario);
+        OnPropertyChanged(nameof(Profile));
+        OnPropertyChanged(nameof(EnemyProfileSummary));
+        OnPropertyChanged(nameof(EnemyResistanceSummary));
     }
 
     private async Task SaveProfileAsync()

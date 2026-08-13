@@ -28,6 +28,8 @@ public sealed class OptimizerTests
             Assert.Equal(result.Loadout.Slots.Count, result.Loadout.Slots.Values.Select(x => x.Item.Id).Distinct().Count());
             if (result.Loadout.Slots.TryGetValue(EquipmentSlot.MainHand, out var main) && main.Item.IsTwoHanded)
                 Assert.False(result.Loadout.Slots.ContainsKey(EquipmentSlot.OffHand));
+            else
+                Assert.True(result.Loadout.Slots.ContainsKey(EquipmentSlot.OffHand), "单手主手候选应保留副手槽位");
         });
     }
 
@@ -90,6 +92,55 @@ public sealed class OptimizerTests
         watch.Stop();
         Assert.NotEmpty(run.Results);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"耗时 {watch.Elapsed}");
+    }
+
+    [Fact]
+    public void InstalledComponentIsAvailableIndependentlyWithItsCompletionBonus()
+    {
+        const string componentRecord = "records/items/components/test.dbr";
+        const string completionRecord = "records/items/components/completion_test.dbr";
+        var componentStats = new StatBlock();
+        componentStats.Set("fireResistance", 8);
+        var completionStats = new StatBlock();
+        completionStats.Set("health", 120);
+        var component = new AttachmentDefinition
+        {
+            Id = componentRecord,
+            RecordId = componentRecord,
+            Name = "已镶嵌组件",
+            Kind = AttachmentKind.Component,
+            LevelRequirement = 100,
+            RequiredFormula = "missing-formula",
+            CompatibleSlots = new HashSet<EquipmentSlot> { EquipmentSlot.Head },
+            Stats = componentStats
+        };
+        var item = new ItemInstance
+        {
+            Id = "item", Name = "原装备", Slot = EquipmentSlot.Head, BaseRecord = "item.dbr",
+            ComponentRecord = componentRecord, CompletionBonusRecord = completionRecord,
+            Stats = new StatBlock(), Source = new ItemSourceLocation(ItemSourceKind.Equipped, "test.gdc")
+        };
+        var completion = new GameRecord
+        {
+            RecordName = completionRecord,
+            NumericValues = new StatBlock(new Dictionary<string, double> { ["characterLife"] = 120 })
+        };
+        var character = new CharacterSnapshot
+        {
+            Name = "test", SaveFilePath = "test.gdc", Level = 1, Items = [item]
+        };
+        var catalog = new GameDataCatalog
+        {
+            Attachments = [component],
+            Records = new Dictionary<string, GameRecord> { [completionRecord] = completion }
+        };
+
+        var available = new GameDataSource().GetUnlockedAttachments(character, catalog);
+        var owned = Assert.Single(available, x => x.IsOwned);
+
+        Assert.Equal(componentRecord, owned.RecordId);
+        Assert.Equal(8, owned.Stats["fireResistance"]);
+        Assert.Equal(120, owned.Stats["health"]);
     }
 
     private static StatBlock BuildAttachmentStats(int index)

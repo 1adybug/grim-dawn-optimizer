@@ -42,10 +42,15 @@ public sealed class SaveReader : ISaveReader
                     .Where(x => x is not null)
                     .Cast<ItemInstance>()
                     .ToArray();
+                var ownedAttachments = BuildOwnedAttachments(allItems.Select(x => x.Item), catalog);
                 var current = converted.Where(x => x.Source.Kind == ItemSourceKind.Equipped)
                     .Select(x => (Item: x, Slot: raw.Items.FirstOrDefault(r => r.Seed == x.Seed && r.BaseRecord == x.BaseRecord)?.EquippedSlot))
                     .Where(x => x.Slot is not null)
                     .ToDictionary(x => x.Slot!.Value, x => x.Item.Id);
+                var canDualWield = current.TryGetValue(EquipmentSlot.OffHand, out var offHandId) &&
+                                   converted.FirstOrDefault(x => x.Id == offHandId) is { Slot: EquipmentSlot.MainHand, IsTwoHanded: false } ||
+                                   raw.Skills.Any(x => x.Level > 0 &&
+                                       x.Record.Contains("dualwield", StringComparison.OrdinalIgnoreCase));
 
                 var baseline = BuildBaseline(raw, catalog);
                 var factions = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -71,7 +76,9 @@ public sealed class SaveReader : ISaveReader
                     FactionReputation = factions,
                     KnownFormulas = knownFormulas,
                     Items = converted,
+                    OwnedAttachments = ownedAttachments,
                     CurrentLoadout = current,
+                    CanDualWield = canDualWield,
                     ImportWarnings = warnings.Distinct().ToArray()
                 });
             }
@@ -88,7 +95,7 @@ public sealed class SaveReader : ISaveReader
         return result;
     }
 
-    private static StatBlock BuildBaseline(RawCharacter raw, GameDataCatalog catalog)
+    internal static StatBlock BuildBaseline(RawCharacter raw, GameDataCatalog catalog)
     {
         var baseline = new StatBlock();
         baseline.Set("health", Math.Max(1, raw.Health));
@@ -100,10 +107,32 @@ public sealed class SaveReader : ISaveReader
         baseline.Set("defensiveAbility", 300 + raw.Physique * 0.5);
         baseline.Set("armorAbsorption", 70);
 
-        foreach (var skill in raw.Skills.Where(x => x.Enabled && x.Level > 0))
+        foreach (var skill in raw.Skills.Where(x => x.Level > 0 || x.DevotionLevel > 0))
             if (catalog.Records.TryGetValue(skill.Record, out var record))
-                baseline.Add(GameStatTranslator.TranslateAtLevel(record, skill.Level));
+                baseline.Add(GameStatTranslator.TranslateAtLevel(record, Math.Max(skill.Level, skill.DevotionLevel)));
         return baseline;
+    }
+
+    internal static IReadOnlyList<OwnedAttachmentInstance> BuildOwnedAttachments(
+        IEnumerable<RawItem> rawItems,
+        GameDataCatalog catalog)
+    {
+        var result = new List<OwnedAttachmentInstance>();
+        foreach (var raw in rawItems)
+        {
+            if (!string.IsNullOrWhiteSpace(raw.ComponentRecord))
+                result.Add(new OwnedAttachmentInstance(raw.ComponentRecord, AttachmentKind.Component, raw.CompletionBonusRecord));
+            if (!string.IsNullOrWhiteSpace(raw.AugmentRecord))
+                result.Add(new OwnedAttachmentInstance(raw.AugmentRecord, AttachmentKind.Augment));
+
+            if (!catalog.Records.TryGetValue(raw.BaseRecord, out var baseRecord)) continue;
+            var recordType = string.IsNullOrWhiteSpace(baseRecord.Text("Class")) ? baseRecord.RecordType : baseRecord.Text("Class");
+            if (recordType.Equals("ItemRelic", StringComparison.OrdinalIgnoreCase))
+                result.Add(new OwnedAttachmentInstance(raw.BaseRecord, AttachmentKind.Component, raw.CompletionBonusRecord));
+            else if (recordType.Equals("ItemEnchantment", StringComparison.OrdinalIgnoreCase))
+                result.Add(new OwnedAttachmentInstance(raw.BaseRecord, AttachmentKind.Augment));
+        }
+        return result.Distinct().ToArray();
     }
 
     private static ItemInstance? ConvertItem(
@@ -119,8 +148,7 @@ public sealed class SaveReader : ISaveReader
         var records = new[]
         {
             raw.BaseRecord, raw.PrefixRecord, raw.SuffixRecord, raw.ModifierRecord,
-            raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord,
-            raw.CompletionBonusRecord
+            raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord
         }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => catalog.Records.GetValueOrDefault(x)).Where(x => x is not null).Cast<GameRecord>().ToArray();
         var stats = GameStatTranslator.Translate(records);
         var source = new ItemSourceLocation(
@@ -140,8 +168,7 @@ public sealed class SaveReader : ISaveReader
         if (records.Length < new[]
             {
                 raw.BaseRecord, raw.PrefixRecord, raw.SuffixRecord, raw.ModifierRecord,
-                raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord,
-                raw.CompletionBonusRecord
+                raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord
             }.Count(x => !string.IsNullOrWhiteSpace(x)))
             warnings.Add($"{itemName} 存在未在游戏数据库中找到的记录，结果已降低置信度");
 

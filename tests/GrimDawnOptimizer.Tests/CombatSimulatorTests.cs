@@ -38,6 +38,26 @@ public sealed class CombatSimulatorTests
     }
 
     [Fact]
+    public void BossArmorReducesPhysicalDamageAndIncreasesKillTime()
+    {
+        var stats = Stats((StatKeys.WeaponDamage("physical"), 3000), ("offensiveAbility", 3000));
+        var exposedScenario = Scenario();
+        exposedScenario.EnemyHealth = 100_000;
+        exposedScenario.EnemyArmor = 0;
+        exposedScenario.EnemyArmorAbsorption = 100;
+        var armoredScenario = Scenario();
+        armoredScenario.EnemyHealth = 100_000;
+        armoredScenario.EnemyArmor = 1000;
+        armoredScenario.EnemyArmorAbsorption = 100;
+
+        var exposed = Simulate(stats, exposedScenario);
+        var armored = Simulate(stats, armoredScenario);
+
+        Assert.True(armored.ExpectedDps < exposed.ExpectedDps);
+        Assert.True(armored.TimeToKillSeconds > exposed.TimeToKillSeconds);
+    }
+
+    [Fact]
     public async Task MonteCarloIsReproducibleForFixedSeed()
     {
         var character = Character(Stats(

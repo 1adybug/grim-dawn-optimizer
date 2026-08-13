@@ -33,7 +33,8 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
 
         foreach (var (targetSlot, variant) in slots)
         {
-            if (!IsCompatible(targetSlot, variant.Item.Slot))
+            if (!IsCompatible(targetSlot, variant.Item.Slot, character.CanDualWield) ||
+                targetSlot == EquipmentSlot.OffHand && variant.Item.IsTwoHanded)
                 errors.Add($"{variant.Item.Name} 不能装备在 {targetSlot}");
 
             if (!itemIds.Add(variant.Item.Id))
@@ -85,9 +86,10 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         };
     }
 
-    public static bool IsCompatible(EquipmentSlot target, EquipmentSlot itemSlot) => target switch
+    public static bool IsCompatible(EquipmentSlot target, EquipmentSlot itemSlot, bool canDualWield = false) => target switch
     {
         EquipmentSlot.RingLeft or EquipmentSlot.RingRight => itemSlot == EquipmentSlot.Ring,
+        EquipmentSlot.OffHand => itemSlot == EquipmentSlot.OffHand || canDualWield && itemSlot == EquipmentSlot.MainHand,
         _ => target == itemSlot
     };
 }

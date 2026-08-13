@@ -8,6 +8,26 @@ public sealed class CharacterStatEngineTests
     private readonly CharacterStatEngine _engine = new();
 
     [Fact]
+    public void AllowsOneHandedWeaponInOffhandWhenCurrentBuildCanDualWield()
+    {
+        var weapon = Item("second-weapon", EquipmentSlot.MainHand);
+        var character = new CharacterSnapshot
+        {
+            Name = "dual-wielder", SaveFilePath = "test.gdc", Level = 100,
+            Physique = 1000, Cunning = 1000, Spirit = 1000, CanDualWield = true,
+            BaselineStats = new StatBlock(new Dictionary<string, double> { ["health"] = 10_000 })
+        };
+
+        var result = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.OffHand] = new(weapon, null, null)
+        }, new GameDataCatalog());
+
+        Assert.True(result.IsValid, string.Join("; ", result.ValidationErrors));
+        Assert.True(result.Slots.ContainsKey(EquipmentSlot.OffHand));
+    }
+
+    [Fact]
     public void RejectsSamePhysicalItemInTwoRingSlots()
     {
         var item = Item("ring-1", EquipmentSlot.Ring);

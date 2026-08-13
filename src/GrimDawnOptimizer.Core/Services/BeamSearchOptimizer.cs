@@ -255,18 +255,24 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         CancellationToken cancellationToken)
     {
         var result = new Dictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>>();
+        var ownedAttachmentRecords = character.OwnedAttachments.Select(x => x.RecordId)
+            .Concat(character.Items.SelectMany(x => new[] { x.ComponentRecord, x.AugmentRecord }))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var target in TargetSlots)
         {
             var variants = new List<LoadoutVariant>();
-            foreach (var item in items.Where(x => CharacterStatEngine.IsCompatible(target, x.Slot)))
+            foreach (var item in items.Where(x =>
+                         CharacterStatEngine.IsCompatible(target, x.Slot, character.CanDualWield) &&
+                         (target != EquipmentSlot.OffHand || !x.IsTwoHanded)))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var components = SelectAttachmentOptions(
                     attachments, AttachmentKind.Component, item, character, profile,
-                    item.ComponentRecord, MaxComponentOptionsPerItem);
+                    item.ComponentRecord, item.CompletionBonusRecord, ownedAttachmentRecords, MaxComponentOptionsPerItem);
                 var augments = SelectAttachmentOptions(
                     attachments, AttachmentKind.Augment, item, character, profile,
-                    item.AugmentRecord, MaxAugmentOptionsPerItem);
+                    item.AugmentRecord, string.Empty, ownedAttachmentRecords, MaxAugmentOptionsPerItem);
                 var itemVariants = new List<LoadoutVariant>(components.Count * augments.Count);
                 foreach (var component in components)
                 foreach (var augment in augments)
@@ -287,10 +293,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         CharacterSnapshot character,
         OptimizationProfile profile,
         string installedId,
+        string installedCompletionBonus,
+        IReadOnlySet<string> ownedAttachmentRecords,
         int limit)
     {
         var compatible = attachments
-            .Where(x => x.Kind == kind && IsAttachmentCompatible(x, item, character))
+            .Where(x => x.Kind == kind && IsAttachmentCompatible(x, item, character, ownedAttachmentRecords))
             .ToArray();
         if (compatible.Length + 1 <= limit)
             return compatible.Cast<AttachmentDefinition?>().Prepend(null).ToArray();
@@ -303,8 +311,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             if (attachment is not null && ids.Add(attachment.Id)) selected.Add(attachment);
         }
 
+        foreach (var attachment in compatible.Where(x => x.IsOwned || ownedAttachmentRecords.Contains(GameDataSource.AttachmentRecordId(x))))
+            Add(attachment);
         if (!string.IsNullOrWhiteSpace(installedId))
-            Add(compatible.FirstOrDefault(x => string.Equals(x.Id, installedId, StringComparison.OrdinalIgnoreCase)));
+            Add(compatible.FirstOrDefault(x =>
+                string.Equals(GameDataSource.AttachmentRecordId(x), installedId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(x.CompletionBonusRecord, installedCompletionBonus, StringComparison.OrdinalIgnoreCase)));
         foreach (var attachment in compatible.OrderByDescending(x => AttachmentProxyScore(x, profile)).ThenBy(x => x.Id, StringComparer.Ordinal).Take(Math.Max(4, limit / 2)))
             Add(attachment);
         foreach (var key in keys)
@@ -316,15 +328,18 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return selected.Take(limit).ToArray();
     }
 
-    private static bool IsAttachmentCompatible(AttachmentDefinition attachment, ItemInstance item, CharacterSnapshot character)
+    private static bool IsAttachmentCompatible(
+        AttachmentDefinition attachment,
+        ItemInstance item,
+        CharacterSnapshot character,
+        IReadOnlySet<string> ownedAttachmentRecords)
     {
-        var isInstalled = string.Equals(attachment.Id, item.ComponentRecord, StringComparison.OrdinalIgnoreCase) ||
-                          string.Equals(attachment.Id, item.AugmentRecord, StringComparison.OrdinalIgnoreCase);
-        if (!isInstalled && attachment.LevelRequirement > character.Level) return false;
+        var isOwned = attachment.IsOwned || ownedAttachmentRecords.Contains(GameDataSource.AttachmentRecordId(attachment));
+        if (!isOwned && attachment.LevelRequirement > character.Level) return false;
         if (!attachment.CompatibleSlots.Contains(item.Slot) &&
             !(item.Slot == EquipmentSlot.Ring && (attachment.CompatibleSlots.Contains(EquipmentSlot.RingLeft) || attachment.CompatibleSlots.Contains(EquipmentSlot.RingRight)))) return false;
-        if (!isInstalled && !string.IsNullOrWhiteSpace(attachment.RequiredFormula) && !character.KnownFormulas.Contains(attachment.RequiredFormula)) return false;
-        if (!isInstalled && !string.IsNullOrWhiteSpace(attachment.RequiredFaction) &&
+        if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFormula) && !character.KnownFormulas.Contains(attachment.RequiredFormula)) return false;
+        if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFaction) &&
             character.FactionReputation.GetValueOrDefault(attachment.RequiredFaction) < attachment.RequiredReputation) return false;
         return true;
     }
@@ -404,8 +419,16 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         LoadoutVariant variant,
         IReadOnlyDictionary<EquipmentSlot, string> currentLoadout) =>
         currentLoadout.Values.Contains(variant.Item.Id) &&
-        (string.IsNullOrWhiteSpace(variant.Item.ComponentRecord) || string.Equals(variant.Component?.Id, variant.Item.ComponentRecord, StringComparison.OrdinalIgnoreCase)) &&
-        (string.IsNullOrWhiteSpace(variant.Item.AugmentRecord) || string.Equals(variant.Augment?.Id, variant.Item.AugmentRecord, StringComparison.OrdinalIgnoreCase));
+        MatchesCurrentAttachment(variant.Component, variant.Item.ComponentRecord, variant.Item.CompletionBonusRecord) &&
+        MatchesCurrentAttachment(variant.Augment, variant.Item.AugmentRecord, string.Empty);
+
+    private static bool MatchesCurrentAttachment(AttachmentDefinition? attachment, string recordId, string completionBonusRecord)
+    {
+        if (string.IsNullOrWhiteSpace(recordId)) return attachment is null;
+        return attachment is not null &&
+               string.Equals(GameDataSource.AttachmentRecordId(attachment), recordId, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(attachment.CompletionBonusRecord, completionBonusRecord, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static double AttachmentProxyScore(AttachmentDefinition attachment, OptimizationProfile profile)
     {
@@ -461,8 +484,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         {
             var variant = variantsBySlot.GetValueOrDefault(slot, [])
                 .FirstOrDefault(x => x.Item.Id == itemId &&
-                                     (string.IsNullOrWhiteSpace(x.Item.ComponentRecord) || x.Component?.Id == x.Item.ComponentRecord) &&
-                                     (string.IsNullOrWhiteSpace(x.Item.AugmentRecord) || x.Augment?.Id == x.Item.AugmentRecord))
+                                     MatchesCurrentAttachment(x.Component, x.Item.ComponentRecord, x.Item.CompletionBonusRecord) &&
+                                     MatchesCurrentAttachment(x.Augment, x.Item.AugmentRecord, string.Empty))
                 ?? variantsBySlot.GetValueOrDefault(slot, []).FirstOrDefault(x => x.Item.Id == itemId);
             if (variant is not null) result[slot] = variant;
         }
@@ -521,6 +544,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         var result = new Dictionary<string, double>(loadout.Stats.Values, StringComparer.OrdinalIgnoreCase)
         {
             ["dps"] = simulation.ExpectedDps,
+            ["timeToKill"] = simulation.TimeToKillSeconds,
             ["effectiveHealth"] = simulation.EffectiveHealth,
             ["incomingDps"] = simulation.IncomingDps,
             ["sustain"] = simulation.SustainPerSecond,

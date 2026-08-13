@@ -129,6 +129,9 @@ public sealed class ItemInstance
 public sealed class AttachmentDefinition
 {
     public required string Id { get; init; }
+    public string RecordId { get; init; } = string.Empty;
+    public string CompletionBonusRecord { get; init; } = string.Empty;
+    public bool IsOwned { get; init; }
     public required string Name { get; init; }
     public required AttachmentKind Kind { get; init; }
     public IReadOnlySet<EquipmentSlot> CompatibleSlots { get; init; } = new HashSet<EquipmentSlot>();
@@ -150,6 +153,11 @@ public sealed record CharacterSkill(
     string AutoCastSkill,
     string AutoCastController);
 
+public sealed record OwnedAttachmentInstance(
+    string RecordId,
+    AttachmentKind Kind,
+    string CompletionBonusRecord = "");
+
 public sealed class CharacterSnapshot
 {
     public required string Name { get; init; }
@@ -164,7 +172,9 @@ public sealed class CharacterSnapshot
     public IReadOnlyDictionary<string, double> FactionReputation { get; init; } = new Dictionary<string, double>();
     public IReadOnlySet<string> KnownFormulas { get; init; } = new HashSet<string>();
     public IReadOnlyList<ItemInstance> Items { get; init; } = [];
+    public IReadOnlyList<OwnedAttachmentInstance> OwnedAttachments { get; init; } = [];
     public IReadOnlyDictionary<EquipmentSlot, string> CurrentLoadout { get; init; } = new Dictionary<EquipmentSlot, string>();
+    public bool CanDualWield { get; init; }
     public IReadOnlyList<string> ImportWarnings { get; init; } = [];
 }
 
@@ -182,11 +192,15 @@ public sealed record IncomingDamageProfile(
 
 public sealed class CombatScenario
 {
-    public string Name { get; set; } = "单体 Boss · 10 秒";
+    public string Name { get; set; } = "同级 BOSS 平均值 · 10 秒";
     public int EnemyLevel { get; set; } = 100;
+    public double EnemyHealth { get; set; } = 300_000;
     public double EnemyArmor { get; set; } = 2200;
+    public double EnemyArmorAbsorption { get; set; } = 70;
     public double EnemyOffensiveAbility { get; set; } = 2850;
+    public double EnemyDefensiveAbility { get; set; } = 2900;
     public double EnemyLifeLeechResistance { get; set; } = 60;
+    public int BossSampleCount { get; set; }
     public double DurationSeconds { get; set; } = 10;
     public int TargetCount { get; set; } = 1;
     public Dictionary<string, double> EnemyResistances { get; set; } = new(StringComparer.OrdinalIgnoreCase)
@@ -280,6 +294,7 @@ public sealed class CalculatedLoadout
 public sealed class SimulationReport
 {
     public double ExpectedDps { get; init; }
+    public double TimeToKillSeconds { get; init; }
     public double EffectiveHealth { get; init; }
     public double IncomingDps { get; init; }
     public double SustainPerSecond { get; init; }

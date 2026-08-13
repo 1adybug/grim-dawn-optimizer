@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Cairn Loadout Lab" Width="1540" Height="920" MinWidth="1240" MinHeight="760"
+        Icon="Assets/CairnLoadoutLab.ico"
         Background="{StaticResource Canvas}" Foreground="{StaticResource Text}"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
@@ -146,11 +147,18 @@
 
                     <Border BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1" Margin="0,16,0,18" />
                     <TextBlock Text="战斗档案" Style="{StaticResource SectionTitle}" />
+                    <Border Background="#182024" BorderBrush="{StaticResource Divider}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,10">
+                        <StackPanel>
+                            <TextBlock Text="同级 BOSS 自动基准" Foreground="{StaticResource Accent}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding EnemyProfileSummary}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0" />
+                            <TextBlock Text="{Binding EnemyResistanceSummary}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        </StackPanel>
+                    </Border>
                     <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="0,0,8,0">
                             <TextBlock Text="敌人等级" Style="{StaticResource Label}" />
-                            <TextBox Text="{Binding Profile.Scenario.EnemyLevel, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="{Binding Profile.Scenario.EnemyLevel, StringFormat=Lv.{0}}" FontSize="14" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Margin="8,0,0,0">
                             <TextBlock Text="战斗时长（秒）" Style="{StaticResource Label}" />
@@ -161,7 +169,7 @@
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <StackPanel Margin="0,0,8,0">
                             <TextBlock Text="敌人护甲" Style="{StaticResource Label}" />
-                            <TextBox Text="{Binding Profile.Scenario.EnemyArmor, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="{Binding Profile.Scenario.EnemyArmor, StringFormat={}{0:N0}}" FontSize="14" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Margin="8,0,0,0">
                             <TextBlock Text="目标数量" Style="{StaticResource Label}" />
@@ -169,7 +177,8 @@
                         </StackPanel>
                     </Grid>
                     <TextBlock Text="主攻技能" Style="{StaticResource Label}" Margin="0,12,0,4" />
-                    <ComboBox ItemsSource="{Binding SelectedCharacter.Skills}" SelectedItem="{Binding SelectedSkill}" DisplayMemberPath="Name" />
+                    <ComboBox ItemsSource="{Binding ActiveSkills}" SelectedItem="{Binding SelectedSkill}" DisplayMemberPath="Name" />
+                    <TextBlock Text="{Binding BuildFoundationSummary}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0" />
 
                     <Border BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1" Margin="0,18,0,18" />
                     <TextBlock Text="搜索预算" Style="{StaticResource SectionTitle}" />
@@ -237,6 +246,7 @@
                                     <TextBlock Text="持续 DPS" Style="{StaticResource Label}" />
                                     <TextBlock Text="{Binding Dps}" Style="{StaticResource MetricValue}" />
                                     <TextBlock Text="{Binding MonteCarloRange}" Foreground="{StaticResource Muted}" FontSize="10" />
+                                    <TextBlock Text="{Binding TimeToKill, StringFormat=击杀约 {0}}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1">
                                     <TextBlock Text="有效生命" Style="{StaticResource Label}" />

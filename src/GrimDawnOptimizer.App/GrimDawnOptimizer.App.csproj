@@ -4,7 +4,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <RootNamespace>GrimDawnOptimizer.App</RootNamespace>
-    <ApplicationIcon />
+    <ApplicationIcon>Assets\CairnLoadoutLab.ico</ApplicationIcon>
     <Platforms>AnyCPU;x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -13,6 +13,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\GrimDawnOptimizer.Core\GrimDawnOptimizer.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\CairnLoadoutLab.ico" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\..\README.md" Link="README.md" CopyToPublishDirectory="PreserveNewest" />

@@ -80,6 +80,7 @@ public sealed class CombatSimulator : ICombatSimulator
             return new SimulationReport
             {
                 ExpectedDps = baseReport.ExpectedDps,
+                TimeToKillSeconds = baseReport.TimeToKillSeconds,
                 EffectiveHealth = baseReport.EffectiveHealth,
                 IncomingDps = baseReport.IncomingDps,
                 SustainPerSecond = baseReport.SustainPerSecond,
@@ -111,8 +112,7 @@ public sealed class CombatSimulator : ICombatSimulator
         foreach (var type in StatKeys.DamageTypes)
         {
             var boosted = damage[type] * Math.Max(0, 1 + stats[StatKeys.DamagePercent(type)] / 100d);
-            var enemyResistance = ResolveEnemyResistance(type, scenario, stats);
-            rawDamagePerLandedHit += boosted * Math.Max(0, 1 - enemyResistance / 100d);
+            rawDamagePerLandedHit += ApplyEnemyMitigation(type, boosted, scenario, stats);
         }
 
         var attackSpeed = Math.Clamp(1 + stats["attackSpeed"] / 100d, 0.2, 2.0);
@@ -122,7 +122,10 @@ public sealed class CombatSimulator : ICombatSimulator
         if (energyNeeded > Epsilon)
             attacksPerSecond *= Math.Min(1, energyAvailable / energyNeeded);
 
-        var (hitChance, critChance, critMultiplier) = ResolveHitAndCrit(stats["offensiveAbility"], 2400 + scenario.EnemyLevel * 5);
+        var enemyDefensiveAbility = scenario.EnemyDefensiveAbility > 0
+            ? scenario.EnemyDefensiveAbility
+            : 2400 + scenario.EnemyLevel * 5;
+        var (hitChance, critChance, critMultiplier) = ResolveHitAndCrit(stats["offensiveAbility"], enemyDefensiveAbility);
         var weaponDps = rawDamagePerLandedHit * attacksPerSecond * hitChance * (1 + critChance * (critMultiplier - 1));
 
         var procModels = new List<ProcModel>();
@@ -140,6 +143,9 @@ public sealed class CombatSimulator : ICombatSimulator
         }
 
         var expectedDps = (weaponDps + procDps) * Math.Max(1, scenario.TargetCount);
+        var timeToKill = expectedDps <= Epsilon
+            ? double.PositiveInfinity
+            : Math.Max(1, scenario.EnemyHealth) * Math.Max(1, scenario.TargetCount) / expectedDps;
         var health = Math.Max(1, stats["health"]);
         var enemyHit = ResolveHitAndCrit(scenario.EnemyOffensiveAbility, stats["defensiveAbility"]).HitChance;
         var avoidance = Math.Clamp(stats["dodgeChance"] / 100d, 0, 0.8);
@@ -157,7 +163,7 @@ public sealed class CombatSimulator : ICombatSimulator
         var timeToDeath = incomingDps <= sustain + Epsilon ? double.PositiveInfinity : health / (incomingDps - sustain);
 
         return new CombatBreakdown(
-            expectedDps, effectiveHealth, incomingDps, sustain, timeToDeath,
+            expectedDps, timeToKill, effectiveHealth, incomingDps, sustain, timeToDeath,
             attacksPerSecond, rawDamagePerLandedHit, hitChance, critChance, critMultiplier,
             enemyHit, avoidance, blockChance, blockAmount, damageTakenPerHit, health, healthRegen, lifeSteal, procModels);
     }
@@ -191,6 +197,18 @@ public sealed class CombatSimulator : ICombatSimulator
         return (baseResistance - flatReduction) * (1 - reducedPercent) - stackedReduction;
     }
 
+    private static double ApplyEnemyMitigation(string type, double rawDamage, CombatScenario scenario, StatBlock stats)
+    {
+        var resistance = ResolveEnemyResistance(type, scenario, stats);
+        var result = rawDamage * Math.Max(0, 1 - resistance / 100d);
+        if (type.Equals("physical", StringComparison.OrdinalIgnoreCase))
+        {
+            var absorption = Math.Clamp(scenario.EnemyArmorAbsorption / 100d, 0, 1);
+            result = Math.Max(0, result - Math.Max(0, scenario.EnemyArmor) * absorption);
+        }
+        return result;
+    }
+
     private static (double HitChance, double CritChance, double CritMultiplier) ResolveHitAndCrit(double offensiveAbility, double defensiveAbility)
     {
         offensiveAbility = Math.Max(1, offensiveAbility);
@@ -209,7 +227,7 @@ public sealed class CombatSimulator : ICombatSimulator
         {
             var raw = effect[StatKeys.DamageFlat(type)] + effect[type];
             var boosted = raw * Math.Max(0, 1 + owner[StatKeys.DamagePercent(type)] / 100d);
-            total += boosted * Math.Max(0, 1 - ResolveEnemyResistance(type, scenario, owner) / 100d);
+            total += ApplyEnemyMitigation(type, boosted, scenario, owner);
         }
         return total;
     }
@@ -256,6 +274,7 @@ public sealed class CombatSimulator : ICombatSimulator
     private static SimulationReport ToReport(CalculatedLoadout loadout, CombatBreakdown x) => new()
     {
         ExpectedDps = x.ExpectedDps,
+        TimeToKillSeconds = x.TimeToKillSeconds,
         EffectiveHealth = x.EffectiveHealth,
         IncomingDps = x.IncomingDps,
         SustainPerSecond = x.SustainPerSecond,
@@ -281,6 +300,7 @@ public sealed class CombatSimulator : ICombatSimulator
     private sealed record ProcModel(double ChancePerAttack, double Damage);
     private sealed record CombatBreakdown(
         double ExpectedDps,
+        double TimeToKillSeconds,
         double EffectiveHealth,
         double IncomingDps,
         double SustainPerSecond,

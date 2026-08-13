@@ -86,17 +86,65 @@ public sealed class GameDataSource : IGameDataSource
 
     public IReadOnlyList<AttachmentDefinition> GetUnlockedAttachments(CharacterSnapshot character, GameDataCatalog catalog)
     {
-        var installed = character.Items
-            .SelectMany(x => new[] { x.ComponentRecord, x.AugmentRecord })
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return catalog.Attachments.Where(x =>
-            installed.Contains(x.Id) ||
-            (x.LevelRequirement <= character.Level &&
-             (string.IsNullOrWhiteSpace(x.RequiredFormula) || character.KnownFormulas.Contains(x.RequiredFormula)) &&
-             (string.IsNullOrWhiteSpace(x.RequiredFaction) || character.FactionReputation.GetValueOrDefault(x.RequiredFaction) >= x.RequiredReputation)))
+        var unlocked = catalog.Attachments.Where(x =>
+            x.LevelRequirement <= character.Level &&
+              (string.IsNullOrWhiteSpace(x.RequiredFormula) || character.KnownFormulas.Contains(x.RequiredFormula)) &&
+              (string.IsNullOrWhiteSpace(x.RequiredFaction) || character.FactionReputation.GetValueOrDefault(x.RequiredFaction) >= x.RequiredReputation));
+        return unlocked.Concat(BuildOwnedAttachmentVariants(character, catalog))
+            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.First())
             .ToArray();
     }
+
+    private static IReadOnlyList<AttachmentDefinition> BuildOwnedAttachmentVariants(
+        CharacterSnapshot character,
+        GameDataCatalog catalog)
+    {
+        var result = new List<AttachmentDefinition>();
+        var owned = character.OwnedAttachments.Concat(character.Items.SelectMany(item => new[]
+        {
+            new OwnedAttachmentInstance(item.ComponentRecord, AttachmentKind.Component, item.CompletionBonusRecord),
+            new OwnedAttachmentInstance(item.AugmentRecord, AttachmentKind.Augment)
+        })).Where(x => !string.IsNullOrWhiteSpace(x.RecordId)).Distinct();
+        foreach (var attachment in owned)
+            AddOwned(attachment.RecordId, attachment.CompletionBonusRecord, attachment.Kind);
+        return result;
+
+        void AddOwned(string recordId, string completionBonusRecord, AttachmentKind kind)
+        {
+            if (string.IsNullOrWhiteSpace(recordId)) return;
+            var source = catalog.Attachments.FirstOrDefault(x =>
+                x.Kind == kind && string.Equals(AttachmentRecordId(x), recordId, StringComparison.OrdinalIgnoreCase));
+            if (source is null) return;
+
+            var stats = source.Stats.Clone();
+            if (!string.IsNullOrWhiteSpace(completionBonusRecord) &&
+                catalog.Records.TryGetValue(completionBonusRecord, out var completionBonus))
+                stats.Add(GameStatTranslator.Translate([completionBonus]));
+
+            var suffix = string.IsNullOrWhiteSpace(completionBonusRecord) ? "base" : completionBonusRecord;
+            result.Add(new AttachmentDefinition
+            {
+                Id = $"{recordId}|owned:{suffix}",
+                RecordId = recordId,
+                CompletionBonusRecord = completionBonusRecord,
+                IsOwned = true,
+                Name = source.Name,
+                Kind = source.Kind,
+                CompatibleSlots = source.CompatibleSlots,
+                LevelRequirement = source.LevelRequirement,
+                RequiredFormula = source.RequiredFormula,
+                RequiredFaction = source.RequiredFaction,
+                RequiredReputation = source.RequiredReputation,
+                Stats = stats,
+                Effects = source.Effects,
+                UnsupportedEffects = source.UnsupportedEffects
+            });
+        }
+    }
+
+    internal static string AttachmentRecordId(AttachmentDefinition attachment) =>
+        string.IsNullOrWhiteSpace(attachment.RecordId) ? attachment.Id : attachment.RecordId;
 
     private static IReadOnlyList<GameInstallation> DiscoverInstallations()
     {
@@ -203,6 +251,7 @@ public sealed class GameDataSource : IGameDataSource
             result.Add(new AttachmentDefinition
             {
                 Id = record.RecordName,
+                RecordId = record.RecordName,
                 Name = name,
                 Kind = kind.Value,
                 CompatibleSlots = ResolveAttachmentSlots(record.RecordName, allSlots),
@@ -260,7 +309,7 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        private static readonly byte[] PayloadHeader = "GDOC2"u8.ToArray();
+        private static readonly byte[] PayloadHeader = "GDOC3"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)

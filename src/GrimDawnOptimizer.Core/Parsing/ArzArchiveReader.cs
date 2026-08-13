@@ -9,32 +9,7 @@ internal sealed class ArzArchiveReader
 {
     private static readonly HashSet<string> NumericFields = BuildNumericFields();
 
-    private static readonly HashSet<string> TextFields = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Class",
-        "artifactFormula",
-        "conversionInType",
-        "conversionInType2",
-        "conversionOutType",
-        "conversionOutType2",
-        "factionName",
-        "itemNameTag",
-        "itemSetName",
-        "itemSkillName",
-        "lootRandomizerName",
-        "relicName",
-        "skillAutoController",
-        "skillDisplayName",
-        "triggerType",
-        "setBonus2",
-        "setBonus3",
-        "setBonus4",
-        "setBonus5",
-        "setBonus6",
-        "setBonus7",
-        "setBonus8",
-        "setBonus9"
-    };
+    private static readonly HashSet<string> TextFields = BuildTextFields();
 
     public IReadOnlyDictionary<string, GameRecord> Read(string path, CancellationToken cancellationToken = default)
     {
@@ -156,6 +131,7 @@ internal sealed class ArzArchiveReader
             "characterAttackSpeed",
             "characterAttackSpeedModifier",
             "characterDefensiveAbility",
+            "characterDefensiveAbilityModifier",
             "characterDeflectProjectile",
             "characterDexterity",
             "characterDexterityReq",
@@ -163,10 +139,12 @@ internal sealed class ArzArchiveReader
             "characterIntelligence",
             "characterIntelligenceReq",
             "characterLife",
+            "characterLifeModifier",
             "characterLifeRegen",
             "characterMana",
             "characterManaRegen",
             "characterOffensiveAbility",
+            "characterOffensiveAbilityModifier",
             "characterSpellCastSpeed",
             "characterSpellCastSpeedModifier",
             "characterStrength",
@@ -178,9 +156,13 @@ internal sealed class ArzArchiveReader
             "defensiveBlockAmount",
             "defensiveBlockChance",
             "defensiveProtection",
+            "defensiveElementalResistance",
+            "defensiveSlowLifeLeach",
             "factionValue",
             "itemSkillLevelEq",
             "levelRequirement",
+            "maxLevel",
+            "minLevel",
             "offensiveLifeLeechMin",
             "skillChance",
             "skillCooldownTime",
@@ -197,6 +179,48 @@ internal sealed class ArzArchiveReader
             result.Add($"defensive{damageType}");
             result.Add($"defensive{damageType}Resistance");
             result.Add($"defensive{damageType}MaxResist");
+        }
+        return result;
+    }
+
+    private static HashSet<string> BuildTextFields()
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Class",
+            "artifactFormula",
+            "characterAttributeEquations",
+            "characterDefensiveAbility",
+            "characterLife",
+            "characterOffensiveAbility",
+            "charLevel",
+            "conversionInType",
+            "conversionInType2",
+            "conversionOutType",
+            "conversionOutType2",
+            "factionName",
+            "itemNameTag",
+            "itemSetName",
+            "itemSkillName",
+            "lootRandomizerName",
+            "monsterClassification",
+            "relicName",
+            "skillAutoController",
+            "skillDisplayName",
+            "triggerType",
+            "setBonus2",
+            "setBonus3",
+            "setBonus4",
+            "setBonus5",
+            "setBonus6",
+            "setBonus7",
+            "setBonus8",
+            "setBonus9"
+        };
+        for (var index = 1; index <= 32; index++)
+        {
+            result.Add($"skillName{index}");
+            result.Add($"skillLevel{index}");
         }
         return result;
     }
