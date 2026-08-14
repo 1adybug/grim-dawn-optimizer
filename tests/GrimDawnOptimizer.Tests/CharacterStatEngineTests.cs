@@ -83,6 +83,66 @@ public sealed class CharacterStatEngineTests
         Assert.Equal(10_350, result.Stats["health"]);
     }
 
+    [Fact]
+    public void DualWieldAlternatesWeaponBaseDamageInsteadOfAddingBothGunsPerShot()
+    {
+        var main = Item("main-gun", EquipmentSlot.MainHand, weaponDamage: 100);
+        var off = Item("off-gun", EquipmentSlot.MainHand, weaponDamage: 200);
+        var result = _engine.Calculate(new CharacterSnapshot
+        {
+            Name = "gunner", SaveFilePath = "test.gdc", Level = 100,
+            Physique = 1000, Cunning = 1000, Spirit = 1000, CanDualWield = true
+        }, new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(main, null, null),
+            [EquipmentSlot.OffHand] = new(off, null, null)
+        }, new GameDataCatalog());
+
+        Assert.True(result.IsValid, string.Join("; ", result.ValidationErrors));
+        Assert.Equal(150, result.Stats[StatKeys.WeaponDamage("physical")]);
+    }
+
+    [Fact]
+    public void PercentageAttributesAreAppliedAfterFlatEquipmentBonuses()
+    {
+        var item = Item("attribute-item", EquipmentSlot.Head);
+        item.Stats.Set("physique", 20);
+        item.Stats.Set("physique.percent", 10);
+        var character = Character();
+        character.BaselineStats.Set("physique", 100);
+
+        var result = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Head] = new(item, null, null)
+        }, new GameDataCatalog());
+
+        Assert.Equal(132, result.Stats["physique"]);
+    }
+
+    [Fact]
+    public void AppliesPlayerAbilityEquationAfterFlatAndPercentBonuses()
+    {
+        var item = Item("ability-item", EquipmentSlot.Head);
+        item.Stats.Set("offensiveAbility", 100);
+        item.Stats.Set("offensiveAbility.percent", 10);
+        item.Stats.Set("defensiveAbility", 50);
+        var character = Character();
+        character.BaselineStats.Set("cunning", 400);
+        character.BaselineStats.Set("physique", 300);
+        character.BaselineStats.Set("offensiveAbility", 65);
+        character.BaselineStats.Set("defensiveAbility", 65);
+        character.BaselineStats.Set("characterLevel", 38);
+        character.BaselineStats.Set("usePlayerAbilityFormula", 1);
+
+        var result = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Head] = new(item, null, null)
+        }, new GameDataCatalog());
+
+        Assert.Equal((65 + 100 + 38 * 12 + 400 * 0.5) * 1.1 + 53, result.Stats["offensiveAbility"], 6);
+        Assert.Equal(65 + 50 + 38 * 12 + 300 * 0.5 + 53, result.Stats["defensiveAbility"], 6);
+    }
+
     private static CharacterSnapshot Character() => new()
     {
         Name = "test", SaveFilePath = "test.gdc", Level = 100,
@@ -90,10 +150,19 @@ public sealed class CharacterStatEngineTests
         BaselineStats = new StatBlock(new Dictionary<string, double> { ["health"] = 10_000 })
     };
 
-    private static ItemInstance Item(string id, EquipmentSlot slot, string set = "", bool twoHanded = false) => new()
+    private static ItemInstance Item(
+        string id,
+        EquipmentSlot slot,
+        string set = "",
+        bool twoHanded = false,
+        double weaponDamage = 0) => new()
     {
         Id = id, Name = id, Slot = slot, BaseRecord = id, Seed = 1,
         SetId = set, IsTwoHanded = twoHanded,
+        Stats = new StatBlock(new Dictionary<string, double>
+        {
+            [StatKeys.WeaponDamage("physical")] = weaponDamage
+        }),
         Source = new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc", 0, 0, 0)
     };
 }

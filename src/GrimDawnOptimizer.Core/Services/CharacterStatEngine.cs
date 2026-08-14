@@ -14,6 +14,8 @@ public static class StatKeys
     public static string MaxResistance(string damageType) => $"{damageType}MaxResistance";
     public static string DamageFlat(string damageType) => $"damage.{damageType}.flat";
     public static string DamagePercent(string damageType) => $"damage.{damageType}.percent";
+    public static string DamageDot(string damageType) => $"damage.{damageType}.dot";
+    public static string DamageDotPercent(string damageType) => $"damage.{damageType}.dotPercent";
     public static string WeaponDamage(string damageType) => $"weaponDamage.{damageType}";
 }
 
@@ -55,9 +57,33 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
                 if (count >= requiredPieces) stats.Add(bonus);
         }
 
-        var finalPhysique = character.Physique + stats["physique"];
-        var finalCunning = character.Cunning + stats["cunning"];
-        var finalSpirit = character.Spirit + stats["spirit"];
+        ApplyPercentModifier(stats, "physique");
+        ApplyPercentModifier(stats, "cunning");
+        ApplyPercentModifier(stats, "spirit");
+        ApplyPercentModifier(stats, "health");
+        ApplyPercentModifier(stats, "energy");
+        if (stats["usePlayerAbilityFormula"] > 0)
+            ApplyPlayerAbilityFormula(stats);
+        else
+        {
+            ApplyPercentModifier(stats, "offensiveAbility");
+            ApplyPercentModifier(stats, "defensiveAbility");
+        }
+
+        ResolveEquippedWeaponDamage(stats, slots);
+
+        // Character attributes contribute directly to damage bonuses. The ARZ
+        // item/skill modifiers intentionally do not include these sheet bonuses.
+        var sheetCunning = stats["cunning"];
+        var sheetSpirit = stats["spirit"];
+        stats.Add(StatKeys.DamagePercent("physical"), sheetCunning * 0.41);
+        stats.Add(StatKeys.DamagePercent("pierce"), sheetCunning * 0.41);
+        foreach (var damageType in new[] { "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos" })
+            stats.Add(StatKeys.DamagePercent(damageType), sheetSpirit * 0.47);
+
+        var finalPhysique = stats["physique"] > 0 ? stats["physique"] : character.Physique;
+        var finalCunning = stats["cunning"] > 0 ? stats["cunning"] : character.Cunning;
+        var finalSpirit = stats["spirit"] > 0 ? stats["spirit"] : character.Spirit;
 
         foreach (var variant in slots.Values)
         {
@@ -92,4 +118,47 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         EquipmentSlot.OffHand => itemSlot == EquipmentSlot.OffHand || canDualWield && itemSlot == EquipmentSlot.MainHand,
         _ => target == itemSlot
     };
+
+    private static void ResolveEquippedWeaponDamage(
+        StatBlock stats,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
+    {
+        slots.TryGetValue(EquipmentSlot.MainHand, out var mainHand);
+        slots.TryGetValue(EquipmentSlot.OffHand, out var offHand);
+        var offHandIsWeapon = offHand?.Item.Slot == EquipmentSlot.MainHand;
+        var mainBaseSpeed = mainHand?.CombinedStats["weaponBaseAttackSpeed"] ?? 0;
+        var offBaseSpeed = offHandIsWeapon ? offHand!.CombinedStats["weaponBaseAttackSpeed"] : 0;
+        stats.Set("weaponBaseAttackSpeed", offHandIsWeapon ? (mainBaseSpeed + offBaseSpeed) / 2d : mainBaseSpeed);
+        stats.Set("averageWeaponStrikesPerAction", offHandIsWeapon ? 1.5 : 1);
+        stats.Set("dualWieldWeapon", offHandIsWeapon ? 1 : 0);
+        foreach (var damageType in StatKeys.DamageTypes)
+        {
+            var key = StatKeys.WeaponDamage(damageType);
+            var mainDamage = mainHand?.CombinedStats[key] ?? 0;
+            var offDamage = offHandIsWeapon ? offHand!.CombinedStats[key] : 0;
+            var nonWeaponContribution = stats[key] - mainDamage - offDamage;
+            var equippedDamage = offHandIsWeapon ? (mainDamage + offDamage) / 2d : mainDamage;
+            stats.Set(key, nonWeaponContribution + equippedDamage);
+        }
+    }
+
+    private static void ApplyPercentModifier(StatBlock stats, string key)
+    {
+        var percent = stats[$"{key}.percent"];
+        if (Math.Abs(percent) > 1e-9)
+            stats.Set(key, stats[key] * Math.Max(0, 1 + percent / 100d));
+    }
+
+    private static void ApplyPlayerAbilityFormula(StatBlock stats)
+    {
+        // records/game/combatformulas.dbr:
+        // (flat + level*12 + attribute*0.5) * (1 + modifier/100) + 53
+        var levelTerm = Math.Max(1, stats["characterLevel"]) * 12;
+        var oa = (stats["offensiveAbility"] + levelTerm + stats["cunning"] * 0.5) *
+                 Math.Max(0, 1 + stats["offensiveAbility.percent"] / 100d) + 53;
+        var da = (stats["defensiveAbility"] + levelTerm + stats["physique"] * 0.5) *
+                 Math.Max(0, 1 + stats["defensiveAbility.percent"] / 100d) + 53;
+        stats.Set("offensiveAbility", oa);
+        stats.Set("defensiveAbility", da);
+    }
 }

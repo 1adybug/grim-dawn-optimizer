@@ -21,7 +21,7 @@ internal sealed class CharacterFileParser
             throw new InvalidDataException($"不是受支持的 player.gdc 文件（标识 0x{magic:X8}，头版本 {headerVersion}）");
 
         var name = reader.ReadWideString();
-        _ = reader.ReadByte();
+        _ = reader.ReadBoolean();
         var classId = reader.ReadString();
         var headerLevel = reader.ReadInt32();
         var hardcore = reader.ReadBoolean();
@@ -42,6 +42,7 @@ internal sealed class CharacterFileParser
                 case 4: ReadPersonalStash(reader, result); break;
                 case 8: ReadSkills(reader, result); break;
                 case 13: ReadFactions(reader, result); break;
+                case 14: ReadSkillBindings(reader, result); break;
             }
             reader.EndBlock(block);
         }
@@ -90,7 +91,7 @@ internal sealed class CharacterFileParser
             reader.EndBlock(block);
         }
 
-        _ = reader.ReadByte();
+        var useAltWeaponSet = reader.ReadBoolean();
         for (var index = 0; index < EquipmentOrder.Length; index++)
         {
             var item = ReadItem(reader, version);
@@ -99,20 +100,26 @@ internal sealed class CharacterFileParser
             item.EquippedSlot = EquipmentOrder[index];
             if (!string.IsNullOrWhiteSpace(item.BaseRecord)) result.Items.Add(item);
         }
-        _ = reader.ReadByte();
+        ReadWeaponSet(reader, result, version, setIndex: 0, isActive: !useAltWeaponSet);
+        ReadWeaponSet(reader, result, version, setIndex: 1, isActive: useAltWeaponSet);
+    }
+
+    private static void ReadWeaponSet(
+        GdCryptoReader reader,
+        RawCharacter result,
+        int version,
+        int setIndex,
+        bool isActive)
+    {
+        _ = reader.ReadBoolean();
         for (var index = 0; index < 2; index++)
         {
             var item = ReadItem(reader, version);
-            _ = reader.ReadByte();
-            item.SourceKind = ItemSourceKind.Equipped;
+            _ = reader.ReadBoolean();
+            item.SourceKind = isActive ? ItemSourceKind.Equipped : ItemSourceKind.AlternateWeaponSet;
+            item.ContainerIndex = setIndex;
             item.EquippedSlot = index == 0 ? EquipmentSlot.MainHand : EquipmentSlot.OffHand;
             if (!string.IsNullOrWhiteSpace(item.BaseRecord)) result.Items.Add(item);
-        }
-        _ = reader.ReadByte();
-        for (var index = 0; index < 2; index++)
-        {
-            _ = ReadItem(reader, version);
-            _ = reader.ReadByte();
         }
     }
 
@@ -222,6 +229,65 @@ internal sealed class CharacterFileParser
         }
     }
 
+    private static void ReadSkillBindings(GdCryptoReader reader, RawCharacter result)
+    {
+        var version = reader.ReadInt32();
+        if (version < 4) throw new InvalidDataException($"不支持的技能栏版本：{version}");
+        result.EquipmentSelection = reader.ReadBoolean();
+        var selectedSkillSet = reader.ReadInt32();
+        result.SkillWindowSelection = selectedSkillSet;
+        var skillSettingValid = reader.ReadBoolean();
+        var sets = new List<RawSkillBinding>(5);
+        for (var i = 0; i < 5; i++)
+            sets.Add(new RawSkillBinding(reader.ReadString(), reader.ReadString(), reader.ReadBoolean()));
+        result.SkillBindings.AddRange(sets);
+
+        if (version >= 7)
+        {
+            _ = reader.ReadInt32();
+            _ = reader.ReadInt32();
+            _ = reader.ReadInt32();
+        }
+
+        var hotSlotCount = version == 4 ? 36 : 46;
+        for (var i = 0; i < hotSlotCount; i++)
+        {
+            var type = reader.ReadInt32();
+            if (type == 0)
+            {
+                var skillName = reader.ReadString();
+                if (!string.IsNullOrWhiteSpace(skillName)) result.HotbarSkillRecords.Add(skillName);
+                var isItemSkill = reader.ReadBoolean();
+                var itemName = reader.ReadString();
+                var equipLocation = reader.ReadInt32();
+                result.HotbarSlots.Add(new RawHotSlot(i, type, skillName, isItemSkill, itemName, equipLocation));
+            }
+            else if (type == 4)
+            {
+                var itemName = reader.ReadString();
+                _ = reader.ReadString();
+                _ = reader.ReadString();
+                _ = reader.ReadWideString();
+                result.HotbarSlots.Add(new RawHotSlot(i, type, string.Empty, false, itemName, 0));
+            }
+            else result.HotbarSlots.Add(new RawHotSlot(i, type, string.Empty, false, string.Empty, 0));
+        }
+
+        _ = reader.ReadSingle();
+        if (version >= 6) _ = reader.ReadInt32();
+
+        var selected = sets.FirstOrDefault(x => x.Active && !string.IsNullOrWhiteSpace(x.PrimarySkill));
+        if (string.IsNullOrWhiteSpace(selected?.PrimarySkill) && skillSettingValid && selectedSkillSet >= 0 && selectedSkillSet < sets.Count)
+            selected = sets[selectedSkillSet];
+        selected ??= sets.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.PrimarySkill));
+        result.PrimarySkillRecord = selected?.PrimarySkill ?? string.Empty;
+        result.SecondarySkillRecord = selected?.SecondarySkill ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(result.PrimarySkillRecord))
+            result.PrimarySkillRecord = result.HotbarSlots.FirstOrDefault(x => x.Index == 10)?.SkillName ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(result.SecondarySkillRecord))
+            result.SecondarySkillRecord = result.HotbarSlots.FirstOrDefault(x => x.Index == 11)?.SkillName ?? string.Empty;
+    }
+
     internal static RawItem ReadItem(GdCryptoReader reader, int containerVersion)
     {
         var item = new RawItem
@@ -284,6 +350,13 @@ internal sealed class RawCharacter(string filePath, string name, string classId,
     public int MasteriesAllowed { get; set; }
     public int SkillPointsReclaimed { get; set; }
     public int DevotionPointsReclaimed { get; set; }
+    public string PrimarySkillRecord { get; set; } = string.Empty;
+    public string SecondarySkillRecord { get; set; } = string.Empty;
+    public bool EquipmentSelection { get; set; }
+    public int SkillWindowSelection { get; set; }
+    public List<RawSkillBinding> SkillBindings { get; } = [];
+    public List<string> HotbarSkillRecords { get; } = [];
+    public List<RawHotSlot> HotbarSlots { get; } = [];
     public List<RawItem> Items { get; } = [];
     public List<RawSkill> Skills { get; } = [];
     public List<RawFaction> Factions { get; } = [];
@@ -320,3 +393,5 @@ internal sealed record RawSkill(
     string Record, int Level, bool Enabled, bool Locked, int DevotionLevel, int Experience, int SubLevel,
     bool Active, bool Transition, string AutoCastSkill, string AutoCastController);
 internal sealed record RawFaction(int Index, bool Changed, bool Unlocked, float Value, float PositiveBoost, float NegativeBoost);
+internal sealed record RawSkillBinding(string PrimarySkill, string SecondarySkill, bool Active);
+internal sealed record RawHotSlot(int Index, int Type, string SkillName, bool IsItemSkill, string ItemName, int EquipLocation);

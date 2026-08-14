@@ -54,7 +54,53 @@ public sealed class CombatSimulatorTests
         var armored = Simulate(stats, armoredScenario);
 
         Assert.True(armored.ExpectedDps < exposed.ExpectedDps);
+        Assert.Equal(exposed.UnmitigatedDps, armored.UnmitigatedDps, 8);
         Assert.True(armored.TimeToKillSeconds > exposed.TimeToKillSeconds);
+    }
+
+    [Fact]
+    public void SkillCriticalModifierAffectsProbabilisticCritsNotTargetFreeSheetDps()
+    {
+        var stats = Stats((StatKeys.WeaponDamage("physical"), 100), ("offensiveAbility", 20_000));
+        var character = Character(stats);
+        var loadout = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>(), new GameDataCatalog());
+        var baseline = Rotation();
+        var modified = Rotation();
+        modified.FlatDamage.Set("criticalDamage", 18);
+
+        var withoutModifier = _simulator.Simulate(character, loadout, Scenario(), baseline);
+        var withModifier = _simulator.Simulate(character, loadout, Scenario(), modified);
+
+        Assert.Equal(withoutModifier.UnmitigatedDps, withModifier.UnmitigatedDps, 8);
+        Assert.True(withModifier.ExpectedDps > withoutModifier.ExpectedDps);
+    }
+
+    [Fact]
+    public void WeaponPoolDefinitionControlsWhetherOneOrBothWeaponsStrike()
+    {
+        var character = Character(new StatBlock());
+        var loadout = new CalculatedLoadout
+        {
+            Slots = new Dictionary<EquipmentSlot, LoadoutVariant>(),
+            Stats = Stats((StatKeys.WeaponDamage("physical"), 100), ("offensiveAbility", 3000))
+        };
+        SkillRotationDefinition RotationWithStrikes(double strikes) => new()
+        {
+            BaseAttacksPerSecond = 1,
+            WeaponDamagePercent = 100,
+            WeaponPoolAttacks =
+            [
+                new WeaponPoolAttackDefinition
+                {
+                    Chance = 100, WeaponDamageMultiplier = 1, WeaponStrikes = strikes
+                }
+            ]
+        };
+
+        var oneWeapon = _simulator.Simulate(character, loadout, Scenario(), RotationWithStrikes(1));
+        var bothWeapons = _simulator.Simulate(character, loadout, Scenario(), RotationWithStrikes(2));
+
+        Assert.Equal(oneWeapon.UnmitigatedDps * 2, bothWeapons.UnmitigatedDps, 8);
     }
 
     [Fact]
@@ -93,7 +139,10 @@ public sealed class CombatSimulatorTests
         EnemyOffensiveAbility = 2800,
         EnemyLifeLeechResistance = 0,
         DurationSeconds = 10,
-        IncomingDamage = new IncomingDamageProfile(1, 1200, 800)
+        IncomingDamage = new IncomingDamageProfile(
+            HitsPerSecond: 1, PhysicalPerHit: 1200, FirePerHit: 800,
+            ColdPerHit: 0, LightningPerHit: 0, AcidPerHit: 0, PiercePerHit: 0,
+            VitalityPerHit: 0, AetherPerHit: 0, ChaosPerHit: 0)
     };
 
     private static SkillRotationDefinition Rotation() => new()

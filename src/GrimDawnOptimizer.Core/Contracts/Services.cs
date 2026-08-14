@@ -42,3 +42,9 @@ public interface IProfileStore
     Task<IReadOnlyList<OptimizationProfile>> LoadAsync(CancellationToken cancellationToken = default);
     Task SaveAsync(IEnumerable<OptimizationProfile> profiles, CancellationToken cancellationToken = default);
 }
+
+public interface ISourceHistoryStore
+{
+    Task<SourceHistorySettings> LoadAsync(CancellationToken cancellationToken = default);
+    Task SaveAsync(SourceHistorySettings settings, CancellationToken cancellationToken = default);
+}
