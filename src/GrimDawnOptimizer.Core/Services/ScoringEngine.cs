@@ -15,21 +15,9 @@ internal sealed class ScoringEngine
         _benchmarks = benchmarks;
     }
 
-    public (IReadOnlyList<double> TierScores, IReadOnlyDictionary<string, double> Violations,
-        IReadOnlyDictionary<string, double> Contributions) Score(
+    public (IReadOnlyList<double> TierScores, IReadOnlyDictionary<string, double> Contributions) Score(
         IReadOnlyDictionary<string, double> metrics)
     {
-        var violations = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in _rules)
-        {
-            var value = metrics.GetValueOrDefault(rule.Key);
-            var step = Math.Max(1e-9, _benchmarks.GetValueOrDefault(rule.Key, 1));
-            if (rule.HardMinimum is { } min && value + 1e-9 < min)
-                violations[rule.Key] = (min - value) / step;
-            if (rule.HardMaximum is { } max && value - 1e-9 > max)
-                violations[rule.Key] = (value - max) / step;
-        }
-
         var score = 0d;
         var contributions = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in _rules)
@@ -43,12 +31,12 @@ internal sealed class ScoringEngine
             score += contribution;
         }
 
-        return (new[] { score }, violations, contributions);
+        return (new[] { score }, contributions);
     }
 
     public double PartialHeuristic(LoadoutResult result)
     {
-        return -result.ConstraintViolations.Values.Sum() * 1000d + result.TierScores.FirstOrDefault();
+        return result.TierScores.FirstOrDefault();
     }
 }
 
@@ -64,12 +52,6 @@ internal sealed class LoadoutResultComparer : IComparer<LoadoutResult>
 
         var validity = y.Loadout.IsValid.CompareTo(x.Loadout.IsValid);
         if (validity != 0) return validity;
-        var feasibility = y.IsFeasible.CompareTo(x.IsFeasible);
-        if (feasibility != 0) return feasibility;
-
-        var violation = x.ConstraintViolations.Values.Sum().CompareTo(y.ConstraintViolations.Values.Sum());
-        if (violation != 0) return violation;
-
         var score = y.TierScores.FirstOrDefault().CompareTo(x.TierScores.FirstOrDefault());
         if (score != 0) return score;
 

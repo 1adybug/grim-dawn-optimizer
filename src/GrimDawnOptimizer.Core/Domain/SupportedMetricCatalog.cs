@@ -2,8 +2,8 @@ namespace GrimDawnOptimizer.Core.Domain;
 
 /// <summary>
 /// The closed set of metrics with a defined combat meaning and normalization
-/// benchmark. UI users may tune weights and optional hard bounds, but may not
-/// invent keys whose units the optimizer cannot interpret safely.
+/// benchmark. UI users may tune weights, but may not invent keys whose units
+/// the optimizer cannot interpret safely.
 /// </summary>
 public static class SupportedMetricCatalog
 {
@@ -42,9 +42,7 @@ public static class SupportedMetricCatalog
                 DisplayName = definition.DisplayName,
                 Description = definition.Description,
                 Weight = saved?.Weight ?? definition.DefaultWeight,
-                Direction = definition.Direction,
-                HardMinimum = saved?.HardMinimum,
-                HardMaximum = saved?.HardMaximum
+                Direction = definition.Direction
             };
         }).ToList();
     }

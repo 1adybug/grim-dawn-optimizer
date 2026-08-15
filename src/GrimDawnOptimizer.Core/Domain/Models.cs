@@ -251,17 +251,13 @@ public sealed class MetricRule
     public string Key { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
-    public int PriorityTier { get; set; } = 1;
     public double Weight { get; set; } = 1;
     public MetricDirection Direction { get; set; } = MetricDirection.Maximize;
-    public double? HardMinimum { get; set; }
-    public double? HardMaximum { get; set; }
-    public double NormalizationStep { get; set; }
 }
 
 public sealed class OptimizationProfile
 {
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
     public string Name { get; set; } = "默认构筑";
     public CombatScenario Scenario { get; set; } = new();
     public SkillRotationDefinition Rotation { get; set; } = new();
@@ -340,9 +336,7 @@ public sealed class LoadoutResult
     public required IReadOnlyList<double> TierScores { get; init; }
     public IReadOnlyDictionary<string, double> ScoreContributions { get; init; } =
         new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-    public required IReadOnlyDictionary<string, double> ConstraintViolations { get; init; }
     public required ConfidenceLevel Confidence { get; init; }
-    public bool IsFeasible => ConstraintViolations.Count == 0 && Loadout.IsValid;
 }
 
 public sealed record SearchProgress(

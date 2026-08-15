@@ -21,7 +21,7 @@ public sealed class ProfileStoreTests
             var loaded = await store.LoadAsync();
 
             Assert.Single(loaded);
-            Assert.Equal(4, loaded[0].SchemaVersion);
+            Assert.Equal(5, loaded[0].SchemaVersion);
             Assert.Equal("火焰测试", loaded[0].Name);
             Assert.Equal(42, loaded[0].Rotation.FlatDamage[StatKeys.DamageFlat("fire")]);
         }
@@ -51,8 +51,8 @@ public sealed class ProfileStoreTests
                 },
                 Metrics =
                 [
-                    new MetricRule { Key = "dps", DisplayName = "DPS", PriorityTier = 1, Weight = 1 },
-                    new MetricRule { Key = "fireResistance", DisplayName = "火抗", PriorityTier = 0, Weight = 1, HardMinimum = 80 }
+                    new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 },
+                    new MetricRule { Key = "fireResistance", DisplayName = "火抗", Weight = 1 }
                 ]
             };
             var store = new JsonProfileStore(path);
@@ -60,7 +60,7 @@ public sealed class ProfileStoreTests
 
             var migrated = Assert.Single(await store.LoadAsync());
 
-            Assert.Equal(4, migrated.SchemaVersion);
+            Assert.Equal(5, migrated.SchemaVersion);
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "fireResistance");
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "resistanceCoverage");
             Assert.Equal(SupportedMetricCatalog.Keys.Count, migrated.Metrics.Count);
@@ -82,7 +82,7 @@ public sealed class ProfileStoreTests
             new MetricRule
             {
                 Key = "dps", DisplayName = "可篡改名称", Description = "可篡改说明",
-                Weight = 2.5, HardMinimum = 50, Direction = MetricDirection.Minimize
+                Weight = 2.5, Direction = MetricDirection.Minimize
             },
             new MetricRule { Key = "unknownMetric", Weight = 999 }
         ]);
@@ -94,7 +94,43 @@ public sealed class ProfileStoreTests
         Assert.Equal("对 BOSS 输出完成度", dps.DisplayName);
         Assert.Equal(MetricDirection.Maximize, dps.Direction);
         Assert.Equal(2.5, dps.Weight);
-        Assert.Equal(50, dps.HardMinimum);
+    }
+
+    [Fact]
+    public async Task LegacyHardBoundsAreIgnoredAndNotSavedAgain()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "gd-optimizer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "profiles.json");
+            await File.WriteAllTextAsync(path, """
+                [
+                  {
+                    "schemaVersion": 4,
+                    "name": "旧硬门槛",
+                    "metrics": [
+                      { "key": "dps", "weight": 2.5, "hardMinimum": 999999 },
+                      { "key": "effectiveHealth", "weight": 1, "hardMaximum": 0 }
+                    ]
+                  }
+                ]
+                """);
+            var store = new JsonProfileStore(path);
+
+            var loaded = Assert.Single(await store.LoadAsync());
+
+            Assert.Equal(5, loaded.SchemaVersion);
+            Assert.Equal(2.5, Assert.Single(loaded.Metrics, x => x.Key == "dps").Weight);
+            await store.SaveAsync([loaded]);
+            var saved = await File.ReadAllTextAsync(path);
+            Assert.DoesNotContain("hardMinimum", saved, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("hardMaximum", saved, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

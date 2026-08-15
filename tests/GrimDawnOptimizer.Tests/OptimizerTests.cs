@@ -61,7 +61,7 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 3, MonteCarloTrials = 500,
-            Metrics = [new MetricRule { Key = "dps", DisplayName = "持续 DPS", PriorityTier = 1, Weight = 1 }]
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "持续 DPS", Weight = 1 }]
         };
 
         var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
@@ -94,7 +94,7 @@ public sealed class OptimizerTests
         {
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
             CurrentPanelDps = 300,
-            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", PriorityTier = 1, Weight = 1 }]
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
 
         var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
@@ -123,7 +123,7 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
-            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", PriorityTier = 1, Weight = 1 }]
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
 
         var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
@@ -132,30 +132,6 @@ public sealed class OptimizerTests
         var result = Assert.Single(run.Results);
         Assert.True(result.EquipmentOnlyUnmitigatedDps > 0);
         Assert.True(result.Simulation.UnmitigatedDps > result.EquipmentOnlyUnmitigatedDps);
-    }
-
-    [Fact]
-    public async Task ImpossibleHardConstraintReturnsMarkedLeastViolationCandidates()
-    {
-        var (character, catalog) = DemoDataFactory.Create();
-        var profile = new OptimizationProfile
-        {
-            SearchBudgetSeconds = 1,
-            ResultCount = 1,
-            MonteCarloTrials = 500,
-            Metrics =
-            [
-                new MetricRule { Key = "fireResistance", DisplayName = "火焰抗性", PriorityTier = 0, HardMinimum = 999, NormalizationStep = 1 },
-                new MetricRule { Key = "dps", DisplayName = "持续 DPS", PriorityTier = 1, Weight = 1 }
-            ]
-        };
-        var optimizer = new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator());
-
-        var run = await optimizer.OptimizeAsync(character, character.Items, catalog.Attachments, catalog, profile);
-
-        Assert.NotEmpty(run.Results);
-        Assert.False(run.Results[0].IsFeasible);
-        Assert.True(run.Results[0].ConstraintViolations["fireResistance"] > 0);
     }
 
     [Fact]

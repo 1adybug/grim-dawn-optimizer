@@ -223,7 +223,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             _simulator.Simulate(character, calculated, profile.Scenario, rotation),
             profile.RuntimeDpsCalibrationFactor);
         var metrics = ExtractMetrics(calculated, simulation);
-        var (tiers, violations, contributions) = scoring.Score(metrics);
+        var (tiers, contributions) = scoring.Score(metrics);
         var confidence = calculated.UnsupportedEffects.Count switch
         {
             0 when calculated.Slots.Values.All(x => x.Item.Seed == 0) => ConfidenceLevel.High,
@@ -239,7 +239,6 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Metrics = metrics,
             TierScores = tiers,
             ScoreContributions = contributions,
-            ConstraintViolations = violations,
             Confidence = confidence
         };
     }

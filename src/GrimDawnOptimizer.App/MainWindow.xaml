@@ -140,11 +140,10 @@
                     <Grid Margin="0,0,0,5">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="2*" />
-                            <ColumnDefinition Width="70" /><ColumnDefinition Width="76" />
+                            <ColumnDefinition Width="70" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="支持属性" Style="{StaticResource Label}" /><TextBlock Grid.Column="1" Text="计算说明" Style="{StaticResource Label}" />
                         <TextBlock Grid.Column="2" Text="权重" Style="{StaticResource Label}" />
-                        <TextBlock Grid.Column="3" Text="最小值" Style="{StaticResource Label}" />
                     </Grid>
                     <ItemsControl ItemsSource="{Binding Metrics}">
                         <ItemsControl.ItemTemplate>
@@ -152,7 +151,7 @@
                                 <Grid Margin="0,0,0,6">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="2*" />
-                                        <ColumnDefinition Width="70" /><ColumnDefinition Width="76" />
+                                        <ColumnDefinition Width="70" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Margin="0,2,8,2">
                                         <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource Text}" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -160,7 +159,6 @@
                                     </StackPanel>
                                     <TextBlock Grid.Column="1" Text="{Binding Description}" Foreground="{StaticResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,2,8,2" />
                                     <TextBox Grid.Column="2" Text="{Binding Weight, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" VerticalAlignment="Center" />
-                                    <TextBox Grid.Column="3" Text="{Binding HardMinimum, UpdateSourceTrigger=PropertyChanged, TargetNullValue=''}" Margin="0,0,5,0" VerticalAlignment="Center" />
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -173,10 +171,6 @@
                             <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}" Margin="0,0,0,3">
                                 <Run Text="权重：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
                                 <Run Text="只调整输出与生存之间的偏好。填 2 表示影响是权重 1 的两倍；属性名称和算法固定，不能增删。" />
-                            </TextBlock>
-                            <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}" Margin="0,0,0,3">
-                                <Run Text="最小值：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
-                                <Run Text="必须达到的硬门槛，例如火抗填 80；留空表示没有硬下限。" />
                             </TextBlock>
                             <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}">
                                 <Run Text="BOSS 基准：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
@@ -283,7 +277,7 @@
                                     <TextBlock Grid.Row="1" Text="{Binding UnmitigatedDps, StringFormat=减伤前 {0}}" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,3,0,0" />
                                     <TextBlock Grid.Row="2" Text="{Binding EquipmentOnlyUnmitigatedDps, StringFormat=无镶嵌 {0}}" Foreground="#E7A16A" FontSize="11" />
                                     <TextBlock Grid.Row="3" Text="{Binding Dps, StringFormat=减伤后 {0}}" Foreground="{StaticResource Accent}" FontSize="17" Margin="0,0,0,1" />
-                                    <TextBlock Grid.Row="4" Text="{Binding Feasibility}" Foreground="{StaticResource Muted}" FontSize="10" />
+                                    <TextBlock Grid.Row="4" Text="{Binding Validity}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -357,8 +351,7 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
-                            <TextBlock Text="约束与置信度提示" Style="{StaticResource SectionTitle}" Margin="0,20,0,8" />
-                            <ItemsControl ItemsSource="{Binding ConstraintRows}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Foreground="#E7A16A" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                            <TextBlock Text="兼容性与置信度提示" Style="{StaticResource SectionTitle}" Margin="0,20,0,8" />
                             <ItemsControl ItemsSource="{Binding WarningRows}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
                         </StackPanel>
                     </ScrollViewer>

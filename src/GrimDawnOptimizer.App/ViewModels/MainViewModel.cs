@@ -509,7 +509,7 @@ public sealed class MainViewModel : ObservableObject
     private void SyncProfile()
     {
         Profile.Metrics = Metrics.ToList();
-        Profile.SchemaVersion = 4;
+        Profile.SchemaVersion = 5;
         ApplySelectedSkillRotation();
         Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 300);
         Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);

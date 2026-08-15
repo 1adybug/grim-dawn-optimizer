@@ -19,8 +19,8 @@ public sealed class ScoringEngineTests
         };
         var rules = new[]
         {
-            new MetricRule { Key = "dps", Weight = 1, PriorityTier = 1 },
-            new MetricRule { Key = "effectiveHealth", Weight = 1, PriorityTier = 99 }
+            new MetricRule { Key = "dps", Weight = 1 },
+            new MetricRule { Key = "effectiveHealth", Weight = 1 }
         };
         var scoring = new ScoringEngine(rules, BossMetricBenchmarkResolver.Resolve(rules, scenario));
 

@@ -31,7 +31,6 @@ public sealed class ResultViewModel
             var candidate = slot == EquipmentSlot.OffHand && usesTwoHands ? "由双手武器占用" : "—（无可用装备）";
             return new SlotResultViewModel(SlotName(slot), currentItem, candidate, string.Empty, "—", currentItem != "—");
         }).ToArray();
-        ConstraintRows = result.ConstraintViolations.Select(x => $"{x.Key} 缺口 {x.Value:0.##} 步").ToArray();
         WarningRows = result.Loadout.UnsupportedEffects.Select(x => $"{x.Description} · {x.Record}")
             .Concat(result.Loadout.ValidationErrors)
             .Concat(character.ImportWarnings)
@@ -52,14 +51,13 @@ public sealed class ResultViewModel
     public string EffectiveHealth => FormatNumber(Model.Simulation.EffectiveHealth);
     public string TimeToDeath => double.IsPositiveInfinity(Model.Simulation.TimeToDeathSeconds) ? "∞" : $"{Model.Simulation.TimeToDeathSeconds:0.0}s";
     public string Confidence => Model.Confidence switch { ConfidenceLevel.High => "高置信度", ConfidenceLevel.Medium => "中置信度", _ => "低置信度" };
-    public string Feasibility => Model.IsFeasible ? "满足全部约束" : $"{Model.ConstraintViolations.Count} 项约束未满足";
+    public string Validity => Model.Loadout.IsValid ? "配装合法" : "配装存在兼容性问题";
     public string MonteCarloRange => Model.Simulation.MonteCarloDpsHigh95 > 0
         ? $"95% · {FormatNumber(Model.Simulation.MonteCarloDpsLow95)} – {FormatNumber(Model.Simulation.MonteCarloDpsHigh95)}"
         : "等待抽样复核";
     public string ScoreSummary => $"最终权重得分：{Model.TierScores.FirstOrDefault():0.000}";
     public string ScoreBreakdown { get; }
     public IReadOnlyList<SlotResultViewModel> SlotRows { get; }
-    public IReadOnlyList<string> ConstraintRows { get; }
     public IReadOnlyList<string> WarningRows { get; }
 
     private static string FormatNumber(double value) => double.IsPositiveInfinity(value) ? "∞" : value switch

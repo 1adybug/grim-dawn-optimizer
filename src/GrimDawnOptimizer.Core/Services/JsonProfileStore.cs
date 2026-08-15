@@ -20,7 +20,7 @@ public sealed class JsonProfileStore : IProfileStore
             await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
             var profiles = await JsonSerializer.DeserializeAsync<List<OptimizationProfile>>(stream, _options, cancellationToken);
             if (profiles is not { Count: > 0 }) return [new OptimizationProfile()];
-            var supported = profiles.Where(x => x.SchemaVersion is 1 or 2 or 3 or 4).Select(Migrate).ToArray();
+            var supported = profiles.Where(x => x.SchemaVersion is >= 1 and <= 5).Select(Migrate).ToArray();
             return supported.Length > 0 ? supported : [new OptimizationProfile()];
         }
         catch (JsonException)
@@ -44,19 +44,10 @@ public sealed class JsonProfileStore : IProfileStore
 
     private static OptimizationProfile Migrate(OptimizationProfile profile)
     {
-        if (profile.SchemaVersion == 1)
-        {
-            // The old default used three tier-0 resistance gates. Remove only
-            // that exact legacy shape before the fixed catalog is merged.
-            profile.Metrics.RemoveAll(rule =>
-                rule.PriorityTier == 0 && rule.HardMinimum == 80 && Math.Abs(rule.Weight - 1) < 1e-9 &&
-                rule.Key is "fireResistance" or "coldResistance" or "lightningResistance");
-        }
-
         if (profile.SchemaVersion < 4 && IsLegacyNarrowIncoming(profile.Scenario.IncomingDamage))
             profile.Scenario.IncomingDamage = new IncomingDamageProfile();
         profile.Metrics = SupportedMetricCatalog.Merge(profile.Metrics);
-        profile.SchemaVersion = 4;
+        profile.SchemaVersion = 5;
         return profile;
     }
 
