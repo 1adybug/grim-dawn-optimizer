@@ -44,7 +44,7 @@ public sealed class SaveReader : ISaveReader
                     .Cast<ItemInstance>()
                     .ToArray();
                 if (converted.Length > 0)
-                    warnings.Add("装备 Seed 会在游戏内固定实际浮动值，但该映射算法未公开；未填写当前面板 DPS 时按数据库期望值计算。");
+                    warnings.Add("装备 Seed 会在游戏内固定实际浮动值，但该映射算法未公开；运行优化前必须输入武器攻击 DPS 和当前所选主攻技能 DPS 进行分段校准。");
                 var ownedAttachments = BuildOwnedAttachments(allItems.Select(x => x.Item), catalog);
                 var current = converted.Where(x => x.Source.Kind == ItemSourceKind.Equipped)
                     .Select(x => (Item: x, Slot: raw.Items.FirstOrDefault(r => r.Seed == x.Seed && r.BaseRecord == x.BaseRecord)?.EquippedSlot))

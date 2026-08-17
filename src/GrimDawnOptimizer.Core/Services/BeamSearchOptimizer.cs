@@ -42,6 +42,15 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         IProgress<SearchProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (!double.IsFinite(profile.CurrentWeaponAttackDps) || profile.CurrentWeaponAttackDps is <= 0 or > 10_000_000)
+            throw new ArgumentOutOfRangeException(
+                nameof(profile),
+                "武器攻击 DPS 为必填项，且必须是大于 0 的有效数值。");
+        if (!double.IsFinite(profile.CurrentPanelDps) || profile.CurrentPanelDps is <= 0 or > 10_000_000)
+            throw new ArgumentOutOfRangeException(
+                nameof(profile),
+                "当前主攻技能 DPS 为必填项，且必须是大于 0 的有效数值。");
+
         var watch = Stopwatch.StartNew();
         var budget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds, 1, 300));
         var resultCount = Math.Clamp(profile.ResultCount, 1, 50);
@@ -55,10 +64,17 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         var currentCalculated = _statEngine.Calculate(character, currentSlots, catalog);
         var currentRotation = ResolveRotation(character, catalog, profile, currentSlots);
         var currentSimulation = _simulator.Simulate(character, currentCalculated, profile.Scenario, currentRotation);
-        profile.RuntimeDpsCalibrationFactor = profile.CurrentPanelDps > 0 && currentSimulation.UnmitigatedDps > 0
-            ? Math.Clamp(profile.CurrentPanelDps / currentSimulation.UnmitigatedDps, 0.5, 2)
-            : 1;
-        currentSimulation = ApplyDpsCalibration(currentSimulation, profile.RuntimeDpsCalibrationFactor);
+        var currentWeaponSimulation = _simulator.Simulate(
+            character,
+            currentCalculated,
+            profile.Scenario,
+            ResolveWeaponAttackRotation(character, catalog, currentSlots));
+        if (currentSimulation.UnmitigatedDps <= 0)
+            throw new InvalidOperationException("当前配装无法计算出有效的未计抗性 DPS，不能应用面板校准。");
+        if (currentWeaponSimulation.UnmitigatedDps <= 0)
+            throw new InvalidOperationException("当前配装无法计算出有效的武器攻击 DPS，不能应用面板校准。");
+        ConfigureDpsCalibration(profile, currentSimulation.UnmitigatedDps, currentWeaponSimulation.UnmitigatedDps);
+        currentSimulation = ApplyDpsCalibration(currentSimulation, currentWeaponSimulation, profile);
         var currentMetrics = ExtractMetrics(currentCalculated, currentSimulation);
         var benchmarks = BossMetricBenchmarkResolver.Resolve(profile.Metrics, profile.Scenario, currentMetrics);
         var scoring = new ScoringEngine(profile.Metrics, benchmarks);
@@ -179,9 +195,17 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
                 x => new LoadoutVariant(x.Value.Item, null, null));
             var equipmentOnlyLoadout = _statEngine.Calculate(character, equipmentOnlySlots, catalog);
             var equipmentOnlyRotation = ResolveRotation(character, catalog, profile, equipmentOnlySlots);
+            var equipmentOnlyRaw = _simulator.Simulate(
+                character, equipmentOnlyLoadout, profile.Scenario, equipmentOnlyRotation);
+            var equipmentOnlyWeaponRaw = _simulator.Simulate(
+                character,
+                equipmentOnlyLoadout,
+                profile.Scenario,
+                ResolveWeaponAttackRotation(character, catalog, equipmentOnlySlots));
             var equipmentOnlySimulation = ApplyDpsCalibration(
-                _simulator.Simulate(character, equipmentOnlyLoadout, profile.Scenario, equipmentOnlyRotation),
-                profile.RuntimeDpsCalibrationFactor);
+                equipmentOnlyRaw,
+                equipmentOnlyWeaponRaw,
+                profile);
             result.EquipmentOnlyUnmitigatedDps = equipmentOnlySimulation.UnmitigatedDps;
         }
 
@@ -196,7 +220,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             results[i].Simulation = await _simulator.RunMonteCarloAsync(
                 character, results[i].Loadout, profile.Scenario, finalRotation,
                 Math.Clamp(profile.MonteCarloTrials, 500, 10_000), seed, cancellationToken);
-            results[i].Simulation = ApplyDpsCalibration(results[i].Simulation, profile.RuntimeDpsCalibrationFactor);
+            var finalWeaponSimulation = _simulator.Simulate(
+                character,
+                results[i].Loadout,
+                profile.Scenario,
+                ResolveWeaponAttackRotation(character, catalog, results[i].Loadout.Slots));
+            results[i].Simulation = ApplyDpsCalibration(results[i].Simulation, finalWeaponSimulation, profile);
         }
 
         watch.Stop();
@@ -219,9 +248,16 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     {
         var calculated = _statEngine.Calculate(character, slots, catalog);
         var rotation = ResolveRotation(character, catalog, profile, slots);
+        var rawSimulation = _simulator.Simulate(character, calculated, profile.Scenario, rotation);
+        var rawWeaponSimulation = _simulator.Simulate(
+            character,
+            calculated,
+            profile.Scenario,
+            ResolveWeaponAttackRotation(character, catalog, slots));
         var simulation = ApplyDpsCalibration(
-            _simulator.Simulate(character, calculated, profile.Scenario, rotation),
-            profile.RuntimeDpsCalibrationFactor);
+            rawSimulation,
+            rawWeaponSimulation,
+            profile);
         var metrics = ExtractMetrics(calculated, simulation);
         var (tiers, contributions) = scoring.Score(metrics);
         var confidence = calculated.UnsupportedEffects.Count switch
@@ -736,7 +772,55 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return result;
     }
 
-    private static SimulationReport ApplyDpsCalibration(SimulationReport report, double factor)
+    private static void ConfigureDpsCalibration(
+        OptimizationProfile profile,
+        double currentSkillDps,
+        double currentWeaponDps)
+    {
+        profile.RuntimeWeaponDpsCalibrationFactor = Math.Clamp(
+            profile.CurrentWeaponAttackDps / currentWeaponDps,
+            0.5,
+            2);
+
+        var rawSkillAddedDps = currentSkillDps - currentWeaponDps;
+        var panelSkillAddedDps = profile.CurrentPanelDps - profile.CurrentWeaponAttackDps;
+        if (Math.Abs(rawSkillAddedDps) < 1e-9)
+        {
+            var tolerance = Math.Max(1, profile.CurrentPanelDps * 0.005);
+            if (Math.Abs(panelSkillAddedDps) > tolerance)
+                throw new InvalidOperationException("当前选择为默认武器攻击时，两项面板 DPS 应填写相同数值。");
+            profile.RuntimeSkillAddedDpsCalibrationFactor = profile.RuntimeWeaponDpsCalibrationFactor;
+        }
+        else
+        {
+            if (rawSkillAddedDps * panelSkillAddedDps <= 0)
+                throw new InvalidOperationException("主攻技能 DPS 与武器攻击 DPS 的关系不符合当前技能，请核对两个输入值和所选主攻技能。");
+            profile.RuntimeSkillAddedDpsCalibrationFactor = Math.Clamp(
+                panelSkillAddedDps / rawSkillAddedDps,
+                0.5,
+                2);
+        }
+
+        profile.RuntimeDpsCalibrationFactor = Math.Clamp(
+            profile.CurrentPanelDps / currentSkillDps,
+            0.5,
+            2);
+    }
+
+    private static SimulationReport ApplyDpsCalibration(
+        SimulationReport report,
+        SimulationReport weaponReport,
+        OptimizationProfile profile)
+    {
+        if (report.UnmitigatedDps <= 0) return report;
+        var calibratedSheetDps =
+            weaponReport.UnmitigatedDps * profile.RuntimeWeaponDpsCalibrationFactor +
+            (report.UnmitigatedDps - weaponReport.UnmitigatedDps) * profile.RuntimeSkillAddedDpsCalibrationFactor;
+        var factor = Math.Max(0, calibratedSheetDps) / report.UnmitigatedDps;
+        return ScaleDps(report, factor);
+    }
+
+    private static SimulationReport ScaleDps(SimulationReport report, double factor)
     {
         if (Math.Abs(factor - 1) < 1e-9) return report;
         return new SimulationReport
@@ -784,6 +868,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             x.Record.Equals(profile.Rotation.MainSkillRecord, StringComparison.OrdinalIgnoreCase));
         return SkillRotationFactory.Build(character, catalog, selected, slots);
     }
+
+    private static SkillRotationDefinition ResolveWeaponAttackRotation(
+        CharacterSnapshot character,
+        GameDataCatalog catalog,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
+        SkillRotationFactory.Build(character, catalog, null, slots);
 
     private static List<BeamState> SelectDiverseBeam(IReadOnlyList<BeamState> states, int beamWidth)
     {

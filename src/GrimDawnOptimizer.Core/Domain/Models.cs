@@ -266,9 +266,16 @@ public sealed class OptimizationProfile
     public int ResultCount { get; set; } = 10;
     public int MonteCarloTrials { get; set; } = 2000;
     public bool UseUnlockedAttachments { get; set; } = true;
+    [JsonIgnore]
+    public double CurrentWeaponAttackDps { get; set; }
+    [JsonIgnore]
     public double CurrentPanelDps { get; set; }
     [JsonIgnore]
     public double RuntimeDpsCalibrationFactor { get; set; } = 1;
+    [JsonIgnore]
+    public double RuntimeWeaponDpsCalibrationFactor { get; set; } = 1;
+    [JsonIgnore]
+    public double RuntimeSkillAddedDpsCalibrationFactor { get; set; } = 1;
 }
 
 public sealed class LoadoutVariant(ItemInstance item, AttachmentDefinition? component, AttachmentDefinition? augment)

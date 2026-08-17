@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using GrimDawnOptimizer.Core.Contracts;
@@ -26,6 +27,8 @@ public sealed class MainViewModel : ObservableObject
     private ResultViewModel? _selectedResult;
     private string _status = "正在发现游戏与存档…";
     private string _searchStats = "尚未运行";
+    private string _currentWeaponAttackDpsInput = string.Empty;
+    private string _currentPanelDpsInput = string.Empty;
     private bool _isBusy;
     private double _progressValue;
     private CancellationTokenSource? _cancellation;
@@ -42,7 +45,12 @@ public sealed class MainViewModel : ObservableObject
 
         DiscoverCommand = new AsyncRelayCommand(DiscoverAsync, () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSelectedAsync, () => !IsBusy && SelectedInstallation is not null && SelectedSaveLocation is not null);
-        OptimizeCommand = new AsyncRelayCommand(OptimizeAsync, () => !IsBusy && SelectedCharacter is not null && SelectedCharacter.Items.Count > 0);
+        OptimizeCommand = new AsyncRelayCommand(OptimizeAsync, () =>
+            !IsBusy &&
+            SelectedCharacter is not null &&
+            SelectedCharacter.Items.Count > 0 &&
+            IsCurrentWeaponAttackDpsValid &&
+            IsCurrentPanelDpsValid);
         DemoCommand = new RelayCommand(_ => LoadDemo(), _ => !IsBusy);
         CancelCommand = new RelayCommand(_ => _cancellation?.Cancel(), _ => IsBusy);
         DeleteGameDirectoryCommand = new RelayCommand(DeleteGameDirectory, x => x is GameInstallation);
@@ -102,6 +110,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _selectedCharacter, value)) return;
+            ResetCurrentPanelDps();
             ActiveSkills.Clear();
             if (value is not null && _catalog is not null)
             {
@@ -136,6 +145,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _selectedSkill, value)) return;
+            ResetCurrentPanelDps();
             ApplySelectedSkillRotation();
             OnPropertyChanged(nameof(BuildFoundationSummary));
         }
@@ -153,6 +163,7 @@ public sealed class MainViewModel : ObservableObject
         private set
         {
             if (!SetProperty(ref _profile, value)) return;
+            ResetCurrentPanelDps();
             Metrics.Clear();
             foreach (var metric in value.Metrics) Metrics.Add(metric);
         }
@@ -160,6 +171,42 @@ public sealed class MainViewModel : ObservableObject
 
     public string Status { get => _status; private set => SetProperty(ref _status, value); }
     public string SearchStats { get => _searchStats; private set => SetProperty(ref _searchStats, value); }
+    public string CurrentWeaponAttackDpsInput
+    {
+        get => _currentWeaponAttackDpsInput;
+        set
+        {
+            if (!SetProperty(ref _currentWeaponAttackDpsInput, value)) return;
+            Profile.CurrentWeaponAttackDps = TryParseRequiredDps(value, out var dps) ? dps : 0;
+            OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsValid));
+            OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsInvalid));
+            OnPropertyChanged(nameof(CurrentWeaponAttackDpsValidationMessage));
+            RefreshCommands();
+        }
+    }
+    public bool IsCurrentWeaponAttackDpsValid => TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
+    public bool IsCurrentWeaponAttackDpsInvalid => !IsCurrentWeaponAttackDpsValid;
+    public string CurrentWeaponAttackDpsValidationMessage => RequiredDpsValidationMessage(
+        CurrentWeaponAttackDpsInput,
+        "必须输入游戏面板中的武器攻击 DPS。");
+    public string CurrentPanelDpsInput
+    {
+        get => _currentPanelDpsInput;
+        set
+        {
+            if (!SetProperty(ref _currentPanelDpsInput, value)) return;
+            Profile.CurrentPanelDps = TryParseRequiredDps(value, out var dps) ? dps : 0;
+            OnPropertyChanged(nameof(IsCurrentPanelDpsValid));
+            OnPropertyChanged(nameof(IsCurrentPanelDpsInvalid));
+            OnPropertyChanged(nameof(CurrentPanelDpsValidationMessage));
+            RefreshCommands();
+        }
+    }
+    public bool IsCurrentPanelDpsValid => TryParseRequiredDps(CurrentPanelDpsInput, out _);
+    public bool IsCurrentPanelDpsInvalid => !IsCurrentPanelDpsValid;
+    public string CurrentPanelDpsValidationMessage => RequiredDpsValidationMessage(
+        CurrentPanelDpsInput,
+        "必须输入当前所选主攻技能的游戏面板 DPS。");
     public bool IsBusy
     {
         get => _isBusy;
@@ -457,12 +504,20 @@ public sealed class MainViewModel : ObservableObject
         Characters.Clear();
         Characters.Add(character);
         SelectedCharacter = character;
-        Status = "已载入脱敏演示装备池；可直接运行优化";
+        Status = "已载入脱敏演示装备池；输入两项面板 DPS 测试值后可运行优化";
     }
 
     private async Task OptimizeAsync()
     {
         if (SelectedCharacter is null || _catalog is null) return;
+        if (!TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps) ||
+            !TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps))
+        {
+            Status = "请先输入武器攻击 DPS 和当前主攻技能 DPS";
+            return;
+        }
+        Profile.CurrentWeaponAttackDps = weaponAttackDps;
+        Profile.CurrentPanelDps = panelDps;
         IsBusy = true;
         Results.Clear();
         SelectedResult = null;
@@ -495,8 +550,9 @@ public sealed class MainViewModel : ObservableObject
             foreach (var result in run.Results) Results.Add(new ResultViewModel(result, SelectedCharacter, Profile.Metrics));
             SelectedResult = Results.FirstOrDefault();
             SearchStats = $"{run.EvaluatedCandidates:N0} 次评估 · {run.Elapsed.TotalSeconds:0.0}s · {run.Iterations} 轮";
-            var calibration = Math.Abs(Profile.RuntimeDpsCalibrationFactor - 1) > 0.0005
-                ? $"；面板 DPS 校准 ×{Profile.RuntimeDpsCalibrationFactor:0.000}"
+            var calibration = Math.Abs(Profile.RuntimeWeaponDpsCalibrationFactor - 1) > 0.0005 ||
+                              Math.Abs(Profile.RuntimeSkillAddedDpsCalibrationFactor - 1) > 0.0005
+                ? $"；武器校准 ×{Profile.RuntimeWeaponDpsCalibrationFactor:0.000}，技能附加校准 ×{Profile.RuntimeSkillAddedDpsCalibrationFactor:0.000}"
                 : string.Empty;
             Status = $"{run.StopReason}{calibration}；存档哈希保持不变";
             ProgressValue = 100;
@@ -514,7 +570,8 @@ public sealed class MainViewModel : ObservableObject
         Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 300);
         Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);
         Profile.MonteCarloTrials = Math.Clamp(Profile.MonteCarloTrials, 500, 10_000);
-        Profile.CurrentPanelDps = Math.Clamp(Profile.CurrentPanelDps, 0, 10_000_000);
+        Profile.CurrentWeaponAttackDps = TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps) ? weaponAttackDps : 0;
+        Profile.CurrentPanelDps = TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps) ? panelDps : 0;
     }
 
     private void ApplySelectedSkillRotation()
@@ -523,6 +580,37 @@ public sealed class MainViewModel : ObservableObject
         Profile.Rotation = SkillRotationFactory.Build(SelectedCharacter, _catalog, SelectedSkill);
         OnPropertyChanged(nameof(Profile));
     }
+
+    private void ResetCurrentPanelDps()
+    {
+        Profile.CurrentWeaponAttackDps = 0;
+        Profile.CurrentPanelDps = 0;
+        _currentWeaponAttackDpsInput = string.Empty;
+        _currentPanelDpsInput = string.Empty;
+        OnPropertyChanged(nameof(CurrentWeaponAttackDpsInput));
+        OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsValid));
+        OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsInvalid));
+        OnPropertyChanged(nameof(CurrentWeaponAttackDpsValidationMessage));
+        OnPropertyChanged(nameof(CurrentPanelDpsInput));
+        OnPropertyChanged(nameof(IsCurrentPanelDpsValid));
+        OnPropertyChanged(nameof(IsCurrentPanelDpsInvalid));
+        OnPropertyChanged(nameof(CurrentPanelDpsValidationMessage));
+        OptimizeCommand.RaiseCanExecuteChanged();
+    }
+
+    private static bool TryParseRequiredDps(string? input, out double dps) =>
+        double.TryParse(
+            input,
+            NumberStyles.Float | NumberStyles.AllowThousands,
+            CultureInfo.CurrentCulture,
+            out dps) &&
+        double.IsFinite(dps) &&
+        dps is > 0 and <= 10_000_000;
+
+    private static string RequiredDpsValidationMessage(string? input, string missingMessage) =>
+        string.IsNullOrWhiteSpace(input)
+            ? missingMessage
+            : "请输入大于 0 且不超过 10,000,000 的有效数值。";
 
     private static int ResolveGrantedSkillLevel(
         CharacterSnapshot character,

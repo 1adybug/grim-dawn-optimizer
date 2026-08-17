@@ -32,6 +32,36 @@ public sealed class ProfileStoreTests
     }
 
     [Fact]
+    public async Task CurrentPanelDpsIsSessionOnlyAndIsNotPersisted()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "gd-optimizer-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var path = Path.Combine(root, "profiles.json");
+            var profile = new OptimizationProfile
+            {
+                CurrentWeaponAttackDps = 1_234,
+                CurrentPanelDps = 4_321
+            };
+            var store = new JsonProfileStore(path);
+
+            await store.SaveAsync([profile]);
+
+            var json = await File.ReadAllTextAsync(path);
+            var loaded = Assert.Single(await store.LoadAsync());
+            Assert.DoesNotContain("CurrentWeaponAttackDps", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("CurrentPanelDps", json, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(0, loaded.CurrentWeaponAttackDps);
+            Assert.Equal(0, loaded.CurrentPanelDps);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task LegacyTierProfileMigratesToWeightedResistanceCoverage()
     {
         var root = Path.Combine(Path.GetTempPath(), "gd-optimizer-tests", Guid.NewGuid().ToString("N"));

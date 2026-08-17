@@ -14,7 +14,9 @@ public sealed class OptimizerTests
         {
             SearchBudgetSeconds = 1,
             ResultCount = 3,
-            MonteCarloTrials = 500
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 1_000,
+            CurrentPanelDps = 1_000
         };
         var optimizer = new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator());
 
@@ -53,6 +55,7 @@ public sealed class OptimizerTests
             Name = "test", SaveFilePath = "test.gdc", Level = 100,
             Physique = 1000, Cunning = 1000, Spirit = 1000,
             Items = [itemA, itemB],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string> { [EquipmentSlot.MainHand] = itemA.Id },
             BaselineStats = new StatBlock(new Dictionary<string, double>
             {
                 ["health"] = 10_000, ["offensiveAbility"] = 3000, ["defensiveAbility"] = 2800
@@ -61,6 +64,8 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 3, MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 100,
+            CurrentPanelDps = 100,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "持续 DPS", Weight = 1 }]
         };
 
@@ -93,6 +98,7 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 300,
             CurrentPanelDps = 300,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
@@ -102,6 +108,77 @@ public sealed class OptimizerTests
 
         Assert.Equal(300, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
         Assert.NotEqual(1, profile.RuntimeDpsCalibrationFactor);
+        Assert.NotEqual(1, profile.RuntimeWeaponDpsCalibrationFactor);
+    }
+
+    [Fact]
+    public async Task WeaponAndSkillPanelDpsCalibrateSeparateDamageParts()
+    {
+        const string skillRecord = "records/skills/test/two-anchor-attack.dbr";
+        var item = Item("equipped-weapon", 100);
+        var skill = new CharacterSkill(skillRecord, "双锚点攻击", 1, 0, true, "", "");
+        var character = new CharacterSnapshot
+        {
+            Name = "test", SaveFilePath = "test.gdc", Level = 10,
+            Physique = 100, Cunning = 100, Spirit = 100,
+            Skills = [skill],
+            Items = [item],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string> { [EquipmentSlot.MainHand] = item.Id },
+            BaselineStats = new StatBlock(new Dictionary<string, double>
+            {
+                ["health"] = 1000, ["offensiveAbility"] = 1000, ["defensiveAbility"] = 1000
+            })
+        };
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [skillRecord] = new GameRecord
+                {
+                    RecordName = skillRecord,
+                    RecordType = "Skill_WeaponPool_BasicAttack",
+                    TextValues = new Dictionary<string, IReadOnlyList<string>>
+                    {
+                        ["Class"] = ["Skill_WeaponPool_BasicAttack"]
+                    },
+                    NumericSeries = new Dictionary<string, IReadOnlyList<double>>
+                    {
+                        ["weaponDamagePct"] = [200]
+                    }
+                }
+            }
+        };
+        var slots = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(item, null, null)
+        };
+        var engine = new CharacterStatEngine();
+        var simulator = new CombatSimulator();
+        var loadout = engine.Calculate(character, slots, catalog);
+        var rawWeaponDps = simulator.Simulate(
+            character, loadout, new CombatScenario(), SkillRotationFactory.Build(character, catalog, null, slots)).UnmitigatedDps;
+        var rawSkillDps = simulator.Simulate(
+            character, loadout, new CombatScenario(), SkillRotationFactory.Build(character, catalog, skill, slots)).UnmitigatedDps;
+        Assert.True(rawSkillDps > rawWeaponDps);
+        var panelWeaponDps = rawWeaponDps * 1.1;
+        var panelSkillDps = panelWeaponDps + (rawSkillDps - rawWeaponDps) * 1.2;
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = panelWeaponDps,
+            CurrentPanelDps = panelSkillDps,
+            Rotation = new SkillRotationDefinition { MainSkillRecord = skillRecord },
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+
+        var run = await new BeamSearchOptimizer(engine, simulator)
+            .OptimizeAsync(character, character.Items, [], catalog, profile);
+
+        Assert.Equal(panelSkillDps, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
+        Assert.Equal(1.1, profile.RuntimeWeaponDpsCalibrationFactor, 6);
+        Assert.Equal(1.2, profile.RuntimeSkillAddedDpsCalibrationFactor, 6);
     }
 
     [Fact]
@@ -123,6 +200,8 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 100,
+            CurrentPanelDps = 100,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
 
@@ -158,7 +237,9 @@ public sealed class OptimizerTests
         {
             SearchBudgetSeconds = 1,
             ResultCount = 1,
-            MonteCarloTrials = 500
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 1_000,
+            CurrentPanelDps = 1_000
         };
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var watch = Stopwatch.StartNew();
@@ -169,6 +250,28 @@ public sealed class OptimizerTests
         watch.Stop();
         Assert.NotEmpty(run.Results);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"耗时 {watch.Elapsed}");
+    }
+
+    [Theory]
+    [InlineData(0, 100)]
+    [InlineData(100, 0)]
+    public async Task SearchRejectsEitherMissingDpsCalibrationInput(double weaponDps, double skillDps)
+    {
+        var (character, catalog) = DemoDataFactory.Create();
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = weaponDps,
+            CurrentPanelDps = skillDps
+        };
+        var optimizer = new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator());
+
+        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            optimizer.OptimizeAsync(character, character.Items, catalog.Attachments, catalog, profile));
+
+        Assert.Contains("DPS 为必填项", exception.Message);
     }
 
     [Fact]
