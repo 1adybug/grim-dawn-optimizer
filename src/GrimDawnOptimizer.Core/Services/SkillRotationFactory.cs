@@ -18,7 +18,7 @@ public static class SkillRotationFactory
         if (selectedSkill is null ||
             string.IsNullOrWhiteSpace(selectedSkill.Record) ||
             !catalog.Records.TryGetValue(selectedSkill.Record, out var mainRecord))
-            return Fallback(character, catalog, selectedSkill);
+            return Fallback(character, catalog, selectedSkill, equippedVariants);
 
         var baseLevel = Math.Max(1, Math.Max(selectedSkill.Level, selectedSkill.DevotionLevel));
         var itemSkillBonus = ResolveCurrentSkillBonus(character, catalog, selectedSkill.Record, equippedVariants);
@@ -114,9 +114,10 @@ public static class SkillRotationFactory
     private static SkillRotationDefinition Fallback(
         CharacterSnapshot character,
         GameDataCatalog catalog,
-        CharacterSkill? selectedSkill)
+        CharacterSkill? selectedSkill,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>? equippedVariants)
     {
-        var (chance, multiplier, flat, attacks) = ResolveWeaponPool(character, catalog, string.Empty, null);
+        var (chance, multiplier, flat, attacks) = ResolveWeaponPool(character, catalog, string.Empty, equippedVariants);
         return new SkillRotationDefinition
         {
             MainSkillRecord = selectedSkill?.Record ?? string.Empty,
@@ -180,6 +181,7 @@ public static class SkillRotationFactory
         var multiplierBonus = 0d;
         var weightedFlat = new StatBlock();
         var attacks = new List<WeaponPoolAttackDefinition>();
+        var dualWieldEquipped = IsDualWieldEquipped(character, equippedVariants);
         var learned = character.Skills.Where(x => x.Level > 0 &&
                      !x.Record.Equals(selectedRecord, StringComparison.OrdinalIgnoreCase) &&
                      !x.Record.Contains("/default/", StringComparison.OrdinalIgnoreCase))
@@ -200,7 +202,7 @@ public static class SkillRotationFactory
             if (weaponDamage <= 0) weaponDamage = 100;
             multiplierBonus += fraction * (weaponDamage / 100d - 1);
             var flat = GameStatTranslator.TranslateAtLevel(record, level);
-            var strikes = UsesBothWeapons(record, character, catalog) ? 2d : 1d;
+            var strikes = UsesBothWeapons(record, dualWieldEquipped, catalog) ? 2d : 1d;
             attacks.Add(new WeaponPoolAttackDefinition
             {
                 Record = skill.Record,
@@ -236,10 +238,13 @@ public static class SkillRotationFactory
         }
     }
 
-    private static bool UsesBothWeapons(GameRecord record, CharacterSnapshot character, GameDataCatalog catalog)
+    private static bool UsesBothWeapons(GameRecord record, bool dualWieldEquipped, GameDataCatalog catalog)
     {
-        if (!character.CanDualWield) return false;
-        var path = record.RecordName.Replace('\\', '/');
+        if (!dualWieldEquipped) return false;
+        // A weapon-pool technique replaces the normal 25/25/50 hand selection
+        // and executes its dual-wield animation with both equipped weapons.
+        // Some localized descriptions omit that implementation detail.
+        if (RecordClass(record).Contains("WPAttack", StringComparison.OrdinalIgnoreCase)) return true;
         var descriptionTag = record.Text("skillBaseDescription");
         if (string.IsNullOrWhiteSpace(descriptionTag)) descriptionTag = record.Text("skillDescription");
         var description = catalog.Tags.GetValueOrDefault(descriptionTag, descriptionTag);
@@ -247,6 +252,24 @@ public static class SkillRotationFactory
                description.Contains("双手武器", StringComparison.OrdinalIgnoreCase) ||
                description.Contains("both weapons", StringComparison.OrdinalIgnoreCase) ||
                description.Contains("main hand and offhand", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDualWieldEquipped(
+        CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>? equippedVariants)
+    {
+        if (!character.CanDualWield) return false;
+        if (equippedVariants is not null)
+            return equippedVariants.TryGetValue(EquipmentSlot.MainHand, out var main) &&
+                   equippedVariants.TryGetValue(EquipmentSlot.OffHand, out var off) &&
+                   main.Item.Slot == EquipmentSlot.MainHand && off.Item.Slot == EquipmentSlot.MainHand;
+
+        if (!character.CurrentLoadout.TryGetValue(EquipmentSlot.MainHand, out var mainId) ||
+            !character.CurrentLoadout.TryGetValue(EquipmentSlot.OffHand, out var offId))
+            return false;
+        var mainItem = character.Items.FirstOrDefault(x => x.Id == mainId);
+        var offItem = character.Items.FirstOrDefault(x => x.Id == offId);
+        return mainItem?.Slot == EquipmentSlot.MainHand && offItem?.Slot == EquipmentSlot.MainHand;
     }
 
     private static int ResolveCurrentSkillBonus(

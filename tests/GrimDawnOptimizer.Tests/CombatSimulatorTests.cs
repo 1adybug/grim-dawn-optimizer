@@ -76,7 +76,7 @@ public sealed class CombatSimulatorTests
     }
 
     [Fact]
-    public void WeaponPoolDefinitionControlsWhetherOneOrBothWeaponsStrike()
+    public void WeaponPoolAffectsCombatDpsButNotTargetFreeSheetDps()
     {
         var character = Character(new StatBlock());
         var loadout = new CalculatedLoadout
@@ -100,7 +100,31 @@ public sealed class CombatSimulatorTests
         var oneWeapon = _simulator.Simulate(character, loadout, Scenario(), RotationWithStrikes(1));
         var bothWeapons = _simulator.Simulate(character, loadout, Scenario(), RotationWithStrikes(2));
 
-        Assert.Equal(oneWeapon.UnmitigatedDps * 2, bothWeapons.UnmitigatedDps, 8);
+        Assert.Equal(oneWeapon.UnmitigatedDps, bothWeapons.UnmitigatedDps, 8);
+        Assert.Equal(oneWeapon.ExpectedDps * 2, bothWeapons.ExpectedDps, 8);
+    }
+
+    [Fact]
+    public void WeaponSpeedFactorIsAppliedBeforeTheFinalSpeedCap()
+    {
+        var character = Character(new StatBlock());
+        var loadout = new CalculatedLoadout
+        {
+            Slots = new Dictionary<EquipmentSlot, LoadoutVariant>(),
+            Stats = Stats(
+                (StatKeys.WeaponDamage("physical"), 100),
+                ("offensiveAbility", 3000),
+                ("attackSpeed", 27),
+                ("weaponAttackSpeedFactor", 0.795))
+        };
+
+        var report = _simulator.Simulate(character, loadout, Scenario(), new SkillRotationDefinition
+        {
+            BaseAttacksPerSecond = 1.5,
+            WeaponDamagePercent = 100
+        });
+
+        Assert.Equal(100 * 1.5 * 0.795 * 1.27, report.UnmitigatedDps, 8);
     }
 
     [Fact]

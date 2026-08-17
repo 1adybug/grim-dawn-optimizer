@@ -128,7 +128,10 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         var offHandIsWeapon = offHand?.Item.Slot == EquipmentSlot.MainHand;
         var mainBaseSpeed = mainHand?.CombinedStats["weaponBaseAttackSpeed"] ?? 0;
         var offBaseSpeed = offHandIsWeapon ? offHand!.CombinedStats["weaponBaseAttackSpeed"] : 0;
-        stats.Set("weaponBaseAttackSpeed", offHandIsWeapon ? (mainBaseSpeed + offBaseSpeed) / 2d : mainBaseSpeed);
+        var weaponBaseSpeed = offHandIsWeapon ? (mainBaseSpeed + offBaseSpeed) / 2d : mainBaseSpeed;
+        var internalBaseSpeed = ResolveInternalWeaponSpeed(mainHand?.Item, offHandIsWeapon);
+        stats.Set("weaponBaseAttackSpeed", weaponBaseSpeed);
+        stats.Set("weaponAttackSpeedFactor", Math.Max(0.2, internalBaseSpeed + weaponBaseSpeed));
         stats.Set("averageWeaponStrikesPerAction", offHandIsWeapon ? 1.5 : 1);
         stats.Set("dualWieldWeapon", offHandIsWeapon ? 1 : 0);
         foreach (var damageType in StatKeys.DamageTypes)
@@ -140,6 +143,14 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             var equippedDamage = offHandIsWeapon ? (mainDamage + offDamage) / 2d : mainDamage;
             stats.Set(key, nonWeaponContribution + equippedDamage);
         }
+    }
+
+    private static double ResolveInternalWeaponSpeed(ItemInstance? mainHand, bool dualWield)
+    {
+        if (mainHand is null) return 1;
+        var ranged = mainHand.AttachmentQualifier.Contains("ranged", StringComparison.OrdinalIgnoreCase);
+        if (dualWield) return ranged ? 0.87 : 1;
+        return ranged || mainHand.IsTwoHanded ? 0.92 : 1;
     }
 
     private static void ApplyPercentModifier(StatBlock stats, string key)

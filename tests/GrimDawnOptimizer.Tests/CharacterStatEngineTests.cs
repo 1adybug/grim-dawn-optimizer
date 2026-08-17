@@ -103,6 +103,26 @@ public sealed class CharacterStatEngineTests
     }
 
     [Fact]
+    public void DualRangedWeaponsUseInternalAndAverageWeaponSpeedModifiers()
+    {
+        var main = Item("main-gun", EquipmentSlot.MainHand, qualifier: "ranged1h", weaponBaseSpeed: -0.09);
+        var off = Item("off-gun", EquipmentSlot.MainHand, qualifier: "ranged1h", weaponBaseSpeed: -0.06);
+        var result = _engine.Calculate(new CharacterSnapshot
+        {
+            Name = "gunner", SaveFilePath = "test.gdc", Level = 100,
+            Physique = 1000, Cunning = 1000, Spirit = 1000, CanDualWield = true
+        }, new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(main, null, null),
+            [EquipmentSlot.OffHand] = new(off, null, null)
+        }, new GameDataCatalog());
+
+        Assert.Equal(-0.075, result.Stats["weaponBaseAttackSpeed"], 8);
+        Assert.Equal(0.795, result.Stats["weaponAttackSpeedFactor"], 8);
+        Assert.Equal(1.5, result.Stats["averageWeaponStrikesPerAction"], 8);
+    }
+
+    [Fact]
     public void PercentageAttributesAreAppliedAfterFlatEquipmentBonuses()
     {
         var item = Item("attribute-item", EquipmentSlot.Head);
@@ -155,13 +175,16 @@ public sealed class CharacterStatEngineTests
         EquipmentSlot slot,
         string set = "",
         bool twoHanded = false,
-        double weaponDamage = 0) => new()
+        double weaponDamage = 0,
+        string qualifier = "",
+        double weaponBaseSpeed = 0) => new()
     {
         Id = id, Name = id, Slot = slot, BaseRecord = id, Seed = 1,
-        SetId = set, IsTwoHanded = twoHanded,
+        SetId = set, IsTwoHanded = twoHanded, AttachmentQualifier = qualifier,
         Stats = new StatBlock(new Dictionary<string, double>
         {
-            [StatKeys.WeaponDamage("physical")] = weaponDamage
+            [StatKeys.WeaponDamage("physical")] = weaponDamage,
+            ["weaponBaseAttackSpeed"] = weaponBaseSpeed
         }),
         Source = new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc", 0, 0, 0)
     };

@@ -108,6 +108,8 @@ public sealed class CombatSimulator : ICombatSimulator
                 offensiveStats.Add(key, value);
         var damage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var dotDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var sheetDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var sheetDotDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var activationRate = Math.Clamp(rotation.ActivationRate, 0, 1);
         var defaultStrikes = Math.Max(1, stats["averageWeaponStrikesPerAction"]);
         var weaponPool = NormalizeWeaponPool(rotation.WeaponPoolAttacks);
@@ -116,10 +118,17 @@ public sealed class CombatSimulator : ICombatSimulator
         {
             var normalWeaponHit = stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)];
             var legacyPoolMultiplier = weaponPool.Count == 0 ? Math.Max(0, rotation.WeaponPoolDamageMultiplier) : 1;
-            var selectedSkillHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d * legacyPoolMultiplier +
-                                   rotation.FlatDamage[StatKeys.DamageFlat(type)] +
+            var sheetSkillHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d +
+                                rotation.FlatDamage[StatKeys.DamageFlat(type)];
+            var selectedSkillHit = sheetSkillHit +
+                                   normalWeaponHit * rotation.WeaponDamagePercent / 100d * (legacyPoolMultiplier - 1) +
                                    (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageFlat(type)] : 0);
             var selectedPerStrike = normalWeaponHit + (selectedSkillHit - normalWeaponHit) * activationRate;
+            // The character-sheet comparison value describes the selected attack
+            // itself. Weapon-pool skills replace attacks in combat but are not
+            // folded into the target-free sheet DPS shown by the game.
+            var sheetPerStrike = normalWeaponHit + (sheetSkillHit - normalWeaponHit) * activationRate;
+            sheetDamage[type] = sheetPerStrike * defaultStrikes;
             var directPerAction = selectedPerStrike * defaultStrikes * (1 - weaponPoolChance);
             foreach (var entry in weaponPool)
             {
@@ -132,8 +141,10 @@ public sealed class CombatSimulator : ICombatSimulator
             damage[type] = directPerAction;
 
             var normalDot = stats[StatKeys.DamageDot(type)];
-            var selectedDot = normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)] +
+            var sheetSelectedDot = normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)];
+            var selectedDot = sheetSelectedDot +
                               (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageDot(type)] : 0);
+            sheetDotDamage[type] = sheetSelectedDot * defaultStrikes;
             var dotPerAction = selectedDot * defaultStrikes * (1 - weaponPoolChance);
             foreach (var entry in weaponPool)
                 dotPerAction += entry.ChanceFraction *
@@ -143,6 +154,7 @@ public sealed class CombatSimulator : ICombatSimulator
         }
 
         ApplyConversions(damage, offensiveStats);
+        ApplyConversions(sheetDamage, offensiveStats);
 
         var rawDamagePerLandedHit = 0d;
         var sheetDamagePerHit = 0d;
@@ -150,17 +162,27 @@ public sealed class CombatSimulator : ICombatSimulator
         var sheetDotDps = 0d;
         foreach (var type in StatKeys.DamageTypes)
         {
-            var boosted = damage[type] * Math.Max(0, 1 + offensiveStats[StatKeys.DamagePercent(type)] / 100d);
-            sheetDamagePerHit += boosted;
+            var damageMultiplier = Math.Max(0, 1 + offensiveStats[StatKeys.DamagePercent(type)] / 100d);
+            var boosted = damage[type] * damageMultiplier;
+            var sheetBoosted = sheetDamage[type] * damageMultiplier;
+            sheetDamagePerHit += sheetBoosted;
             rawDamagePerLandedHit += ApplyEnemyMitigation(type, boosted, scenario, offensiveStats);
             var boostedDot = dotDamage[type] * Math.Max(0, 1 +
                 (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
-            sheetDotDps += boostedDot;
+            var sheetBoostedDot = sheetDotDamage[type] * Math.Max(0, 1 +
+                (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
+            sheetDotDps += sheetBoostedDot;
             rawDotDps += ApplyEnemyMitigation(type, boostedDot, scenario, offensiveStats);
         }
 
         var speedBonus = rotation.UsesAttackSpeed ? stats["attackSpeed"] : stats["castSpeed"];
-        var actionSpeed = Math.Clamp(1 + speedBonus / 100d, 0.2, 2.0);
+        var weaponSpeedFactor = rotation.UsesAttackSpeed && stats["weaponAttackSpeedFactor"] > 0
+            ? stats["weaponAttackSpeedFactor"]
+            : 1;
+        // Grim Dawn applies the weapon/animation base before the global speed
+        // bonus and caps the resulting character-sheet speed, not the bonus in
+        // isolation. This matters most for ranged dual wielding.
+        var actionSpeed = Math.Clamp(weaponSpeedFactor * (1 + speedBonus / 100d), 0.2, 2.0);
         var attacksPerSecond = Math.Max(0.05, rotation.BaseAttacksPerSecond * actionSpeed);
         if (rotation.CooldownSeconds > Epsilon)
             attacksPerSecond = Math.Min(attacksPerSecond, 1d / rotation.CooldownSeconds);

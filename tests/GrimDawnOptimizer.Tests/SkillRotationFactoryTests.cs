@@ -201,6 +201,59 @@ public sealed class SkillRotationFactoryTests
     }
 
     [Fact]
+    public void DualWieldWeaponPoolTechniqueUsesBothWeapons()
+    {
+        const string bursting = "records/skills/playerclass07/wpattack01.dbr";
+        var record = new GameRecord
+        {
+            RecordName = bursting,
+            RecordType = "Skill_WPAttack_BasicAttack",
+            NumericValues = new StatBlock(new Dictionary<string, double>
+            {
+                ["skillChanceWeight"] = 22, ["weaponDamagePct"] = 145
+            }),
+            TextValues = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["Class"] = ["Skill_WPAttack_BasicAttack"]
+            }
+        };
+        var character = new CharacterSnapshot
+        {
+            Name = "gunner", SaveFilePath = "test.gdc", Level = 100,
+            Physique = 1000, Cunning = 1000, Spirit = 1000, CanDualWield = true,
+            Skills = [new CharacterSkill(bursting, "爆裂子弹", 10, 0, true, "", "")],
+            Items =
+            [
+                Weapon("main"), Weapon("off")
+            ],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string>
+            {
+                [EquipmentSlot.MainHand] = "main", [EquipmentSlot.OffHand] = "off"
+            }
+        };
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord> { [bursting] = record }
+        };
+
+        var rotation = SkillRotationFactory.Build(character, catalog, null);
+        var singleWeaponRotation = SkillRotationFactory.Build(character, catalog, null,
+            new Dictionary<EquipmentSlot, LoadoutVariant>
+            {
+                [EquipmentSlot.MainHand] = new(Weapon("candidate-main"), null, null)
+            });
+
+        Assert.Equal(2, Assert.Single(rotation.WeaponPoolAttacks).WeaponStrikes);
+        Assert.Equal(1, Assert.Single(singleWeaponRotation.WeaponPoolAttacks).WeaponStrikes);
+
+        static ItemInstance Weapon(string id) => new()
+        {
+            Id = id, Name = id, Slot = EquipmentSlot.MainHand, BaseRecord = id,
+            Source = new ItemSourceLocation(ItemSourceKind.Equipped, "test.gdc")
+        };
+    }
+
+    [Fact]
     public void CandidateEquipmentSkillLevelIsUsedDuringEvaluation()
     {
         const string skillName = "records/skills/test/main.dbr";
