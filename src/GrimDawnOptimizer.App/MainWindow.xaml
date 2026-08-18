@@ -75,10 +75,34 @@
                     <StackPanel Grid.Row="0">
                         <TextBlock Text="数据来源" Style="{StaticResource SectionTitle}" />
                         <TextBlock Text="游戏目录" Style="{StaticResource Label}" />
-                        <ComboBox ItemsSource="{Binding Installations}" SelectedItem="{Binding SelectedInstallation}" DisplayMemberPath="RootPath" />
+                        <ComboBox ItemsSource="{Binding Installations}" SelectedItem="{Binding SelectedInstallation}" HorizontalContentAlignment="Stretch">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MinWidth="205">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding RootPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding RootPath}" VerticalAlignment="Center" />
+                                        <Button Grid.Column="1" Content="×" Padding="4,0" Margin="6,0,0,0" ToolTip="仅从列表删除，不删除磁盘目录"
+                                                Command="{Binding DataContext.DeleteGameDirectoryCommand, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                CommandParameter="{Binding}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
                         <Button Content="选择游戏目录" Click="BrowseGame_Click" Margin="0,7,0,13" HorizontalAlignment="Stretch" />
                         <TextBlock Text="存档目录" Style="{StaticResource Label}" />
-                        <ComboBox ItemsSource="{Binding SaveLocations}" SelectedItem="{Binding SelectedSaveLocation}" DisplayMemberPath="RootPath" />
+                        <ComboBox ItemsSource="{Binding SaveLocations}" SelectedItem="{Binding SelectedSaveLocation}" HorizontalContentAlignment="Stretch">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MinWidth="205">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding RootPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding RootPath}" VerticalAlignment="Center" />
+                                        <Button Grid.Column="1" Content="×" Padding="4,0" Margin="6,0,0,0" ToolTip="仅从列表删除，不删除磁盘目录"
+                                                Command="{Binding DataContext.DeleteSaveDirectoryCommand, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                CommandParameter="{Binding}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
                         <Button Content="选择存档目录" Click="BrowseSave_Click" Margin="0,7,0,10" HorizontalAlignment="Stretch" />
                         <Button Content="读取角色与仓库" Command="{Binding LoadCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Stretch" />
                     </StackPanel>
@@ -111,39 +135,49 @@
             <!-- Rules and scenario -->
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="24,20,24,28">
-                    <Grid Margin="0,0,0,12">
-                        <TextBlock Text="属性优先级" Style="{StaticResource SectionTitle}" />
-                        <Button Content="＋ 添加" Command="{Binding AddMetricCommand}" HorizontalAlignment="Right" Padding="10,4" />
-                    </Grid>
-                    <TextBlock Text="先满足硬下限；优先级数字越小越重要，同层按权重比较。" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,-7,0,10" />
+                    <TextBlock Text="属性权重" Style="{StaticResource SectionTitle}" Margin="0,0,0,12" />
+                    <TextBlock Text="只对两个不重复的最终结果评分：实际 DPS 与综合有效生命。组成它们的原始属性不再二次加权。" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,-7,0,10" TextWrapping="Wrap" />
                     <Grid Margin="0,0,0,5">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.4*" /><ColumnDefinition Width="1.15*" /><ColumnDefinition Width="54" />
-                            <ColumnDefinition Width="54" /><ColumnDefinition Width="70" /><ColumnDefinition Width="70" /><ColumnDefinition Width="30" />
+                            <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="70" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="属性键" Style="{StaticResource Label}" /><TextBlock Grid.Column="1" Text="显示名" Style="{StaticResource Label}" />
-                        <TextBlock Grid.Column="2" Text="层" Style="{StaticResource Label}" /><TextBlock Grid.Column="3" Text="权重" Style="{StaticResource Label}" />
-                        <TextBlock Grid.Column="4" Text="最小值" Style="{StaticResource Label}" /><TextBlock Grid.Column="5" Text="步长" Style="{StaticResource Label}" />
+                        <TextBlock Text="支持属性" Style="{StaticResource Label}" /><TextBlock Grid.Column="1" Text="计算说明" Style="{StaticResource Label}" />
+                        <TextBlock Grid.Column="2" Text="权重" Style="{StaticResource Label}" />
                     </Grid>
                     <ItemsControl ItemsSource="{Binding Metrics}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Grid Margin="0,0,0,6">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.4*" /><ColumnDefinition Width="1.15*" /><ColumnDefinition Width="54" />
-                                        <ColumnDefinition Width="54" /><ColumnDefinition Width="70" /><ColumnDefinition Width="70" /><ColumnDefinition Width="30" />
+                                        <ColumnDefinition Width="1.25*" /><ColumnDefinition Width="2*" />
+                                        <ColumnDefinition Width="70" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBox Text="{Binding Key, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" />
-                                    <TextBox Grid.Column="1" Text="{Binding DisplayName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" />
-                                    <TextBox Grid.Column="2" Text="{Binding PriorityTier, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" />
-                                    <TextBox Grid.Column="3" Text="{Binding Weight, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" />
-                                    <TextBox Grid.Column="4" Text="{Binding HardMinimum, UpdateSourceTrigger=PropertyChanged, TargetNullValue=''}" Margin="0,0,5,0" />
-                                    <TextBox Grid.Column="5" Text="{Binding NormalizationStep, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" />
-                                    <Button Grid.Column="6" Content="×" Padding="2" Command="{Binding DataContext.RemoveMetricCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" />
+                                    <StackPanel Margin="0,2,8,2">
+                                        <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource Text}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Key}" Foreground="#707577" FontSize="9" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1" Text="{Binding Description}" Foreground="{StaticResource Muted}" FontSize="9" TextWrapping="Wrap" Margin="0,2,8,2" />
+                                    <TextBox Grid.Column="2" Text="{Binding Weight, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,5,0" VerticalAlignment="Center" />
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+
+                    <Border Background="#182024" BorderBrush="{StaticResource Divider}" BorderThickness="1"
+                            CornerRadius="4" Padding="11,9" Margin="0,6,0,0">
+                        <StackPanel>
+                            <TextBlock Text="这些参数怎么填" Foreground="{StaticResource Accent}" FontWeight="SemiBold" Margin="0,0,0,6" />
+                            <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}" Margin="0,0,0,3">
+                                <Run Text="权重：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
+                                <Run Text="只调整输出与生存之间的偏好。填 2 表示影响是权重 1 的两倍；属性名称和算法固定，不能增删。" />
+                            </TextBlock>
+                            <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}">
+                                <Run Text="BOSS 基准：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
+                                <Run Text="DPS 对比击杀时限所需 DPS；有效生命对比同期原始承伤。承伤靶子覆盖物理、穿刺、火、冰、电、酸、活力、虚化和混乱，因此所有抗性会自然进入有效生命，但不会重复计分。" />
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
 
                     <Border BorderBrush="{StaticResource Divider}" BorderThickness="0,0,0,1" Margin="0,16,0,18" />
                     <TextBlock Text="战斗档案" Style="{StaticResource SectionTitle}" />
@@ -152,6 +186,7 @@
                             <TextBlock Text="同级 BOSS 自动基准" Foreground="{StaticResource Accent}" FontWeight="SemiBold" />
                             <TextBlock Text="{Binding EnemyProfileSummary}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0" />
                             <TextBlock Text="{Binding EnemyResistanceSummary}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                            <TextBlock Text="{Binding ScoreBenchmarkSummary}" Foreground="#E7A16A" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
                         </StackPanel>
                     </Border>
                     <Grid>
@@ -197,9 +232,26 @@
                             <TextBox Text="{Binding Profile.MonteCarloTrials, UpdateSourceTrigger=PropertyChanged}" />
                         </StackPanel>
                     </Grid>
+                    <StackPanel Margin="0,10,0,0">
+                        <TextBlock Text="武器攻击 DPS（必填）" Style="{StaticResource Label}" />
+                        <TextBox Text="{Binding CurrentWeaponAttackDpsInput, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="{Binding CurrentWeaponAttackDpsValidationMessage}"
+                                   Visibility="{Binding IsCurrentWeaponAttackDpsInvalid, Converter={StaticResource BoolVisibility}}"
+                                   Foreground="{StaticResource Accent}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        <TextBlock Text="当前主攻技能 DPS（必填）" Style="{StaticResource Label}" Margin="0,8,0,4" />
+                        <TextBox Text="{Binding CurrentPanelDpsInput, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="{Binding CurrentPanelDpsValidationMessage}"
+                                   Visibility="{Binding IsCurrentPanelDpsInvalid, Converter={StaticResource BoolVisibility}}"
+                                   Foreground="{StaticResource Accent}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        <TextBlock Text="两项均填写游戏中未计敌人防御的当前数值。它们只用于本次载入，不会保存为方案默认值。"
+                                   Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        <TextBlock Text="建议搜索 60–180 秒；时间越长，多样性 Beam、邻域搜索和多起点扰动覆盖越充分。"
+                                   Foreground="{StaticResource Accent}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
+                    </StackPanel>
                     <Grid Margin="0,16,0,0">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <Button Content="运行近似优化" Command="{Binding OptimizeCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Stretch" />
+                        <Button Content="运行多策略优化" Command="{Binding OptimizeCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Stretch"
+                                ToolTip="请先输入武器攻击 DPS 和当前主攻技能 DPS" ToolTipService.ShowOnDisabled="True" />
                         <Button Grid.Column="1" Content="取消" Command="{Binding CancelCommand}" Margin="8,0,0,0" />
                     </Grid>
                     <Button Content="保存当前方案" Command="{Binding SaveProfileCommand}" Margin="0,8,0,0" HorizontalAlignment="Stretch" />
@@ -229,10 +281,12 @@
                                             <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18" /></Storyboard></BeginStoryboard>
                                         </EventTrigger>
                                     </Grid.Triggers>
-                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                     <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Row="1" Text="{Binding Dps, StringFormat={}{0} DPS}" Foreground="{StaticResource Accent}" FontSize="17" Margin="0,3,0,1" />
-                                    <TextBlock Grid.Row="2" Text="{Binding Feasibility}" Foreground="{StaticResource Muted}" FontSize="10" />
+                                    <TextBlock Grid.Row="1" Text="{Binding UnmitigatedDps, StringFormat=减伤前 {0}}" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,3,0,0" />
+                                    <TextBlock Grid.Row="2" Text="{Binding EquipmentOnlyUnmitigatedDps, StringFormat=无镶嵌 {0}}" Foreground="#E7A16A" FontSize="11" />
+                                    <TextBlock Grid.Row="3" Text="{Binding Dps, StringFormat=减伤后 {0}}" Foreground="{StaticResource Accent}" FontSize="17" Margin="0,0,0,1" />
+                                    <TextBlock Grid.Row="4" Text="{Binding Validity}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -241,25 +295,36 @@
                     <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel DataContext="{Binding SelectedResult}" Margin="18,0,0,0">
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                                 <StackPanel>
-                                    <TextBlock Text="持续 DPS" Style="{StaticResource Label}" />
+                                    <TextBlock Text="含镶嵌物·未减伤" Style="{StaticResource Label}" />
+                                    <TextBlock Text="{Binding UnmitigatedDps}" Style="{StaticResource MetricValue}" />
+                                    <TextBlock Text="对应游戏目标无关面板值" Foreground="{StaticResource Muted}" FontSize="10" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="无镶嵌物·未减伤" Style="{StaticResource Label}" />
+                                    <TextBlock Text="{Binding EquipmentOnlyUnmitigatedDps}" Style="{StaticResource MetricValue}" />
+                                    <TextBlock Text="只穿推荐装备本体" Foreground="#E7A16A" FontSize="10" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="计入护甲/抗性 DPS" Style="{StaticResource Label}" />
                                     <TextBlock Text="{Binding Dps}" Style="{StaticResource MetricValue}" />
                                     <TextBlock Text="{Binding MonteCarloRange}" Foreground="{StaticResource Muted}" FontSize="10" />
                                     <TextBlock Text="{Binding TimeToKill, StringFormat=击杀约 {0}}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </StackPanel>
-                                <StackPanel Grid.Column="1">
+                                <StackPanel Grid.Column="3">
                                     <TextBlock Text="有效生命" Style="{StaticResource Label}" />
                                     <TextBlock Text="{Binding EffectiveHealth}" Style="{StaticResource MetricValue}" />
                                     <TextBlock Text="含抗性/护甲/格挡" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </StackPanel>
-                                <StackPanel Grid.Column="2">
+                                <StackPanel Grid.Column="4">
                                     <TextBlock Text="预计存活" Style="{StaticResource Label}" />
                                     <TextBlock Text="{Binding TimeToDeath}" Style="{StaticResource MetricValue}" />
                                     <TextBlock Text="{Binding Confidence}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </StackPanel>
                             </Grid>
-                            <TextBlock Text="{Binding TierScores}" Foreground="{StaticResource Accent}" Margin="0,14,0,13" />
+                            <TextBlock Text="{Binding ScoreSummary}" Foreground="{StaticResource Accent}" Margin="0,14,0,2" />
+                            <TextBlock Text="{Binding ScoreBreakdown}" Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,13" />
 
                             <Grid Margin="0,0,0,5">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
@@ -267,6 +332,8 @@
                                 <TextBlock Grid.Column="1" Text="推荐装备 / 附件" Style="{StaticResource Label}" />
                                 <TextBlock Grid.Column="2" Text="来源" Style="{StaticResource Label}" />
                             </Grid>
+                            <TextBlock Text="来源说明：页码和坐标均从 1 开始；(X,Y) 是装备左上角所在格，X 向右、Y 向下。" Foreground="{StaticResource Muted}" FontSize="10" Margin="0,0,0,4" />
+                            <TextBlock Text="DPS 前提：推荐装备、组件和增幅必须按每行全部装齐；只更换装备本体不会达到该数值。" Foreground="#E7A16A" FontSize="10" Margin="0,0,0,4" TextWrapping="Wrap" />
                             <ItemsControl ItemsSource="{Binding SlotRows}">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
@@ -293,8 +360,7 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
-                            <TextBlock Text="约束与置信度提示" Style="{StaticResource SectionTitle}" Margin="0,20,0,8" />
-                            <ItemsControl ItemsSource="{Binding ConstraintRows}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Foreground="#E7A16A" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                            <TextBlock Text="兼容性与置信度提示" Style="{StaticResource SectionTitle}" Margin="0,20,0,8" />
                             <ItemsControl ItemsSource="{Binding WarningRows}"><ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,2" /></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
                         </StackPanel>
                     </ScrollViewer>

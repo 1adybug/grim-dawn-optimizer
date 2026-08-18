@@ -29,6 +29,20 @@ public sealed class ParserGoldenTests
         Assert.Equal(12, skill.Level);
         Assert.True(skill.Enabled);
         Assert.True(skill.Locked);
+        Assert.Equal("records/skills/playerclass/test.dbr", character.PrimarySkillRecord);
+        Assert.Equal("records/skills/playerclass/rightclick.dbr", character.SecondarySkillRecord);
+        var backpackItems = character.Items.Where(x => x.SourceKind == ItemSourceKind.Backpack).ToArray();
+        Assert.Collection(backpackItems,
+            item =>
+            {
+                Assert.Equal("records/items/gearhands/test.dbr", item.BaseRecord);
+                Assert.Equal((2, 3), (item.X, item.Y));
+            },
+            item =>
+            {
+                Assert.Equal("records/items/gearrings/test.dbr", item.BaseRecord);
+                Assert.Equal((6, 13), (item.X, item.Y));
+            });
         Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(path)));
     }
 
@@ -49,6 +63,8 @@ public sealed class ParserGoldenTests
         Assert.Equal(0, item.ContainerIndex);
         Assert.Equal(4, item.X);
         Assert.Equal(7, item.Y);
+        var source = new ItemSourceLocation(item.SourceKind, path, item.ContainerIndex, item.X, item.Y);
+        Assert.Equal("共享仓库第 1 页 · 左上格 (5,8)", source.DisplayName);
         Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(path)));
     }
 
@@ -76,6 +92,23 @@ public sealed class ParserGoldenTests
 
         Assert.Equal("余烬之刃", tags["tagItemName"]);
         Assert.Equal("烈焰打击", tags["tagSkillName"]);
+    }
+
+    [Fact]
+    public async Task InstallationPrefersTextZhChineseTagsOverEnglishFallback()
+    {
+        using var fixture = new TemporaryFixture();
+        var resources = Path.Combine(fixture.Root, "resources");
+        Directory.CreateDirectory(resources);
+        File.WriteAllBytes(Path.Combine(resources, "Text_EN.arc"), BuildArc("tagItemName=Ember Blade\r\n"));
+        File.WriteAllBytes(Path.Combine(resources, "Text_ZH.arc"), BuildArc("tagItemName=余烬之刃\r\n"));
+        var installation = GameDataSource.CreateInstallation(fixture.Root);
+
+        var catalog = await new GameDataSource(Path.Combine(fixture.Root, "cache")).LoadCatalogAsync(installation);
+
+        Assert.Equal(["Text_EN.arc", "Text_ZH.arc"],
+            installation.DataFiles.Select(x => Path.GetFileName(x)!).ToArray());
+        Assert.Equal("余烬之刃", catalog.Tags["tagItemName"]);
     }
 
     [Fact]
@@ -145,6 +178,7 @@ public sealed class ParserGoldenTests
                 [skillRecord] = new GameRecord
                 {
                     RecordName = skillRecord,
+                    RecordType = "Skill_Passive",
                     NumericSeries = new Dictionary<string, IReadOnlyList<double>>
                     {
                         ["characterLife"] = [10, 20, 30]
@@ -156,6 +190,51 @@ public sealed class ParserGoldenTests
         var baseline = SaveReader.BuildBaseline(raw, catalog);
 
         Assert.Equal(130, baseline["health"]);
+    }
+
+    [Fact]
+    public void BaselineAddsPersistentBuffChildButSkipsUnallocatedDevotionEntry()
+    {
+        const string aura = "records/skills/aura.dbr";
+        const string buff = "records/skills/aura_buff.dbr";
+        const string unallocated = "records/skills/devotion/unallocated.dbr";
+        var raw = new RawCharacter("test.gdc", "test", "class", 38, false)
+        {
+            Health = 100, Energy = 50, Physique = 100, Cunning = 100, Spirit = 100
+        };
+        raw.Skills.Add(new RawSkill(aura, 2, true, false, 0, 0, 0, false, false, string.Empty, string.Empty));
+        raw.Skills.Add(new RawSkill(unallocated, 0, false, false, 1, 0, 0, false, false, string.Empty, string.Empty));
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [aura] = new GameRecord
+                {
+                    RecordName = aura, RecordType = "Skill_BuffSelf",
+                    TextValues = new Dictionary<string, IReadOnlyList<string>> { ["buffSkillName"] = [buff] }
+                },
+                [buff] = new GameRecord
+                {
+                    RecordName = buff, RecordType = "SkillBuff_Passive",
+                    NumericSeries = new Dictionary<string, IReadOnlyList<double>>
+                    {
+                        ["characterOffensiveAbility"] = [50, 100]
+                    }
+                },
+                [unallocated] = new GameRecord
+                {
+                    RecordName = unallocated, RecordType = "Skill_Passive",
+                    NumericSeries = new Dictionary<string, IReadOnlyList<double>>
+                    {
+                        ["characterOffensiveAbility"] = [36]
+                    }
+                }
+            }
+        };
+
+        var baseline = SaveReader.BuildBaseline(raw, catalog);
+
+        Assert.Equal(165, baseline["offensiveAbility"]);
     }
 
     [Fact]
@@ -236,7 +315,35 @@ public sealed class ParserGoldenTests
 
         var inventory = writer.BeginBlock(3);
         writer.WriteUInt32(4);
+        writer.WriteBoolean(true);
+        writer.WriteUInt32(1);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        var sack = writer.BeginBlock(0);
+        writer.WriteByte(0);
+        writer.WriteUInt32(2);
+        WriteCharacterItem(writer, "records/items/gearhands/test.dbr");
+        writer.WriteUInt32(2);
+        writer.WriteUInt32(3);
+        WriteCharacterItem(writer, "records/items/gearrings/test.dbr");
+        writer.WriteUInt32(6);
+        writer.WriteUInt32(13);
+        writer.EndBlock(sack);
         writer.WriteBoolean(false);
+        for (var i = 0; i < 12; i++)
+        {
+            WriteCharacterItem(writer, string.Empty);
+            writer.WriteByte(0);
+        }
+        for (var weaponSet = 0; weaponSet < 2; weaponSet++)
+        {
+            writer.WriteBoolean(false);
+            for (var i = 0; i < 2; i++)
+            {
+                WriteCharacterItem(writer, string.Empty);
+                writer.WriteBoolean(false);
+            }
+        }
         writer.EndBlock(inventory);
 
         var stash = writer.BeginBlock(4);
@@ -272,7 +379,44 @@ public sealed class ParserGoldenTests
         writer.WriteUInt32(0);
         writer.WriteUInt32(0);
         writer.EndBlock(factions);
+
+        var bindings = writer.BeginBlock(14);
+        writer.WriteUInt32(8);
+        writer.WriteBoolean(false);
+        writer.WriteUInt32(0);
+        writer.WriteBoolean(true);
+        for (var i = 0; i < 5; i++)
+        {
+            writer.WriteString(i == 0 ? "records/skills/playerclass/test.dbr" : string.Empty);
+            writer.WriteString(i == 0 ? "records/skills/playerclass/rightclick.dbr" : string.Empty);
+            writer.WriteBoolean(i == 0);
+        }
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        for (var i = 0; i < 46; i++) writer.WriteUInt32(1);
+        writer.WriteSingle(12);
+        writer.WriteUInt32(0);
+        writer.EndBlock(bindings);
         return writer.ToArray();
+    }
+
+    private static void WriteCharacterItem(GdFixtureWriter writer, string baseRecord)
+    {
+        writer.WriteString(baseRecord);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(1);
     }
 
     private static byte[] BuildTransferV9()

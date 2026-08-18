@@ -5,73 +5,38 @@ namespace GrimDawnOptimizer.Core.Services;
 internal sealed class ScoringEngine
 {
     private readonly IReadOnlyList<MetricRule> _rules;
-    private readonly IReadOnlyDictionary<string, double> _baseline;
-    private readonly IReadOnlyDictionary<string, double> _fallbackSteps;
-    private readonly int[] _tiers;
+    private readonly IReadOnlyDictionary<string, double> _benchmarks;
 
     public ScoringEngine(
         IReadOnlyList<MetricRule> rules,
-        IReadOnlyDictionary<string, double> baseline,
-        IReadOnlyDictionary<string, double> fallbackSteps)
+        IReadOnlyDictionary<string, double> benchmarks)
     {
         _rules = rules;
-        _baseline = baseline;
-        _fallbackSteps = fallbackSteps;
-        _tiers = rules.Where(x => x.PriorityTier > 0).Select(x => x.PriorityTier).Distinct().Order().ToArray();
+        _benchmarks = benchmarks;
     }
 
-    public (IReadOnlyList<double> TierScores, IReadOnlyDictionary<string, double> Violations) Score(
+    public (IReadOnlyList<double> TierScores, IReadOnlyDictionary<string, double> Contributions) Score(
         IReadOnlyDictionary<string, double> metrics)
     {
-        var violations = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var score = 0d;
+        var contributions = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         foreach (var rule in _rules)
         {
-            var value = metrics.GetValueOrDefault(rule.Key);
-            var step = ResolveStep(rule);
-            if (rule.HardMinimum is { } min && value + 1e-9 < min)
-                violations[rule.Key] = (min - value) / step;
-            if (rule.HardMaximum is { } max && value - 1e-9 > max)
-                violations[rule.Key] = (value - max) / step;
+            if (Math.Abs(rule.Weight) < 1e-12 || string.IsNullOrWhiteSpace(rule.Key)) continue;
+            var benchmark = _benchmarks.GetValueOrDefault(rule.Key, 1);
+            var normalized = BossMetricBenchmarkResolver.NormalizeValue(
+                rule.Key, metrics.GetValueOrDefault(rule.Key), benchmark, rule.Direction);
+            var contribution = rule.Weight * normalized;
+            contributions[rule.Key] = contributions.GetValueOrDefault(rule.Key) + contribution;
+            score += contribution;
         }
 
-        var scores = new List<double>(_tiers.Length);
-        foreach (var tier in _tiers)
-        {
-            var score = 0d;
-            foreach (var rule in _rules.Where(x => x.PriorityTier == tier))
-            {
-                var current = _baseline.GetValueOrDefault(rule.Key);
-                var candidate = metrics.GetValueOrDefault(rule.Key);
-                var direction = rule.Direction == MetricDirection.Maximize ? 1 : -1;
-                var normalized = rule.NormalizationStep > 0 || Math.Abs(current) < 1e-9
-                    ? (candidate - current) / ResolveStep(rule)
-                    : (candidate - current) / Math.Abs(current) * 100d;
-                score += direction * rule.Weight * normalized;
-            }
-            scores.Add(score);
-        }
-
-        return (scores, violations);
+        return (new[] { score }, contributions);
     }
 
     public double PartialHeuristic(LoadoutResult result)
     {
-        var score = -result.ConstraintViolations.Values.Sum() * 1000d;
-        var multiplier = 1_000_000d;
-        foreach (var tier in result.TierScores)
-        {
-            score += tier * multiplier;
-            multiplier /= 1000d;
-        }
-        return score;
-    }
-
-    private double ResolveStep(MetricRule rule)
-    {
-        if (rule.NormalizationStep > 0) return rule.NormalizationStep;
-        var current = Math.Abs(_baseline.GetValueOrDefault(rule.Key));
-        if (current > 1e-9) return current / 100d;
-        return Math.Max(1e-9, _fallbackSteps.GetValueOrDefault(rule.Key, 1d));
+        return result.TierScores.FirstOrDefault();
     }
 }
 
@@ -87,20 +52,8 @@ internal sealed class LoadoutResultComparer : IComparer<LoadoutResult>
 
         var validity = y.Loadout.IsValid.CompareTo(x.Loadout.IsValid);
         if (validity != 0) return validity;
-        var feasibility = y.IsFeasible.CompareTo(x.IsFeasible);
-        if (feasibility != 0) return feasibility;
-
-        var violation = x.ConstraintViolations.Values.Sum().CompareTo(y.ConstraintViolations.Values.Sum());
-        if (violation != 0) return violation;
-
-        var count = Math.Max(x.TierScores.Count, y.TierScores.Count);
-        for (var i = 0; i < count; i++)
-        {
-            var xs = i < x.TierScores.Count ? x.TierScores[i] : 0;
-            var ys = i < y.TierScores.Count ? y.TierScores[i] : 0;
-            var comparison = ys.CompareTo(xs);
-            if (comparison != 0) return comparison;
-        }
+        var score = y.TierScores.FirstOrDefault().CompareTo(x.TierScores.FirstOrDefault());
+        if (score != 0) return score;
 
         var xd = string.Join('|', x.Loadout.Slots.OrderBy(kv => kv.Key).Select(kv => kv.Value.Item.Id));
         var yd = string.Join('|', y.Loadout.Slots.OrderBy(kv => kv.Key).Select(kv => kv.Value.Item.Id));

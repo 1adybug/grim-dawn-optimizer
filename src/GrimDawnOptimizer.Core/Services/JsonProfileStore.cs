@@ -19,7 +19,9 @@ public sealed class JsonProfileStore : IProfileStore
         {
             await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
             var profiles = await JsonSerializer.DeserializeAsync<List<OptimizationProfile>>(stream, _options, cancellationToken);
-            return profiles is { Count: > 0 } ? profiles.Where(x => x.SchemaVersion == 1).ToArray() : [new OptimizationProfile()];
+            if (profiles is not { Count: > 0 }) return [new OptimizationProfile()];
+            var supported = profiles.Where(x => x.SchemaVersion is >= 1 and <= 5).Select(Migrate).ToArray();
+            return supported.Length > 0 ? supported : [new OptimizationProfile()];
         }
         catch (JsonException)
         {
@@ -39,4 +41,25 @@ public sealed class JsonProfileStore : IProfileStore
             await JsonSerializer.SerializeAsync(stream, profiles.ToArray(), _options, cancellationToken);
         File.Move(temp, _path, overwrite: true);
     }
+
+    private static OptimizationProfile Migrate(OptimizationProfile profile)
+    {
+        if (profile.SchemaVersion < 4 && IsLegacyNarrowIncoming(profile.Scenario.IncomingDamage))
+            profile.Scenario.IncomingDamage = new IncomingDamageProfile();
+        profile.Metrics = SupportedMetricCatalog.Merge(profile.Metrics);
+        profile.SchemaVersion = 5;
+        return profile;
+    }
+
+    private static bool IsLegacyNarrowIncoming(IncomingDamageProfile incoming) =>
+        Math.Abs(incoming.HitsPerSecond - 1.2) < 1e-9 &&
+        Math.Abs(incoming.PhysicalPerHit - 1200) < 1e-9 &&
+        Math.Abs(incoming.FirePerHit - 450) < 1e-9 &&
+        Math.Abs(incoming.ColdPerHit) < 1e-9 &&
+        Math.Abs(incoming.LightningPerHit) < 1e-9 &&
+        Math.Abs(incoming.AcidPerHit) < 1e-9 &&
+        Math.Abs(incoming.PiercePerHit) < 1e-9 &&
+        Math.Abs(incoming.VitalityPerHit) < 1e-9 &&
+        Math.Abs(incoming.AetherPerHit) < 1e-9 &&
+        Math.Abs(incoming.ChaosPerHit) < 1e-9;
 }

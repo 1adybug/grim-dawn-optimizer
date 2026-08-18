@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using GrimDawnOptimizer.Core.Contracts;
 using GrimDawnOptimizer.Core.Domain;
 
@@ -14,10 +15,13 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
     private static readonly EquipmentSlot[] TargetSlots =
     [
+        // Weapons define the largest DPS/conversion/WPS interactions. Searching
+        // them first prevents a beam dominated by armor-only partial scores from
+        // discarding the best weapon core before it is ever evaluated.
+        EquipmentSlot.MainHand, EquipmentSlot.OffHand,
         EquipmentSlot.Head, EquipmentSlot.Shoulders, EquipmentSlot.Chest, EquipmentSlot.Hands,
         EquipmentSlot.Legs, EquipmentSlot.Feet, EquipmentSlot.Waist, EquipmentSlot.Amulet,
-        EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight,
-        EquipmentSlot.MainHand, EquipmentSlot.OffHand
+        EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight
     ];
 
     private readonly ICharacterStatEngine _statEngine;
@@ -38,8 +42,17 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         IProgress<SearchProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (!double.IsFinite(profile.CurrentWeaponAttackDps) || profile.CurrentWeaponAttackDps is <= 0 or > 10_000_000)
+            throw new ArgumentOutOfRangeException(
+                nameof(profile),
+                "武器攻击 DPS 为必填项，且必须是大于 0 的有效数值。");
+        if (!double.IsFinite(profile.CurrentPanelDps) || profile.CurrentPanelDps is <= 0 or > 10_000_000)
+            throw new ArgumentOutOfRangeException(
+                nameof(profile),
+                "当前主攻技能 DPS 为必填项，且必须是大于 0 的有效数值。");
+
         var watch = Stopwatch.StartNew();
-        var budget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds, 1, 60));
+        var budget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds, 1, 300));
         var resultCount = Math.Clamp(profile.ResultCount, 1, 50);
         var evaluated = 0;
         var iteration = 0;
@@ -49,22 +62,44 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
         var currentSlots = BuildCurrentLoadout(character, variantsBySlot);
         var currentCalculated = _statEngine.Calculate(character, currentSlots, catalog);
-        var currentSimulation = _simulator.Simulate(character, currentCalculated, profile.Scenario, profile.Rotation);
+        var currentRotation = ResolveRotation(character, catalog, profile, currentSlots);
+        var currentSimulation = _simulator.Simulate(character, currentCalculated, profile.Scenario, currentRotation);
+        var currentWeaponSimulation = _simulator.Simulate(
+            character,
+            currentCalculated,
+            profile.Scenario,
+            ResolveWeaponAttackRotation(character, catalog, currentSlots));
+        if (currentSimulation.UnmitigatedDps <= 0)
+            throw new InvalidOperationException("当前配装无法计算出有效的未计抗性 DPS，不能应用面板校准。");
+        if (currentWeaponSimulation.UnmitigatedDps <= 0)
+            throw new InvalidOperationException("当前配装无法计算出有效的武器攻击 DPS，不能应用面板校准。");
+        ConfigureDpsCalibration(profile, currentSimulation.UnmitigatedDps, currentWeaponSimulation.UnmitigatedDps);
+        currentSimulation = ApplyDpsCalibration(currentSimulation, currentWeaponSimulation, profile);
         var currentMetrics = ExtractMetrics(currentCalculated, currentSimulation);
-        var fallbackSteps = ResolveFallbackSteps(profile, variantsBySlot);
-        var scoring = new ScoringEngine(profile.Metrics, currentMetrics, fallbackSteps);
+        var benchmarks = BossMetricBenchmarkResolver.Resolve(profile.Metrics, profile.Scenario, currentMetrics);
+        var scoring = new ScoringEngine(profile.Metrics, benchmarks);
+        var searchStart = watch.Elapsed;
+        var remainingTicks = Math.Max(0, budget.Ticks - searchStart.Ticks);
+        var beamDeadline = searchStart + TimeSpan.FromTicks((long)(remainingTicks * 0.65));
+        var localDeadline = searchStart + TimeSpan.FromTicks((long)(remainingTicks * 0.88));
 
-        var beamWidth = Math.Clamp(profile.SearchBudgetSeconds * 160, 96, 1600);
+        var beamWidth = Math.Clamp(profile.SearchBudgetSeconds * 220, 128, 2400);
         var beam = new List<BeamState> { new(new Dictionary<EquipmentSlot, LoadoutVariant>(), 0) };
         var bestScore = double.NegativeInfinity;
 
         foreach (var targetSlot in TargetSlots)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (watch.Elapsed >= budget) break;
+            if (watch.Elapsed >= beamDeadline) break;
             iteration++;
+            // Reserve a fair slice of the beam phase for every slot. Without
+            // this, the main/off-hand Cartesian product can consume the entire
+            // budget before armor, rings and set interactions are ever visited.
+            var slotDeadline = searchStart + TimeSpan.FromTicks(
+                (beamDeadline - searchStart).Ticks * iteration / TargetSlots.Length);
             var next = new List<BeamState>(beam.Count * 8);
             var candidates = variantsBySlot.GetValueOrDefault(targetSlot, []);
+            var expansionCandidates = DiversifiedLocalCandidates(candidates, 192);
 
             if (candidates.Count == 0 || targetSlot == EquipmentSlot.OffHand)
             {
@@ -82,9 +117,10 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
             foreach (var state in beam)
             {
-                foreach (var variant in candidates)
+                if (watch.Elapsed >= slotDeadline) break;
+                foreach (var variant in expansionCandidates)
                 {
-                    if (watch.Elapsed >= budget) break;
+                    if (watch.Elapsed >= slotDeadline) break;
                     if (state.Slots.Values.Any(x => x.Item.Id == variant.Item.Id)) continue;
                     if (targetSlot == EquipmentSlot.OffHand &&
                         state.Slots.TryGetValue(EquipmentSlot.MainHand, out var weapon) && weapon.Item.IsTwoHanded) continue;
@@ -100,11 +136,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
             if (next.Count == 0) break;
 
-            beam = next
-                .OrderByDescending(x => x.Heuristic)
-                .ThenBy(x => Signature(x.Slots), StringComparer.Ordinal)
-                .Take(beamWidth)
-                .ToList();
+            beam = SelectDiverseBeam(next, beamWidth);
 
             progress?.Report(new SearchProgress(
                 "BeamSearch", evaluated, iteration, bestScore, watch.Elapsed,
@@ -120,15 +152,66 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         if (currentSlots.Count > 0)
             complete.Add(Evaluate(character, currentSlots, catalog, profile, scoring));
 
-        var finalists = complete.Order(LoadoutResultComparer.Instance).Take(Math.Max(resultCount * 3, 20)).ToList();
-        LocalImprove(character, finalists, variantsBySlot, catalog, profile, scoring, budget, watch, ref evaluated, progress, cancellationToken);
-
-        var results = finalists
+        var finalists = complete
             .Order(LoadoutResultComparer.Instance)
-            .GroupBy(x => Signature(x.Loadout.Slots))
+            .GroupBy(x => EquipmentSignature(x.Loadout.Slots))
+            .Select(x => x.First())
+            .Take(Math.Max(resultCount * 3, 20))
+            .ToList();
+        LocalImprove(character, finalists, variantsBySlot, catalog, profile, scoring, localDeadline, watch, ref evaluated, progress, cancellationToken);
+        MultiStartImprove(character, finalists, variantsBySlot, currentSlots, catalog, profile, scoring,
+            budget, watch, ref evaluated, progress, cancellationToken);
+
+        // A local-search seed can temporarily lose its off-hand when a two-handed
+        // weapon is tested, or remain partial when the time budget expires between
+        // slots. Complete every plan again before it reaches the UI so a real
+        // one-handed/armor candidate is never shown as “no available equipment”.
+        var completedFinalists = finalists.Select(result =>
+        {
+            var slots = CompleteLoadout(result.Loadout.Slots, variantsBySlot, currentSlots);
+            if (Signature(slots) == Signature(result.Loadout.Slots)) return result;
+            evaluated++;
+            return Evaluate(character, slots, catalog, profile, scoring);
+        }).ToList();
+
+        var results = completedFinalists
+            // Invalid combinations must never be presented as actionable plans. Partial
+            // beam states remain eligible because later slots may supply the missing
+            // attributes or requirement reduction; filtering is intentionally final-only.
+            .Where(x => x.Loadout.IsValid)
+            .Order(LoadoutResultComparer.Instance)
+            // A result slot represents an equipment plan, not another spelling of the
+            // same plan with different attachment ids. Keep the best attachment setup
+            // for each physical equipment combination so the candidate list is useful.
+            .GroupBy(x => EquipmentSignature(x.Loadout.Slots))
             .Select(x => x.First())
             .Take(resultCount)
             .ToList();
+
+        // Keep optimizing the complete equipment + attachment plan, but expose a
+        // target-free comparison that strips every component and augment. This lets
+        // the player equip the physical items first and compare the game sheet before
+        // committing attachments.
+        foreach (var result in results)
+        {
+            var equipmentOnlySlots = result.Loadout.Slots.ToDictionary(
+                x => x.Key,
+                x => new LoadoutVariant(x.Value.Item, null, null));
+            var equipmentOnlyLoadout = _statEngine.Calculate(character, equipmentOnlySlots, catalog);
+            var equipmentOnlyRotation = ResolveRotation(character, catalog, profile, equipmentOnlySlots);
+            var equipmentOnlyRaw = _simulator.Simulate(
+                character, equipmentOnlyLoadout, profile.Scenario, equipmentOnlyRotation);
+            var equipmentOnlyWeaponRaw = _simulator.Simulate(
+                character,
+                equipmentOnlyLoadout,
+                profile.Scenario,
+                ResolveWeaponAttackRotation(character, catalog, equipmentOnlySlots));
+            var equipmentOnlySimulation = ApplyDpsCalibration(
+                equipmentOnlyRaw,
+                equipmentOnlyWeaponRaw,
+                profile);
+            result.EquipmentOnlyUnmitigatedDps = equipmentOnlySimulation.UnmitigatedDps;
+        }
 
         for (var i = 0; i < results.Count; i++)
         {
@@ -137,9 +220,16 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(new SearchProgress("MonteCarlo", evaluated, i + 1, bestScore, watch.Elapsed, $"复核候选 {i + 1}/{results.Count}"));
             var seed = StableSeed(profile.Name, Signature(results[i].Loadout.Slots));
+            var finalRotation = ResolveRotation(character, catalog, profile, results[i].Loadout.Slots);
             results[i].Simulation = await _simulator.RunMonteCarloAsync(
-                character, results[i].Loadout, profile.Scenario, profile.Rotation,
+                character, results[i].Loadout, profile.Scenario, finalRotation,
                 Math.Clamp(profile.MonteCarloTrials, 500, 10_000), seed, cancellationToken);
+            var finalWeaponSimulation = _simulator.Simulate(
+                character,
+                results[i].Loadout,
+                profile.Scenario,
+                ResolveWeaponAttackRotation(character, catalog, results[i].Loadout.Slots));
+            results[i].Simulation = ApplyDpsCalibration(results[i].Simulation, finalWeaponSimulation, profile);
         }
 
         watch.Stop();
@@ -161,12 +251,23 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         ScoringEngine scoring)
     {
         var calculated = _statEngine.Calculate(character, slots, catalog);
-        var simulation = _simulator.Simulate(character, calculated, profile.Scenario, profile.Rotation);
+        var rotation = ResolveRotation(character, catalog, profile, slots);
+        var rawSimulation = _simulator.Simulate(character, calculated, profile.Scenario, rotation);
+        var rawWeaponSimulation = _simulator.Simulate(
+            character,
+            calculated,
+            profile.Scenario,
+            ResolveWeaponAttackRotation(character, catalog, slots));
+        var simulation = ApplyDpsCalibration(
+            rawSimulation,
+            rawWeaponSimulation,
+            profile);
         var metrics = ExtractMetrics(calculated, simulation);
-        var (tiers, violations) = scoring.Score(metrics);
+        var (tiers, contributions) = scoring.Score(metrics);
         var confidence = calculated.UnsupportedEffects.Count switch
         {
-            0 => ConfidenceLevel.High,
+            0 when calculated.Slots.Values.All(x => x.Item.Seed == 0 || x.Item.SeedStatsResolved) => ConfidenceLevel.High,
+            0 => ConfidenceLevel.Medium,
             <= 2 => ConfidenceLevel.Medium,
             _ => ConfidenceLevel.Low
         };
@@ -177,7 +278,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Simulation = simulation,
             Metrics = metrics,
             TierScores = tiers,
-            ConstraintViolations = violations,
+            ScoreContributions = contributions,
             Confidence = confidence
         };
     }
@@ -202,7 +303,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             foreach (var slot in TargetSlots)
             {
                 if (watch.Elapsed >= budget) break;
-                foreach (var variant in variantsBySlot.GetValueOrDefault(slot, []).Take(80))
+                foreach (var variant in DiversifiedLocalCandidates(variantsBySlot.GetValueOrDefault(slot, []), 80))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (watch.Elapsed >= budget) break;
@@ -245,6 +346,82 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         }
 
         progress?.Report(new SearchProgress("LocalSearch", evaluated, 0, 0, watch.Elapsed, "一槽/两槽邻域改进完成"));
+    }
+
+    private void MultiStartImprove(
+        CharacterSnapshot character,
+        List<LoadoutResult> finalists,
+        IReadOnlyDictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>> variantsBySlot,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> currentSlots,
+        GameDataCatalog catalog,
+        OptimizationProfile profile,
+        ScoringEngine scoring,
+        TimeSpan budget,
+        Stopwatch watch,
+        ref int evaluated,
+        IProgress<SearchProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (finalists.Count == 0 || watch.Elapsed >= budget) return;
+        var rng = new Random(StableSeed(profile.Name, "multi-start"));
+        var restarts = 0;
+        while (watch.Elapsed < budget)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var seedPool = finalists.Order(LoadoutResultComparer.Instance)
+                .Take(Math.Min(40, finalists.Count)).ToArray();
+            var seed = seedPool[rng.Next(seedPool.Length)];
+            var slots = new Dictionary<EquipmentSlot, LoadoutVariant>(seed.Loadout.Slots);
+
+            var perturbations = 2 + rng.Next(3);
+            for (var step = 0; step < perturbations; step++)
+                TryRandomMutation(slots, variantsBySlot, rng);
+            slots = CompleteLoadout(slots, variantsBySlot, currentSlots);
+            var best = Evaluate(character, slots, catalog, profile, scoring);
+            evaluated++;
+
+            // Random-order hill climbing samples the full candidate list, including
+            // variants outside the proxy-score top slice used by deterministic local search.
+            for (var step = 0; step < 24 && watch.Elapsed < budget; step++)
+            {
+                var neighborSlots = new Dictionary<EquipmentSlot, LoadoutVariant>(best.Loadout.Slots);
+                if (!TryRandomMutation(neighborSlots, variantsBySlot, rng)) continue;
+                neighborSlots = CompleteLoadout(neighborSlots, variantsBySlot, currentSlots);
+                var neighbor = Evaluate(character, neighborSlots, catalog, profile, scoring);
+                evaluated++;
+                if (LoadoutResultComparer.Instance.Compare(neighbor, best) < 0) best = neighbor;
+            }
+
+            finalists.Add(best);
+            restarts++;
+        }
+
+        progress?.Report(new SearchProgress("MultiStart", evaluated, restarts, 0, watch.Elapsed,
+            $"完成 {restarts} 次多起点扰动复核"));
+    }
+
+    private static bool TryRandomMutation(
+        Dictionary<EquipmentSlot, LoadoutVariant> slots,
+        IReadOnlyDictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>> variantsBySlot,
+        Random rng)
+    {
+        var targetSlot = TargetSlots[rng.Next(TargetSlots.Length)];
+        var candidates = variantsBySlot.GetValueOrDefault(targetSlot, []);
+        if (candidates.Count == 0) return false;
+        if (targetSlot == EquipmentSlot.OffHand &&
+            slots.TryGetValue(EquipmentSlot.MainHand, out var currentMain) && currentMain.Item.IsTwoHanded)
+            return false;
+
+        for (var attempt = 0; attempt < Math.Min(12, candidates.Count); attempt++)
+        {
+            var variant = candidates[rng.Next(candidates.Count)];
+            if (slots.Any(x => x.Key != targetSlot && x.Value.Item.Id == variant.Item.Id)) continue;
+            slots[targetSlot] = variant;
+            if (targetSlot == EquipmentSlot.MainHand && variant.Item.IsTwoHanded)
+                slots.Remove(EquipmentSlot.OffHand);
+            return true;
+        }
+        return false;
     }
 
     private static IReadOnlyDictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>> GenerateVariants(
@@ -299,6 +476,14 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     {
         var compatible = attachments
             .Where(x => x.Kind == kind && IsAttachmentCompatible(x, item, character, ownedAttachmentRecords))
+            .GroupBy(AttachmentMechanicsSignature, StringComparer.Ordinal)
+            .Select(group => group
+                .OrderByDescending(x =>
+                    string.Equals(GameDataSource.AttachmentRecordId(x), installedId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.CompletionBonusRecord, installedCompletionBonus, StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(x => x.IsOwned || ownedAttachmentRecords.Contains(GameDataSource.AttachmentRecordId(x)))
+                .ThenBy(x => x.Id, StringComparer.Ordinal)
+                .First())
             .ToArray();
         if (compatible.Length + 1 <= limit)
             return compatible.Cast<AttachmentDefinition?>().Prepend(null).ToArray();
@@ -328,7 +513,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return selected.Take(limit).ToArray();
     }
 
-    private static bool IsAttachmentCompatible(
+    internal static bool IsAttachmentCompatible(
         AttachmentDefinition attachment,
         ItemInstance item,
         CharacterSnapshot character,
@@ -338,6 +523,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         if (!isOwned && attachment.LevelRequirement > character.Level) return false;
         if (!attachment.CompatibleSlots.Contains(item.Slot) &&
             !(item.Slot == EquipmentSlot.Ring && (attachment.CompatibleSlots.Contains(EquipmentSlot.RingLeft) || attachment.CompatibleSlots.Contains(EquipmentSlot.RingRight)))) return false;
+        if (attachment.CompatibleItemQualifiers.Count > 0 &&
+            (string.IsNullOrWhiteSpace(item.AttachmentQualifier) ||
+             !attachment.CompatibleItemQualifiers.Contains(item.AttachmentQualifier))) return false;
         if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFormula) && !character.KnownFormulas.Contains(attachment.RequiredFormula)) return false;
         if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFaction) &&
             character.FactionReputation.GetValueOrDefault(attachment.RequiredFaction) < attachment.RequiredReputation) return false;
@@ -360,6 +548,13 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             var rows = BoundParetoInput(group.ToArray(), keys, profile, currentLoadout, maxInputPerSignature);
             for (var i = 0; i < rows.Length; i++)
             {
+                // The exact equipped item+attachment variant is the calibration
+                // anchor and must survive even when another attachment dominates it.
+                if (IsCurrentVariant(rows[i], currentLoadout))
+                {
+                    retained.Add(rows[i]);
+                    continue;
+                }
                 var dominated = false;
                 for (var j = 0; j < rows.Length && !dominated; j++)
                 {
@@ -371,8 +566,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         }
 
         return retained
-            .OrderByDescending(x => ProxyScore(x, profile))
-            .ThenByDescending(x => IsCurrentVariant(x, currentLoadout))
+            .OrderByDescending(x => IsCurrentVariant(x, currentLoadout))
+            .ThenByDescending(x => ProxyScore(x, profile))
             .ThenBy(x => x.Item.Id, StringComparer.Ordinal)
             .Take(maxResults)
             .ToArray();
@@ -412,8 +607,23 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         profile.Metrics.Select(x => x.Key).Concat(new[]
         {
             "health", "offensiveAbility", "defensiveAbility", "armor", "attackSpeed",
-            "fireResistance", "coldResistance", "lightningResistance", "aetherResistance", "chaosResistance"
-        }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            "allSkills"
+        }).Concat(StatKeys.DamageTypes.SelectMany(x => new[]
+        {
+            StatKeys.DamageFlat(x), StatKeys.WeaponDamage(x), StatKeys.DamagePercent(x),
+            StatKeys.DamageDot(x), StatKeys.DamageDotPercent(x), StatKeys.Resistance(x)
+        })).Concat(new[]
+        {
+            "physique", "cunning", "spirit",
+            "requirementReduction.global", "requirementReduction.armorPhysique",
+            "requirementReduction.rangedCunning", "requirementReduction.jewelrySpirit",
+            "requirementReduction.meleePhysique", "requirementReduction.meleeCunning",
+            "requirementReduction.meleeSpirit", "requirementReduction.shieldPhysique",
+            "requirementReduction.weaponPhysique", "requirementReduction.weaponSpirit"
+        }).Concat(string.IsNullOrWhiteSpace(profile.Rotation.MainSkillRecord)
+            ? []
+            : new[] { $"skillLevel.{profile.Rotation.MainSkillRecord}", $"skillModifier.{profile.Rotation.MainSkillRecord}" })
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
 
     private static bool IsCurrentVariant(
         LoadoutVariant variant,
@@ -436,7 +646,11 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         foreach (var rule in profile.Metrics)
         {
             var sign = rule.Direction == MetricDirection.Maximize ? 1 : -1;
-            score += sign * rule.Weight * attachment.Stats[rule.Key] * Math.Pow(100, Math.Max(0, 4 - rule.PriorityTier));
+            var benchmark = BossMetricBenchmarkResolver.Resolve(rule.Key, profile.Scenario);
+            var value = rule.Key.Equals("resistanceCoverage", StringComparison.OrdinalIgnoreCase)
+                ? BossMetricBenchmarkResolver.ResistanceCoverage(attachment.Stats)
+                : attachment.Stats[rule.Key];
+            score += sign * rule.Weight * value / Math.Max(1e-9, benchmark);
         }
         score += StatKeys.DamageTypes.Sum(x => attachment.Stats[StatKeys.DamageFlat(x)] + attachment.Stats[StatKeys.WeaponDamage(x)]) * 10;
         score += attachment.Stats["health"] + attachment.Stats["offensiveAbility"] * 3 + attachment.Stats["defensiveAbility"] * 2;
@@ -461,7 +675,11 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         foreach (var rule in profile.Metrics)
         {
             var sign = rule.Direction == MetricDirection.Maximize ? 1 : -1;
-            score += sign * rule.Weight * stats[rule.Key] * Math.Pow(100, Math.Max(0, 4 - rule.PriorityTier));
+            var benchmark = BossMetricBenchmarkResolver.Resolve(rule.Key, profile.Scenario);
+            var value = rule.Key.Equals("resistanceCoverage", StringComparison.OrdinalIgnoreCase)
+                ? BossMetricBenchmarkResolver.ResistanceCoverage(stats)
+                : stats[rule.Key];
+            score += sign * rule.Weight * value / Math.Max(1e-9, benchmark);
         }
         score += StatKeys.DamageTypes.Sum(x => stats[StatKeys.DamageFlat(x)] + stats[StatKeys.WeaponDamage(x)]) * 10;
         score += stats["health"] + stats["offensiveAbility"] * 3 + stats["defensiveAbility"] * 2;
@@ -471,9 +689,36 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     private static string InteractionSignature(LoadoutVariant variant)
     {
         var effects = string.Join(',', variant.Effects.Select(x => x.Id).Order(StringComparer.Ordinal));
-        var conversions = string.Join(',', variant.CombinedStats.Values.Where(x => x.Key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase)).Select(x => x.Key).Order(StringComparer.Ordinal));
-        return $"{variant.Item.SetId}|{effects}|{conversions}|{variant.Item.IsTwoHanded}";
+        var interactions = string.Join(',', variant.CombinedStats.Values.Where(x =>
+                x.Key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
+                x.Key.StartsWith("skillLevel.", StringComparison.OrdinalIgnoreCase) ||
+                x.Key.StartsWith("skillModifier.", StringComparison.OrdinalIgnoreCase))
+            .Select(x => $"{x.Key}:{x.Value.ToString("R", CultureInfo.InvariantCulture)}").Order(StringComparer.Ordinal));
+        var itemMechanics = $"{variant.Item.BaseRecord}|{variant.Item.PrefixRecord}|{variant.Item.SuffixRecord}|{variant.Item.Seed}";
+        return $"{itemMechanics}|{variant.Item.SetId}|{effects}|{interactions}|{variant.Item.IsTwoHanded}";
     }
+
+    private static string AttachmentMechanicsSignature(AttachmentDefinition attachment)
+    {
+        var effects = string.Join(',', attachment.Effects
+            .Select(EffectMechanicsSignature)
+            .Order(StringComparer.Ordinal));
+        var unsupported = string.Join(',', attachment.UnsupportedEffects
+            .Select(x => $"{x.Record}:{x.Description}")
+            .Order(StringComparer.Ordinal));
+        return $"{StatSignature(attachment.Stats)}|{effects}|{unsupported}";
+    }
+
+    private static string EffectMechanicsSignature(TriggeredEffect effect) =>
+        $"{effect.Trigger}:{effect.Chance.ToString("R", CultureInfo.InvariantCulture)}:" +
+        $"{effect.CooldownSeconds.ToString("R", CultureInfo.InvariantCulture)}:" +
+        $"{effect.DurationSeconds.ToString("R", CultureInfo.InvariantCulture)}:{effect.IsDefensive}:" +
+        StatSignature(effect.Damage);
+
+    private static string StatSignature(StatBlock stats) => string.Join(',', stats.Values
+        .Where(x => Math.Abs(x.Value) > 1e-12)
+        .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+        .Select(x => $"{x.Key.ToLowerInvariant()}={x.Value.ToString("R", CultureInfo.InvariantCulture)}"));
 
     private static Dictionary<EquipmentSlot, LoadoutVariant> BuildCurrentLoadout(
         CharacterSnapshot character,
@@ -522,28 +767,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return result;
     }
 
-    private static IReadOnlyDictionary<string, double> ResolveFallbackSteps(
-        OptimizationProfile profile,
-        IReadOnlyDictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>> variants)
-    {
-        var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        foreach (var rule in profile.Metrics)
-        {
-            var values = variants.Values.SelectMany(x => x)
-                .Select(x => Math.Abs(x.CombinedStats[rule.Key]))
-                .Where(x => x > 1e-9)
-                .Order()
-                .ToArray();
-            result[rule.Key] = values.Length == 0 ? 1 : values[values.Length / 2];
-        }
-        return result;
-    }
-
     public static IReadOnlyDictionary<string, double> ExtractMetrics(CalculatedLoadout loadout, SimulationReport simulation)
     {
         var result = new Dictionary<string, double>(loadout.Stats.Values, StringComparer.OrdinalIgnoreCase)
         {
             ["dps"] = simulation.ExpectedDps,
+            ["resistanceCoverage"] = BossMetricBenchmarkResolver.ResistanceCoverage(loadout.Stats),
             ["timeToKill"] = simulation.TimeToKillSeconds,
             ["effectiveHealth"] = simulation.EffectiveHealth,
             ["incomingDps"] = simulation.IncomingDps,
@@ -555,8 +784,81 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return result;
     }
 
+    private static void ConfigureDpsCalibration(
+        OptimizationProfile profile,
+        double currentSkillDps,
+        double currentWeaponDps)
+    {
+        profile.RuntimeWeaponDpsCalibrationFactor = Math.Clamp(
+            profile.CurrentWeaponAttackDps / currentWeaponDps,
+            0.5,
+            2);
+
+        var rawSkillAddedDps = currentSkillDps - currentWeaponDps;
+        var panelSkillAddedDps = profile.CurrentPanelDps - profile.CurrentWeaponAttackDps;
+        if (Math.Abs(rawSkillAddedDps) < 1e-9)
+        {
+            var tolerance = Math.Max(1, profile.CurrentPanelDps * 0.005);
+            if (Math.Abs(panelSkillAddedDps) > tolerance)
+                throw new InvalidOperationException("当前选择为默认武器攻击时，两项面板 DPS 应填写相同数值。");
+            profile.RuntimeSkillAddedDpsCalibrationFactor = profile.RuntimeWeaponDpsCalibrationFactor;
+        }
+        else
+        {
+            if (rawSkillAddedDps * panelSkillAddedDps <= 0)
+                throw new InvalidOperationException("主攻技能 DPS 与武器攻击 DPS 的关系不符合当前技能，请核对两个输入值和所选主攻技能。");
+            profile.RuntimeSkillAddedDpsCalibrationFactor = Math.Clamp(
+                panelSkillAddedDps / rawSkillAddedDps,
+                0.5,
+                2);
+        }
+
+        profile.RuntimeDpsCalibrationFactor = Math.Clamp(
+            profile.CurrentPanelDps / currentSkillDps,
+            0.5,
+            2);
+    }
+
+    private static SimulationReport ApplyDpsCalibration(
+        SimulationReport report,
+        SimulationReport weaponReport,
+        OptimizationProfile profile)
+    {
+        if (report.UnmitigatedDps <= 0) return report;
+        var calibratedSheetDps =
+            weaponReport.UnmitigatedDps * profile.RuntimeWeaponDpsCalibrationFactor +
+            (report.UnmitigatedDps - weaponReport.UnmitigatedDps) * profile.RuntimeSkillAddedDpsCalibrationFactor;
+        var factor = Math.Max(0, calibratedSheetDps) / report.UnmitigatedDps;
+        return ScaleDps(report, factor);
+    }
+
+    private static SimulationReport ScaleDps(SimulationReport report, double factor)
+    {
+        if (Math.Abs(factor - 1) < 1e-9) return report;
+        return new SimulationReport
+        {
+            ExpectedDps = report.ExpectedDps * factor,
+            UnmitigatedDps = report.UnmitigatedDps * factor,
+            TimeToKillSeconds = double.IsFinite(report.TimeToKillSeconds) ? report.TimeToKillSeconds / factor : report.TimeToKillSeconds,
+            EffectiveHealth = report.EffectiveHealth,
+            IncomingDps = report.IncomingDps,
+            SustainPerSecond = report.SustainPerSecond,
+            TimeToDeathSeconds = report.TimeToDeathSeconds,
+            HitChance = report.HitChance,
+            CritChance = report.CritChance,
+            MonteCarloDpsMean = report.MonteCarloDpsMean * factor,
+            MonteCarloDpsLow95 = report.MonteCarloDpsLow95 * factor,
+            MonteCarloDpsHigh95 = report.MonteCarloDpsHigh95 * factor,
+            MonteCarloSurvivalMean = report.MonteCarloSurvivalMean,
+            UnsupportedEffects = report.UnsupportedEffects
+        };
+    }
+
     private static string Signature(IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
         string.Join(';', slots.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value.Item.Id}:{x.Value.Component?.Id}:{x.Value.Augment?.Id}"));
+
+    private static string EquipmentSignature(IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
+        string.Join(';', slots.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value.Item.Id}"));
 
     private static int StableSeed(string profileName, string signature)
     {
@@ -566,6 +868,78 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             foreach (var ch in profileName + '|' + signature) hash = hash * 31 + ch;
             return hash;
         }
+    }
+
+    private static SkillRotationDefinition ResolveRotation(
+        CharacterSnapshot character,
+        GameDataCatalog catalog,
+        OptimizationProfile profile,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
+    {
+        var selected = character.Skills.FirstOrDefault(x =>
+            x.Record.Equals(profile.Rotation.MainSkillRecord, StringComparison.OrdinalIgnoreCase));
+        return SkillRotationFactory.Build(character, catalog, selected, slots);
+    }
+
+    private static SkillRotationDefinition ResolveWeaponAttackRotation(
+        CharacterSnapshot character,
+        GameDataCatalog catalog,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
+        SkillRotationFactory.Build(character, catalog, null, slots);
+
+    private static List<BeamState> SelectDiverseBeam(IReadOnlyList<BeamState> states, int beamWidth)
+    {
+        var ordered = states.OrderByDescending(x => x.Heuristic)
+            .ThenBy(x => Signature(x.Slots), StringComparer.Ordinal)
+            .ToArray();
+        if (ordered.Length <= beamWidth) return ordered.ToList();
+
+        var eliteCount = Math.Max(1, (int)Math.Round(beamWidth * 0.7));
+        var selected = ordered.Take(eliteCount).ToList();
+        var signatures = selected.Select(x => Signature(x.Slots)).ToHashSet(StringComparer.Ordinal);
+        foreach (var state in ordered.Skip(eliteCount)
+                     .GroupBy(x => DiversitySignature(x.Slots), StringComparer.Ordinal)
+                     .Select(x => x.First())
+                     .OrderByDescending(x => x.Heuristic))
+        {
+            if (selected.Count >= beamWidth) break;
+            if (signatures.Add(Signature(state.Slots))) selected.Add(state);
+        }
+        foreach (var state in ordered)
+        {
+            if (selected.Count >= beamWidth) break;
+            if (signatures.Add(Signature(state.Slots))) selected.Add(state);
+        }
+        return selected;
+    }
+
+    private static string DiversitySignature(IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
+    {
+        var weapons = string.Join(',', new[] { EquipmentSlot.MainHand, EquipmentSlot.OffHand }
+            .Where(slots.ContainsKey).Select(x => slots[x].Item.Id));
+        var sets = string.Join(',', slots.Values.Where(x => !string.IsNullOrWhiteSpace(x.Item.SetId))
+            .GroupBy(x => x.Item.SetId, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(x => $"{x.Key}:{x.Count()}"));
+        var interactions = string.Join(',', slots.Values.Select(InteractionSignature)
+            .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
+        return $"{weapons}|{sets}|{interactions}";
+    }
+
+    private static IReadOnlyList<LoadoutVariant> DiversifiedLocalCandidates(
+        IReadOnlyList<LoadoutVariant> variants,
+        int limit)
+    {
+        if (variants.Count <= limit) return variants;
+        var selected = variants.Take(limit / 2).ToList();
+        var seen = selected.ToHashSet();
+        var remaining = limit - selected.Count;
+        for (var index = 0; index < remaining; index++)
+        {
+            var position = (int)Math.Round(index * (variants.Count - 1d) / Math.Max(1, remaining - 1));
+            if (seen.Add(variants[position])) selected.Add(variants[position]);
+        }
+        return selected;
     }
 
     private sealed record BeamState(Dictionary<EquipmentSlot, LoadoutVariant> Slots, double Heuristic);

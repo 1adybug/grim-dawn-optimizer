@@ -66,19 +66,11 @@ jobs:
           --no-restore
           -o .\artifacts\win-x64
 
-      - name: Create release archive
-        id: package
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:GITHUB_WORKSPACE "artifacts\GrimDawnOptimizer-$env:GITHUB_REF_NAME-win-x64.zip"
-          Compress-Archive -Path ".\artifacts\win-x64\*" -DestinationPath $archive
-          "archive=$archive" >> $env:GITHUB_OUTPUT
-
       - name: Create GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ARCHIVE: ${{ steps.package.outputs.archive }}
+          RELEASE_EXECUTABLE: ${{ github.workspace }}\artifacts\win-x64\GrimDawnOptimizer.App.exe
         run: |
           gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) {
@@ -86,7 +78,7 @@ jobs:
             exit 0
           }
 
-          gh release create $env:GITHUB_REF_NAME $env:RELEASE_ARCHIVE `
+          gh release create $env:GITHUB_REF_NAME $env:RELEASE_EXECUTABLE `
             --repo $env:GITHUB_REPOSITORY `
             --verify-tag `
             --generate-notes `

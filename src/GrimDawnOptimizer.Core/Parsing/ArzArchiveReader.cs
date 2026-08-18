@@ -11,6 +11,12 @@ internal sealed class ArzArchiveReader
 
     private static readonly HashSet<string> TextFields = BuildTextFields();
 
+    private static readonly string[] SeedStatPrefixes =
+    [
+        "offensive", "defensive", "retaliation", "character", "skill",
+        "conversion", "blockAbsorption", "blockRecovery"
+    ];
+
     public IReadOnlyDictionary<string, GameRecord> Read(string path, CancellationToken cancellationToken = default)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -98,7 +104,7 @@ internal sealed class ArzArchiveReader
                     if (values.Count > 0) text[key] = values;
                 }
             }
-            else if (NumericFields.Contains(key))
+            else if (NumericFields.Contains(key) || IsPotentialSeedStatField(name, key))
             {
                 var values = new double[count];
                 for (var i = 0; i < count; i++)
@@ -128,26 +134,42 @@ internal sealed class ArzArchiveReader
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "augmentAllLevel",
+            "attributeScalePercent",
             "characterAttackSpeed",
             "characterAttackSpeedModifier",
+            "characterBaseAttackSpeed",
             "characterDefensiveAbility",
             "characterDefensiveAbilityModifier",
             "characterDeflectProjectile",
             "characterDexterity",
+            "characterDexterityModifier",
             "characterDexterityReq",
             "characterDodgePercent",
             "characterIntelligence",
+            "characterIntelligenceModifier",
             "characterIntelligenceReq",
+            "characterGlobalReqReduction",
+            "characterArmorStrengthReqReduction",
+            "characterHuntingDexterityReqReduction",
+            "characterJewelryIntelligenceReqReduction",
+            "characterMeleeStrengthReqReduction",
+            "characterMeleeDexterityReqReduction",
+            "characterMeleeIntelligenceReqReduction",
+            "characterShieldStrengthReqReduction",
+            "characterWeaponStrengthReqReduction",
+            "characterWeaponIntelligenceReqReduction",
             "characterLife",
             "characterLifeModifier",
             "characterLifeRegen",
             "characterMana",
+            "characterManaModifier",
             "characterManaRegen",
             "characterOffensiveAbility",
             "characterOffensiveAbilityModifier",
             "characterSpellCastSpeed",
             "characterSpellCastSpeedModifier",
             "characterStrength",
+            "characterStrengthModifier",
             "characterStrengthReq",
             "conversionPercentage",
             "conversionPercentage2",
@@ -161,26 +183,91 @@ internal sealed class ArzArchiveReader
             "factionValue",
             "itemSkillLevelEq",
             "levelRequirement",
+            "lootRandomizerJitter",
+            "lootRandomizerScale",
             "maxLevel",
             "minLevel",
             "offensiveLifeLeechMin",
+            "offensivePierceRatioMin",
+            "offensiveCriticalModifier",
+            "offensiveCritDamage",
+            "offensiveCritDamageModifier",
+            "offensiveTotalDamageModifier",
             "skillChance",
+            "skillChanceWeight",
+            "skillChargeLevel",
+            "skillActiveManaCost",
+            "skillActiveDuration",
             "skillCooldownTime",
+            "skillManaCost",
+            "skillProjectileNumber",
+            "skillTargetNumber",
+            "skillTargetRadius",
+            "weaponDamagePct",
             "triggerCooldown",
             "triggerEventChance",
             "usesTwoHands"
         };
 
+        foreach (var qualifier in new[]
+                 {
+                     "amulet", "bracelet", "ring", "medal", "head", "shoulders", "hands", "chest",
+                     "waist", "legs", "feet", "shield", "offhand", "spear", "staff", "axe", "mace",
+                     "sword", "dagger", "scepter", "ranged1h", "ranged2h", "axe2h", "mace2h",
+                     "sword2h", "spear2h"
+                 })
+            result.Add(qualifier);
+
         foreach (var damageType in new[] { "Physical", "Pierce", "Fire", "Cold", "Lightning", "Poison", "Life", "Aether", "Chaos" })
         {
+            result.Add($"offensiveBase{damageType}Min");
+            result.Add($"offensiveBase{damageType}Max");
             result.Add($"offensive{damageType}Min");
             result.Add($"offensive{damageType}Max");
+            result.Add($"offensive{damageType}Chance");
             result.Add($"offensive{damageType}Modifier");
+            result.Add($"offensiveSlow{damageType}Min");
+            result.Add($"offensiveSlow{damageType}Max");
+            result.Add($"offensiveSlow{damageType}Chance");
+            result.Add($"offensiveSlow{damageType}DurationMin");
+            result.Add($"offensiveSlow{damageType}DurationMax");
+            result.Add($"offensiveSlow{damageType}Modifier");
             result.Add($"defensive{damageType}");
             result.Add($"defensive{damageType}Resistance");
             result.Add($"defensive{damageType}MaxResist");
         }
+        result.Add("offensiveElementalMin");
+        result.Add("offensiveElementalMax");
+        result.Add("offensiveElementalChance");
+        result.Add("offensiveElementalModifier");
+        foreach (var damageType in new[] { "Acid", "Bleeding" })
+        {
+            result.Add($"offensiveBase{damageType}Min");
+            result.Add($"offensiveBase{damageType}Max");
+            result.Add($"offensive{damageType}Min");
+            result.Add($"offensive{damageType}Max");
+            result.Add($"offensive{damageType}Chance");
+            result.Add($"offensive{damageType}Modifier");
+            result.Add($"offensiveSlow{damageType}Min");
+            result.Add($"offensiveSlow{damageType}Max");
+            result.Add($"offensiveSlow{damageType}Chance");
+            result.Add($"offensiveSlow{damageType}DurationMin");
+            result.Add($"offensiveSlow{damageType}DurationMax");
+            result.Add($"offensiveSlow{damageType}Modifier");
+        }
+        for (var index = 1; index <= 32; index++)
+        {
+            result.Add($"augmentSkillLevel{index}");
+            result.Add($"augmentMasteryLevel{index}");
+        }
         return result;
+    }
+
+    private static bool IsPotentialSeedStatField(string recordName, string field)
+    {
+        if (!recordName.StartsWith("records/items/", StringComparison.OrdinalIgnoreCase)) return false;
+        if (field.Equals("lootRandomizerScale", StringComparison.OrdinalIgnoreCase)) return true;
+        return SeedStatPrefixes.Any(prefix => field.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 
     private static HashSet<string> BuildTextFields()
@@ -198,15 +285,29 @@ internal sealed class ArzArchiveReader
             "conversionInType2",
             "conversionOutType",
             "conversionOutType2",
+            "description",
             "factionName",
             "itemNameTag",
+            "itemSkillAutoController",
             "itemSetName",
             "itemSkillName",
             "lootRandomizerName",
             "monsterClassification",
             "relicName",
             "skillAutoController",
+            "buffSkillName",
+            "buffSelfSkillName",
+            "buffSelf2SkillName",
+            "modifiedSkillName1",
+            "modifiedSkillName2",
+            "modifiedSkillName3",
+            "modifierSkillName1",
+            "modifierSkillName2",
+            "modifierSkillName3",
+            "skillDescription",
+            "skillBaseDescription",
             "skillDisplayName",
+            "skillProjectileName",
             "triggerType",
             "setBonus2",
             "setBonus3",
@@ -221,6 +322,10 @@ internal sealed class ArzArchiveReader
         {
             result.Add($"skillName{index}");
             result.Add($"skillLevel{index}");
+            result.Add($"augmentSkillName{index}");
+            result.Add($"augmentMasteryName{index}");
+            result.Add($"modifiedSkillName{index}");
+            result.Add($"modifierSkillName{index}");
         }
         return result;
     }

@@ -12,7 +12,7 @@ public sealed class ResultViewModel
         EquipmentSlot.MainHand, EquipmentSlot.OffHand
     ];
 
-    public ResultViewModel(LoadoutResult result, CharacterSnapshot character)
+    public ResultViewModel(LoadoutResult result, CharacterSnapshot character, IReadOnlyList<MetricRule> metricRules)
     {
         Model = result;
         var currentItems = character.CurrentLoadout.ToDictionary(
@@ -31,26 +31,33 @@ public sealed class ResultViewModel
             var candidate = slot == EquipmentSlot.OffHand && usesTwoHands ? "由双手武器占用" : "—（无可用装备）";
             return new SlotResultViewModel(SlotName(slot), currentItem, candidate, string.Empty, "—", currentItem != "—");
         }).ToArray();
-        ConstraintRows = result.ConstraintViolations.Select(x => $"{x.Key} 缺口 {x.Value:0.##} 步").ToArray();
         WarningRows = result.Loadout.UnsupportedEffects.Select(x => $"{x.Description} · {x.Record}")
-            .Concat(result.Loadout.ValidationErrors).ToArray();
+            .Concat(result.Loadout.ValidationErrors)
+            .Concat(character.ImportWarnings)
+            .Distinct().ToArray();
+        var labels = metricRules.GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Key, x => x.First().DisplayName, StringComparer.OrdinalIgnoreCase);
+        ScoreBreakdown = string.Join(" · ", result.ScoreContributions.Select(x =>
+            $"{labels.GetValueOrDefault(x.Key, x.Key)} {x.Value:+0.000;-0.000;0.000}"));
     }
 
     public LoadoutResult Model { get; }
     public int Rank => Model.Rank;
     public string Title => $"候选 {Rank:00}";
     public string Dps => FormatNumber(Model.Simulation.ExpectedDps);
+    public string UnmitigatedDps => FormatNumber(Model.Simulation.UnmitigatedDps);
+    public string EquipmentOnlyUnmitigatedDps => FormatNumber(Model.EquipmentOnlyUnmitigatedDps);
     public string TimeToKill => double.IsPositiveInfinity(Model.Simulation.TimeToKillSeconds) ? "∞" : $"{Model.Simulation.TimeToKillSeconds:0.0}s";
     public string EffectiveHealth => FormatNumber(Model.Simulation.EffectiveHealth);
     public string TimeToDeath => double.IsPositiveInfinity(Model.Simulation.TimeToDeathSeconds) ? "∞" : $"{Model.Simulation.TimeToDeathSeconds:0.0}s";
     public string Confidence => Model.Confidence switch { ConfidenceLevel.High => "高置信度", ConfidenceLevel.Medium => "中置信度", _ => "低置信度" };
-    public string Feasibility => Model.IsFeasible ? "满足全部约束" : $"{Model.ConstraintViolations.Count} 项约束未满足";
+    public string Validity => Model.Loadout.IsValid ? "配装合法" : "配装存在兼容性问题";
     public string MonteCarloRange => Model.Simulation.MonteCarloDpsHigh95 > 0
         ? $"95% · {FormatNumber(Model.Simulation.MonteCarloDpsLow95)} – {FormatNumber(Model.Simulation.MonteCarloDpsHigh95)}"
         : "等待抽样复核";
-    public string TierScores => string.Join("  /  ", Model.TierScores.Select((x, i) => $"层 {i + 1}: {x:+0.##;-0.##;0}"));
+    public string ScoreSummary => $"最终权重得分：{Model.TierScores.FirstOrDefault():0.000}";
+    public string ScoreBreakdown { get; }
     public IReadOnlyList<SlotResultViewModel> SlotRows { get; }
-    public IReadOnlyList<string> ConstraintRows { get; }
     public IReadOnlyList<string> WarningRows { get; }
 
     private static string FormatNumber(double value) => double.IsPositiveInfinity(value) ? "∞" : value switch

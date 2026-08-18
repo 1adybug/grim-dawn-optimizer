@@ -109,11 +109,34 @@ public static class DemoDataFactory
             BaselineStats = baseline,
             Items = items,
             CurrentLoadout = current,
+            PrimarySkillRecord = "demo/skill/fire-strike",
             Skills = [new CharacterSkill("demo/skill/fire-strike", "烈焰打击", 26, 0, true, string.Empty, string.Empty)],
             FactionReputation = new Dictionary<string, double> { ["faction:demo"] = 25_000 },
             KnownFormulas = new HashSet<string>()
         };
-        var catalog = new GameDataCatalog { Version = "demo-1.3", Attachments = attachments };
+        var catalog = new GameDataCatalog
+        {
+            Version = "demo-1.3",
+            Attachments = attachments,
+            Records = new Dictionary<string, GameRecord>
+            {
+                ["demo/skill/fire-strike"] = new GameRecord
+                {
+                    RecordName = "demo/skill/fire-strike",
+                    RecordType = "Skill_WeaponPool_BasicAttack",
+                    NumericValues = new StatBlock(new Dictionary<string, double>
+                    {
+                        ["weaponDamagePct"] = 155,
+                        ["skillManaCost"] = 4,
+                        ["offensiveFireMin"] = 85
+                    }),
+                    TextValues = new Dictionary<string, IReadOnlyList<string>>
+                    {
+                        ["Class"] = ["Skill_WeaponPool_BasicAttack"]
+                    }
+                }
+            }
+        };
         return (character, catalog);
     }
 

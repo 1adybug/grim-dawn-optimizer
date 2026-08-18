@@ -24,7 +24,7 @@ public enum EquipmentSlot
     OffHand
 }
 
-public enum ItemSourceKind { Equipped, Backpack, PersonalStash, SharedStash }
+public enum ItemSourceKind { Equipped, AlternateWeaponSet, Backpack, PersonalStash, SharedStash }
 public enum AttachmentKind { Component, Augment }
 public enum MetricDirection { Maximize, Minimize }
 public enum ConfidenceLevel { High, Medium, Low }
@@ -39,9 +39,10 @@ public sealed record ItemSourceLocation(
     public string DisplayName => Kind switch
     {
         ItemSourceKind.Equipped => "当前穿戴",
-        ItemSourceKind.Backpack => $"背包 {ContainerIndex + 1} ({X},{Y})",
-        ItemSourceKind.PersonalStash => $"个人仓库 {ContainerIndex + 1} ({X},{Y})",
-        ItemSourceKind.SharedStash => $"共享仓库 {ContainerIndex + 1} ({X},{Y})",
+        ItemSourceKind.AlternateWeaponSet => $"备用武器组 {ContainerIndex + 1}",
+        ItemSourceKind.Backpack => $"背包第 {ContainerIndex + 1} 页 · 左上格 ({X + 1},{Y + 1})",
+        ItemSourceKind.PersonalStash => $"个人仓库第 {ContainerIndex + 1} 页 · 左上格 ({X + 1},{Y + 1})",
+        ItemSourceKind.SharedStash => $"共享仓库第 {ContainerIndex + 1} 页 · 左上格 ({X + 1},{Y + 1})",
         _ => Kind.ToString()
     };
 }
@@ -103,6 +104,7 @@ public sealed class ItemInstance
     public string ModifierRecord { get; init; } = string.Empty;
     public string TransmuteRecord { get; init; } = string.Empty;
     public uint Seed { get; init; }
+    public bool SeedStatsResolved { get; init; }
     public string ComponentRecord { get; init; } = string.Empty;
     public string CompletionBonusRecord { get; init; } = string.Empty;
     public uint ComponentSeed { get; init; }
@@ -113,6 +115,7 @@ public sealed class ItemInstance
     public int CunningRequirement { get; init; }
     public int SpiritRequirement { get; init; }
     public bool IsTwoHanded { get; init; }
+    public string AttachmentQualifier { get; init; } = string.Empty;
     public string SetId { get; init; } = string.Empty;
     public StatBlock Stats { get; init; } = new();
     public IReadOnlyList<TriggeredEffect> Effects { get; init; } = [];
@@ -135,6 +138,7 @@ public sealed class AttachmentDefinition
     public required string Name { get; init; }
     public required AttachmentKind Kind { get; init; }
     public IReadOnlySet<EquipmentSlot> CompatibleSlots { get; init; } = new HashSet<EquipmentSlot>();
+    public IReadOnlySet<string> CompatibleItemQualifiers { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     public int LevelRequirement { get; init; }
     public string RequiredFormula { get; init; } = string.Empty;
     public string RequiredFaction { get; init; } = string.Empty;
@@ -174,21 +178,23 @@ public sealed class CharacterSnapshot
     public IReadOnlyList<ItemInstance> Items { get; init; } = [];
     public IReadOnlyList<OwnedAttachmentInstance> OwnedAttachments { get; init; } = [];
     public IReadOnlyDictionary<EquipmentSlot, string> CurrentLoadout { get; init; } = new Dictionary<EquipmentSlot, string>();
+    public string PrimarySkillRecord { get; init; } = string.Empty;
+    public string SecondarySkillRecord { get; init; } = string.Empty;
     public bool CanDualWield { get; init; }
     public IReadOnlyList<string> ImportWarnings { get; init; } = [];
 }
 
 public sealed record IncomingDamageProfile(
     double HitsPerSecond = 1.2,
-    double PhysicalPerHit = 1200,
-    double FirePerHit = 450,
-    double ColdPerHit = 0,
-    double LightningPerHit = 0,
-    double AcidPerHit = 0,
-    double PiercePerHit = 0,
-    double VitalityPerHit = 0,
-    double AetherPerHit = 0,
-    double ChaosPerHit = 0);
+    double PhysicalPerHit = 750,
+    double FirePerHit = 112.5,
+    double ColdPerHit = 112.5,
+    double LightningPerHit = 112.5,
+    double AcidPerHit = 112.5,
+    double PiercePerHit = 112.5,
+    double VitalityPerHit = 112.5,
+    double AetherPerHit = 112.5,
+    double ChaosPerHit = 112.5);
 
 public sealed class CombatScenario
 {
@@ -218,40 +224,59 @@ public sealed class SkillRotationDefinition
     public double WeaponDamagePercent { get; set; } = 100;
     public double BaseAttacksPerSecond { get; set; } = 1.5;
     public double EnergyPerUse { get; set; }
+    public double CooldownSeconds { get; set; }
+    public double ActivationRate { get; set; } = 1;
+    public double WeaponPoolChance { get; set; }
+    public double WeaponPoolDamageMultiplier { get; set; } = 1;
+    public bool UsesAttackSpeed { get; set; } = true;
+    public bool IsFallback { get; set; } = true;
+    public string CalculationSummary { get; set; } = "默认武器攻击估算";
     public StatBlock FlatDamage { get; set; } = new();
+    public StatBlock WeaponPoolFlatDamage { get; set; } = new();
+    public List<WeaponPoolAttackDefinition> WeaponPoolAttacks { get; set; } = [];
     public List<string> EnabledCooldownSkills { get; set; } = [];
+}
+
+public sealed class WeaponPoolAttackDefinition
+{
+    public string Record { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public double Chance { get; set; }
+    public double WeaponDamageMultiplier { get; set; } = 1;
+    public double WeaponStrikes { get; set; } = 1;
+    public StatBlock FlatDamage { get; set; } = new();
 }
 
 public sealed class MetricRule
 {
     public string Key { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
-    public int PriorityTier { get; set; } = 1;
+    public string Description { get; set; } = string.Empty;
     public double Weight { get; set; } = 1;
     public MetricDirection Direction { get; set; } = MetricDirection.Maximize;
-    public double? HardMinimum { get; set; }
-    public double? HardMaximum { get; set; }
-    public double NormalizationStep { get; set; }
 }
 
 public sealed class OptimizationProfile
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 5;
     public string Name { get; set; } = "默认构筑";
     public CombatScenario Scenario { get; set; } = new();
     public SkillRotationDefinition Rotation { get; set; } = new();
-    public List<MetricRule> Metrics { get; set; } =
-    [
-        new() { Key = "dps", DisplayName = "持续 DPS", PriorityTier = 1, Weight = 1 },
-        new() { Key = "effectiveHealth", DisplayName = "有效生命", PriorityTier = 2, Weight = 1 },
-        new() { Key = "fireResistance", DisplayName = "火焰抗性", PriorityTier = 0, HardMinimum = 80, NormalizationStep = 1 },
-        new() { Key = "coldResistance", DisplayName = "冰冷抗性", PriorityTier = 0, HardMinimum = 80, NormalizationStep = 1 },
-        new() { Key = "lightningResistance", DisplayName = "闪电抗性", PriorityTier = 0, HardMinimum = 80, NormalizationStep = 1 }
-    ];
-    public int SearchBudgetSeconds { get; set; } = 5;
+    public List<MetricRule> Metrics { get; set; } = SupportedMetricCatalog.CreateDefaults();
+    public int SearchBudgetSeconds { get; set; } = 60;
     public int ResultCount { get; set; } = 10;
     public int MonteCarloTrials { get; set; } = 2000;
     public bool UseUnlockedAttachments { get; set; } = true;
+    [JsonIgnore]
+    public double CurrentWeaponAttackDps { get; set; }
+    [JsonIgnore]
+    public double CurrentPanelDps { get; set; }
+    [JsonIgnore]
+    public double RuntimeDpsCalibrationFactor { get; set; } = 1;
+    [JsonIgnore]
+    public double RuntimeWeaponDpsCalibrationFactor { get; set; } = 1;
+    [JsonIgnore]
+    public double RuntimeSkillAddedDpsCalibrationFactor { get; set; } = 1;
 }
 
 public sealed class LoadoutVariant(ItemInstance item, AttachmentDefinition? component, AttachmentDefinition? augment)
@@ -294,6 +319,7 @@ public sealed class CalculatedLoadout
 public sealed class SimulationReport
 {
     public double ExpectedDps { get; init; }
+    public double UnmitigatedDps { get; init; }
     public double TimeToKillSeconds { get; init; }
     public double EffectiveHealth { get; init; }
     public double IncomingDps { get; init; }
@@ -313,11 +339,12 @@ public sealed class LoadoutResult
     public required int Rank { get; set; }
     public required CalculatedLoadout Loadout { get; init; }
     public required SimulationReport Simulation { get; set; }
+    public double EquipmentOnlyUnmitigatedDps { get; set; }
     public required IReadOnlyDictionary<string, double> Metrics { get; init; }
     public required IReadOnlyList<double> TierScores { get; init; }
-    public required IReadOnlyDictionary<string, double> ConstraintViolations { get; init; }
+    public IReadOnlyDictionary<string, double> ScoreContributions { get; init; } =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
     public required ConfidenceLevel Confidence { get; init; }
-    public bool IsFeasible => ConstraintViolations.Count == 0 && Loadout.IsValid;
 }
 
 public sealed record SearchProgress(

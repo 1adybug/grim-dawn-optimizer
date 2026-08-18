@@ -80,6 +80,7 @@ public sealed class CombatSimulator : ICombatSimulator
             return new SimulationReport
             {
                 ExpectedDps = baseReport.ExpectedDps,
+                UnmitigatedDps = baseReport.UnmitigatedDps,
                 TimeToKillSeconds = baseReport.TimeToKillSeconds,
                 EffectiveHealth = baseReport.EffectiveHealth,
                 IncomingDps = baseReport.IncomingDps,
@@ -99,24 +100,92 @@ public sealed class CombatSimulator : ICombatSimulator
     private static CombatBreakdown BuildBreakdown(CalculatedLoadout loadout, CombatScenario scenario, SkillRotationDefinition rotation)
     {
         var stats = loadout.Stats;
+        var offensiveStats = stats.Clone();
+        foreach (var (key, value) in rotation.FlatDamage.Values)
+            if ((key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) && key.EndsWith(".percent", StringComparison.OrdinalIgnoreCase)) ||
+                key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
+                key.StartsWith("rr.", StringComparison.OrdinalIgnoreCase))
+                offensiveStats.Add(key, value);
         var damage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var dotDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var sheetDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var sheetDotDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var activationRate = Math.Clamp(rotation.ActivationRate, 0, 1);
+        var defaultStrikes = Math.Max(1, stats["averageWeaponStrikesPerAction"]);
+        var weaponPool = NormalizeWeaponPool(rotation.WeaponPoolAttacks);
+        var weaponPoolChance = weaponPool.Sum(x => x.ChanceFraction);
         foreach (var type in StatKeys.DamageTypes)
         {
-            var weapon = stats[StatKeys.WeaponDamage(type)] * rotation.WeaponDamagePercent / 100d;
-            damage[type] = weapon + stats[StatKeys.DamageFlat(type)] + rotation.FlatDamage[StatKeys.DamageFlat(type)];
+            var normalWeaponHit = stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)];
+            var legacyPoolMultiplier = weaponPool.Count == 0 ? Math.Max(0, rotation.WeaponPoolDamageMultiplier) : 1;
+            var sheetSkillHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d +
+                                rotation.FlatDamage[StatKeys.DamageFlat(type)];
+            var selectedSkillHit = sheetSkillHit +
+                                   normalWeaponHit * rotation.WeaponDamagePercent / 100d * (legacyPoolMultiplier - 1) +
+                                   (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageFlat(type)] : 0);
+            var selectedPerStrike = normalWeaponHit + (selectedSkillHit - normalWeaponHit) * activationRate;
+            // The character-sheet comparison value describes the selected attack
+            // itself. Weapon-pool skills replace attacks in combat but are not
+            // folded into the target-free sheet DPS shown by the game.
+            var sheetPerStrike = normalWeaponHit + (sheetSkillHit - normalWeaponHit) * activationRate;
+            sheetDamage[type] = sheetPerStrike * defaultStrikes;
+            var directPerAction = selectedPerStrike * defaultStrikes * (1 - weaponPoolChance);
+            foreach (var entry in weaponPool)
+            {
+                var wpsHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d *
+                             Math.Max(0, entry.Attack.WeaponDamageMultiplier) +
+                             rotation.FlatDamage[StatKeys.DamageFlat(type)] +
+                             entry.Attack.FlatDamage[StatKeys.DamageFlat(type)];
+                directPerAction += entry.ChanceFraction * wpsHit * Math.Max(1, entry.Attack.WeaponStrikes);
+            }
+            damage[type] = directPerAction;
+
+            var normalDot = stats[StatKeys.DamageDot(type)];
+            var sheetSelectedDot = normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)];
+            var selectedDot = sheetSelectedDot +
+                              (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageDot(type)] : 0);
+            sheetDotDamage[type] = sheetSelectedDot * defaultStrikes;
+            var dotPerAction = selectedDot * defaultStrikes * (1 - weaponPoolChance);
+            foreach (var entry in weaponPool)
+                dotPerAction += entry.ChanceFraction *
+                    (normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)] +
+                     entry.Attack.FlatDamage[StatKeys.DamageDot(type)]) * Math.Max(1, entry.Attack.WeaponStrikes);
+            dotDamage[type] = dotPerAction;
         }
 
-        ApplyConversions(damage, stats);
+        ApplyConversions(damage, offensiveStats);
+        ApplyConversions(sheetDamage, offensiveStats);
 
         var rawDamagePerLandedHit = 0d;
+        var sheetDamagePerHit = 0d;
+        var rawDotDps = 0d;
+        var sheetDotDps = 0d;
         foreach (var type in StatKeys.DamageTypes)
         {
-            var boosted = damage[type] * Math.Max(0, 1 + stats[StatKeys.DamagePercent(type)] / 100d);
-            rawDamagePerLandedHit += ApplyEnemyMitigation(type, boosted, scenario, stats);
+            var damageMultiplier = Math.Max(0, 1 + offensiveStats[StatKeys.DamagePercent(type)] / 100d);
+            var boosted = damage[type] * damageMultiplier;
+            var sheetBoosted = sheetDamage[type] * damageMultiplier;
+            sheetDamagePerHit += sheetBoosted;
+            rawDamagePerLandedHit += ApplyEnemyMitigation(type, boosted, scenario, offensiveStats);
+            var boostedDot = dotDamage[type] * Math.Max(0, 1 +
+                (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
+            var sheetBoostedDot = sheetDotDamage[type] * Math.Max(0, 1 +
+                (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
+            sheetDotDps += sheetBoostedDot;
+            rawDotDps += ApplyEnemyMitigation(type, boostedDot, scenario, offensiveStats);
         }
 
-        var attackSpeed = Math.Clamp(1 + stats["attackSpeed"] / 100d, 0.2, 2.0);
-        var attacksPerSecond = Math.Max(0.05, rotation.BaseAttacksPerSecond * attackSpeed);
+        var speedBonus = rotation.UsesAttackSpeed ? stats["attackSpeed"] : stats["castSpeed"];
+        var weaponSpeedFactor = rotation.UsesAttackSpeed && stats["weaponAttackSpeedFactor"] > 0
+            ? stats["weaponAttackSpeedFactor"]
+            : 1;
+        // Grim Dawn applies the weapon/animation base before the global speed
+        // bonus and caps the resulting character-sheet speed, not the bonus in
+        // isolation. This matters most for ranged dual wielding.
+        var actionSpeed = Math.Clamp(weaponSpeedFactor * (1 + speedBonus / 100d), 0.2, 2.0);
+        var attacksPerSecond = Math.Max(0.05, rotation.BaseAttacksPerSecond * actionSpeed);
+        if (rotation.CooldownSeconds > Epsilon)
+            attacksPerSecond = Math.Min(attacksPerSecond, 1d / rotation.CooldownSeconds);
         var energyAvailable = Math.Max(0, stats["energyRegen"] + stats["energy"] / Math.Max(1, scenario.DurationSeconds));
         var energyNeeded = rotation.EnergyPerUse * attacksPerSecond;
         if (energyNeeded > Epsilon)
@@ -126,23 +195,40 @@ public sealed class CombatSimulator : ICombatSimulator
             ? scenario.EnemyDefensiveAbility
             : 2400 + scenario.EnemyLevel * 5;
         var (hitChance, critChance, critMultiplier) = ResolveHitAndCrit(stats["offensiveAbility"], enemyDefensiveAbility);
-        var weaponDps = rawDamagePerLandedHit * attacksPerSecond * hitChance * (1 + critChance * (critMultiplier - 1));
+        var selectedSkillCritMultiplier = critMultiplier + Math.Max(0, rotation.FlatDamage["criticalDamage"] / 100d);
+        var hitAndCritFactor = hitChance * (1 + critChance * (selectedSkillCritMultiplier - 1));
+        var weaponDps = rawDamagePerLandedHit * attacksPerSecond * hitAndCritFactor + rawDotDps * hitChance;
+        // This value mirrors the game's target-free sheet tooltip: no armor,
+        // resistance, hit chance or enemy defensive ability is applied.
+        var unmitigatedWeaponDps = sheetDamagePerHit * attacksPerSecond + sheetDotDps;
 
         var procModels = new List<ProcModel>();
         var procDps = 0d;
-        foreach (var effect in loadout.Effects.Where(x => !x.IsDefensive && x.Trigger.Equals("OnAttack", StringComparison.OrdinalIgnoreCase)))
+        foreach (var effect in loadout.Effects.Where(x => !x.IsDefensive))
         {
             var chance = Math.Clamp(effect.Chance, 0, 1);
-            var triggerRate = attacksPerSecond * chance;
+            var eventFactor = effect.Trigger.ToLowerInvariant() switch
+            {
+                "onattack" => 1d,
+                "oncrit" => critChance,
+                _ => 0d
+            };
+            if (eventFactor <= 0) continue;
+            var triggerRate = attacksPerSecond * chance * eventFactor;
             if (effect.CooldownSeconds > Epsilon)
                 triggerRate = Math.Min(triggerRate, 1d / effect.CooldownSeconds);
 
             var procDamage = ResolveEffectDamage(effect.Damage, stats, scenario);
             procDps += triggerRate * procDamage;
-            procModels.Add(new ProcModel(chance, procDamage));
+            procModels.Add(new ProcModel(Math.Clamp(triggerRate / attacksPerSecond, 0, 1), procDamage));
         }
 
-        var expectedDps = (weaponDps + procDps) * Math.Max(1, scenario.TargetCount);
+        var targetCount = Math.Max(1, scenario.TargetCount);
+        var expectedDps = (weaponDps + procDps) * targetCount;
+        // Grim Dawn's target-free sheet value contains direct skill/weapon damage,
+        // but no enemy DA exists to roll a crit against and random item procs are
+        // not treated as guaranteed DPS.  They remain in ExpectedDps above.
+        var unmitigatedDps = unmitigatedWeaponDps * targetCount;
         var timeToKill = expectedDps <= Epsilon
             ? double.PositiveInfinity
             : Math.Max(1, scenario.EnemyHealth) * Math.Max(1, scenario.TargetCount) / expectedDps;
@@ -163,9 +249,19 @@ public sealed class CombatSimulator : ICombatSimulator
         var timeToDeath = incomingDps <= sustain + Epsilon ? double.PositiveInfinity : health / (incomingDps - sustain);
 
         return new CombatBreakdown(
-            expectedDps, timeToKill, effectiveHealth, incomingDps, sustain, timeToDeath,
-            attacksPerSecond, rawDamagePerLandedHit, hitChance, critChance, critMultiplier,
+            expectedDps, unmitigatedDps, timeToKill, effectiveHealth, incomingDps, sustain, timeToDeath,
+            attacksPerSecond, rawDamagePerLandedHit, hitChance, critChance, selectedSkillCritMultiplier,
             enemyHit, avoidance, blockChance, blockAmount, damageTakenPerHit, health, healthRegen, lifeSteal, procModels);
+    }
+
+    private static IReadOnlyList<NormalizedWeaponPoolAttack> NormalizeWeaponPool(
+        IReadOnlyList<WeaponPoolAttackDefinition> attacks)
+    {
+        var positive = attacks.Where(x => x.Chance > 0).ToArray();
+        var total = positive.Sum(x => x.Chance);
+        if (total <= Epsilon) return [];
+        var scale = total > 100 ? 1d / total : 0.01d;
+        return positive.Select(x => new NormalizedWeaponPoolAttack(x, x.Chance * scale)).ToArray();
     }
 
     private static void ApplyConversions(Dictionary<string, double> damage, StatBlock stats)
@@ -213,21 +309,27 @@ public sealed class CombatSimulator : ICombatSimulator
     {
         offensiveAbility = Math.Max(1, offensiveAbility);
         defensiveAbility = Math.Max(1, defensiveAbility);
-        var pth = (3.15 * offensiveAbility / (3.5 * offensiveAbility + defensiveAbility) + 0.2) * 100;
-        var hitChance = Math.Clamp(pth / 100d, 0.60, 1);
+        // records/game/combatformulas.dbr probabilityToHitEquation, simplified.
+        var pth = 315 * offensiveAbility / (3.5 * offensiveAbility + defensiveAbility) +
+                  0.02275 * (offensiveAbility - defensiveAbility) + 20;
+        var hitChance = Math.Clamp(pth / 100d, 0.55, 1);
         var critChance = Math.Clamp((pth - 100) / 100d, 0, 0.35);
         var critMultiplier = 1 + Math.Clamp((pth - 90) / 500d, 0, 0.5);
         return (hitChance, critChance, critMultiplier);
     }
 
-    private static double ResolveEffectDamage(StatBlock effect, StatBlock owner, CombatScenario scenario)
+    private static double ResolveEffectDamage(
+        StatBlock effect,
+        StatBlock owner,
+        CombatScenario scenario,
+        bool applyEnemyMitigation = true)
     {
         var total = 0d;
         foreach (var type in StatKeys.DamageTypes)
         {
             var raw = effect[StatKeys.DamageFlat(type)] + effect[type];
             var boosted = raw * Math.Max(0, 1 + owner[StatKeys.DamagePercent(type)] / 100d);
-            total += ApplyEnemyMitigation(type, boosted, scenario, owner);
+            total += applyEnemyMitigation ? ApplyEnemyMitigation(type, boosted, scenario, owner) : boosted;
         }
         return total;
     }
@@ -274,6 +376,7 @@ public sealed class CombatSimulator : ICombatSimulator
     private static SimulationReport ToReport(CalculatedLoadout loadout, CombatBreakdown x) => new()
     {
         ExpectedDps = x.ExpectedDps,
+        UnmitigatedDps = x.UnmitigatedDps,
         TimeToKillSeconds = x.TimeToKillSeconds,
         EffectiveHealth = x.EffectiveHealth,
         IncomingDps = x.IncomingDps,
@@ -298,8 +401,10 @@ public sealed class CombatSimulator : ICombatSimulator
     }
 
     private sealed record ProcModel(double ChancePerAttack, double Damage);
+    private sealed record NormalizedWeaponPoolAttack(WeaponPoolAttackDefinition Attack, double ChanceFraction);
     private sealed record CombatBreakdown(
         double ExpectedDps,
+        double UnmitigatedDps,
         double TimeToKillSeconds,
         double EffectiveHealth,
         double IncomingDps,

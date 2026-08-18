@@ -56,7 +56,10 @@ public sealed class GameDataSource : IGameDataSource
             cancellationToken.ThrowIfCancellationRequested();
             var file = files[i];
             if (file.EndsWith(".arz", StringComparison.OrdinalIgnoreCase))
-                foreach (var (key, value) in _arz.Read(file, cancellationToken)) records[key] = value;
+                foreach (var (key, value) in _arz.Read(file, cancellationToken))
+                    records[key] = records.TryGetValue(key, out var inherited)
+                        ? MergeRecord(inherited, value)
+                        : value;
             else if (file.EndsWith(".arc", StringComparison.OrdinalIgnoreCase))
                 foreach (var (key, value) in _arc.ReadTags(file, cancellationToken)) tags[key] = value;
             progress?.Report((i + 1d) / Math.Max(1, files.Length));
@@ -79,6 +82,29 @@ public sealed class GameDataSource : IGameDataSource
             // Parsing succeeded, so return the in-memory catalog even if caching is unavailable.
         }
         return catalog;
+    }
+
+    private static GameRecord MergeRecord(GameRecord inherited, GameRecord overlay)
+    {
+        var numeric = inherited.NumericValues.Clone();
+        foreach (var (key, value) in overlay.NumericValues.Values) numeric.Set(key, value);
+
+        var series = new Dictionary<string, IReadOnlyList<double>>(
+            inherited.NumericSeries, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, values) in overlay.NumericSeries) series[key] = values;
+
+        var text = new Dictionary<string, IReadOnlyList<string>>(
+            inherited.TextValues, StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, values) in overlay.TextValues) text[key] = values;
+
+        return new GameRecord
+        {
+            RecordName = overlay.RecordName,
+            RecordType = string.IsNullOrWhiteSpace(overlay.RecordType) ? inherited.RecordType : overlay.RecordType,
+            NumericValues = numeric,
+            NumericSeries = series,
+            TextValues = text
+        };
     }
 
     private static bool IsRecoverableCacheFailure(Exception ex) => ex is
@@ -118,9 +144,13 @@ public sealed class GameDataSource : IGameDataSource
             if (source is null) return;
 
             var stats = source.Stats.Clone();
+            var effects = source.Effects.ToList();
             if (!string.IsNullOrWhiteSpace(completionBonusRecord) &&
                 catalog.Records.TryGetValue(completionBonusRecord, out var completionBonus))
+            {
                 stats.Add(GameStatTranslator.Translate([completionBonus]));
+                effects.AddRange(SaveReader.BuildTriggeredEffects([completionBonus], catalog));
+            }
 
             var suffix = string.IsNullOrWhiteSpace(completionBonusRecord) ? "base" : completionBonusRecord;
             result.Add(new AttachmentDefinition
@@ -132,12 +162,13 @@ public sealed class GameDataSource : IGameDataSource
                 Name = source.Name,
                 Kind = source.Kind,
                 CompatibleSlots = source.CompatibleSlots,
+                CompatibleItemQualifiers = source.CompatibleItemQualifiers,
                 LevelRequirement = source.LevelRequirement,
                 RequiredFormula = source.RequiredFormula,
                 RequiredFaction = source.RequiredFaction,
                 RequiredReputation = source.RequiredReputation,
                 Stats = stats,
-                Effects = source.Effects,
+                Effects = effects,
                 UnsupportedEffects = source.UnsupportedEffects
             });
         }
@@ -186,12 +217,17 @@ public sealed class GameDataSource : IGameDataSource
             if (File.Exists(path)) files.Add(path);
         }
 
-        foreach (var directory in new[] { "resources", @"gdx1\resources", @"gdx2\resources", @"gdx3\resources" })
+        var resourceDirectories = new[] { "resources", @"gdx1\resources", @"gdx2\resources", @"gdx3\resources" }
+            .Select(x => Path.Combine(root, x))
+            .Where(Directory.Exists)
+            .ToArray();
+        // Load every English table first as a fallback, then let Chinese tables
+        // override matching tags. Current Grim Dawn builds use Text_ZH.arc;
+        // Text_CH.arc is retained for older/community layouts.
+        foreach (var archiveName in new[] { "Text_EN.arc", "Text_CH.arc", "Text_ZH.arc" })
         {
-            var path = Path.Combine(root, directory);
-            if (!Directory.Exists(path)) continue;
-            files.AddRange(Directory.GetFiles(path, "Text_EN.arc", SearchOption.TopDirectoryOnly));
-            files.AddRange(Directory.GetFiles(path, "Text_CH.arc", SearchOption.TopDirectoryOnly));
+            foreach (var directory in resourceDirectories)
+                files.AddRange(Directory.GetFiles(directory, archiveName, SearchOption.TopDirectoryOnly));
         }
         var version = File.Exists(Path.Combine(root, "Grim Dawn.exe"))
             ? System.Diagnostics.FileVersionInfo.GetVersionInfo(Path.Combine(root, "Grim Dawn.exe")).FileVersion ?? "unknown"
@@ -234,8 +270,8 @@ public sealed class GameDataSource : IGameDataSource
         IReadOnlyDictionary<string, GameRecord> records,
         IReadOnlyDictionary<string, string> tags)
     {
-        var allSlots = Enum.GetValues<EquipmentSlot>().Where(x => x is not (EquipmentSlot.Relic or EquipmentSlot.RingLeft or EquipmentSlot.RingRight)).ToHashSet();
         var result = new List<AttachmentDefinition>();
+        var catalogView = new GameDataCatalog { Records = records, Tags = tags };
         foreach (var record in records.Values)
         {
             var @class = record.Text("Class");
@@ -246,35 +282,73 @@ public sealed class GameDataSource : IGameDataSource
                 _ => (AttachmentKind?)null
             };
             if (kind is null) continue;
-            var nameTag = record.Text(kind == AttachmentKind.Component ? "relicName" : "itemNameTag");
-            var name = tags.GetValueOrDefault(nameTag, Path.GetFileNameWithoutExtension(record.RecordName));
+            var nameTag = FirstNonEmpty(
+                record.Text(kind == AttachmentKind.Component ? "relicName" : "itemNameTag"),
+                record.Text("description"));
+            var cleanedNameTag = nameTag.Replace("^k", string.Empty, StringComparison.OrdinalIgnoreCase);
+            var name = tags.GetValueOrDefault(cleanedNameTag,
+                string.IsNullOrWhiteSpace(cleanedNameTag)
+                    ? Path.GetFileNameWithoutExtension(record.RecordName)
+                    : cleanedNameTag);
+            var qualifiers = ResolveAttachmentQualifiers(record);
             result.Add(new AttachmentDefinition
             {
                 Id = record.RecordName,
                 RecordId = record.RecordName,
                 Name = name,
                 Kind = kind.Value,
-                CompatibleSlots = ResolveAttachmentSlots(record.RecordName, allSlots),
+                CompatibleSlots = ResolveAttachmentSlots(qualifiers),
+                CompatibleItemQualifiers = qualifiers,
                 LevelRequirement = (int)record.NumericValues["levelRequirement"],
                 RequiredFormula = record.Text("artifactFormula"),
                 RequiredFaction = record.Text("factionName"),
                 RequiredReputation = record.NumericValues["factionValue"],
-                Stats = GameStatTranslator.Translate([record])
+                Stats = GameStatTranslator.Translate([record]),
+                Effects = SaveReader.BuildTriggeredEffects([record], catalogView)
             });
         }
         return result;
     }
 
-    private static IReadOnlySet<EquipmentSlot> ResolveAttachmentSlots(string recordName, HashSet<EquipmentSlot> allSlots)
+    private static string FirstNonEmpty(params string[] values) =>
+        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+
+    internal static IReadOnlySet<string> ResolveAttachmentQualifiers(GameRecord record) =>
+        AttachmentQualifierKeys.Where(x => record.NumericValues[x] > 0.5)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    internal static IReadOnlySet<EquipmentSlot> ResolveAttachmentSlots(IReadOnlySet<string> qualifiers)
     {
-        var path = recordName.ToLowerInvariant();
-        if (path.Contains("weapon")) return new HashSet<EquipmentSlot> { EquipmentSlot.MainHand, EquipmentSlot.OffHand };
-        if (path.Contains("jewelry") || path.Contains("ring") || path.Contains("amulet"))
-            return new HashSet<EquipmentSlot> { EquipmentSlot.Ring, EquipmentSlot.Amulet, EquipmentSlot.Medal };
-        if (path.Contains("shield") || path.Contains("offhand")) return new HashSet<EquipmentSlot> { EquipmentSlot.OffHand };
-        if (path.Contains("armor")) return allSlots.Where(x => x is not (EquipmentSlot.MainHand or EquipmentSlot.OffHand or EquipmentSlot.Ring or EquipmentSlot.Amulet or EquipmentSlot.Medal)).ToHashSet();
-        return allSlots;
+        var result = new HashSet<EquipmentSlot>();
+        foreach (var qualifier in qualifiers)
+        {
+            var slot = qualifier.ToLowerInvariant() switch
+            {
+                "head" => EquipmentSlot.Head, "shoulders" => EquipmentSlot.Shoulders,
+                "hands" => EquipmentSlot.Hands, "chest" => EquipmentSlot.Chest,
+                "waist" => EquipmentSlot.Waist, "legs" => EquipmentSlot.Legs,
+                "feet" => EquipmentSlot.Feet, "amulet" => EquipmentSlot.Amulet,
+                "bracelet" or "ring" => EquipmentSlot.Ring, "medal" => EquipmentSlot.Medal,
+                "shield" or "offhand" => EquipmentSlot.OffHand,
+                _ when WeaponAttachmentQualifiers.Contains(qualifier) => EquipmentSlot.MainHand,
+                _ => (EquipmentSlot?)null
+            };
+            if (slot is not null) result.Add(slot.Value);
+        }
+        return result;
     }
+
+    internal static readonly string[] AttachmentQualifierKeys =
+    [
+        "amulet", "bracelet", "ring", "medal", "head", "shoulders", "hands", "chest",
+        "waist", "legs", "feet", "shield", "offhand", "spear", "staff", "axe", "mace",
+        "sword", "dagger", "scepter", "ranged1h", "ranged2h", "axe2h", "mace2h",
+        "sword2h", "spear2h"
+    ];
+
+    private static readonly HashSet<string> WeaponAttachmentQualifiers = new(
+        ["spear", "staff", "axe", "mace", "sword", "dagger", "scepter", "ranged1h", "ranged2h", "axe2h", "mace2h", "sword2h", "spear2h"],
+        StringComparer.OrdinalIgnoreCase);
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<int, StatBlock>> BuildSetBonuses(IReadOnlyDictionary<string, GameRecord> records)
     {
@@ -309,7 +383,8 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        private static readonly byte[] PayloadHeader = "GDOC3"u8.ToArray();
+        // GDOC17 adds equipment requirement-reduction fields used by loadout validation.
+        private static readonly byte[] PayloadHeader = "GDOC17"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)
