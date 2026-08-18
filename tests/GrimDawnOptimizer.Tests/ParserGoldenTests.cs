@@ -31,6 +31,18 @@ public sealed class ParserGoldenTests
         Assert.True(skill.Locked);
         Assert.Equal("records/skills/playerclass/test.dbr", character.PrimarySkillRecord);
         Assert.Equal("records/skills/playerclass/rightclick.dbr", character.SecondarySkillRecord);
+        var backpackItems = character.Items.Where(x => x.SourceKind == ItemSourceKind.Backpack).ToArray();
+        Assert.Collection(backpackItems,
+            item =>
+            {
+                Assert.Equal("records/items/gearhands/test.dbr", item.BaseRecord);
+                Assert.Equal((2, 3), (item.X, item.Y));
+            },
+            item =>
+            {
+                Assert.Equal("records/items/gearrings/test.dbr", item.BaseRecord);
+                Assert.Equal((6, 13), (item.X, item.Y));
+            });
         Assert.Equal(before, SHA256.HashData(File.ReadAllBytes(path)));
     }
 
@@ -303,7 +315,35 @@ public sealed class ParserGoldenTests
 
         var inventory = writer.BeginBlock(3);
         writer.WriteUInt32(4);
+        writer.WriteBoolean(true);
+        writer.WriteUInt32(1);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        var sack = writer.BeginBlock(0);
+        writer.WriteByte(0);
+        writer.WriteUInt32(2);
+        WriteCharacterItem(writer, "records/items/gearhands/test.dbr");
+        writer.WriteUInt32(2);
+        writer.WriteUInt32(3);
+        WriteCharacterItem(writer, "records/items/gearrings/test.dbr");
+        writer.WriteUInt32(6);
+        writer.WriteUInt32(13);
+        writer.EndBlock(sack);
         writer.WriteBoolean(false);
+        for (var i = 0; i < 12; i++)
+        {
+            WriteCharacterItem(writer, string.Empty);
+            writer.WriteByte(0);
+        }
+        for (var weaponSet = 0; weaponSet < 2; weaponSet++)
+        {
+            writer.WriteBoolean(false);
+            for (var i = 0; i < 2; i++)
+            {
+                WriteCharacterItem(writer, string.Empty);
+                writer.WriteBoolean(false);
+            }
+        }
         writer.EndBlock(inventory);
 
         var stash = writer.BeginBlock(4);
@@ -359,6 +399,24 @@ public sealed class ParserGoldenTests
         writer.WriteUInt32(0);
         writer.EndBlock(bindings);
         return writer.ToArray();
+    }
+
+    private static void WriteCharacterItem(GdFixtureWriter writer, string baseRecord)
+    {
+        writer.WriteString(baseRecord);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteString(string.Empty);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(1);
     }
 
     private static byte[] BuildTransferV9()

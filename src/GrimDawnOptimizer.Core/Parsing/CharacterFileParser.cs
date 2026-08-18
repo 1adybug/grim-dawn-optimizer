@@ -83,8 +83,10 @@ internal sealed class CharacterFileParser
             {
                 var item = ReadItem(reader, version);
                 item.ContainerIndex = sack;
-                item.X = ReadCoordinate(reader);
-                item.Y = ReadCoordinate(reader);
+                // Character backpack positions are grid indices, unlike the
+                // floating-point offsets used by stash containers.
+                item.X = reader.ReadInt32();
+                item.Y = reader.ReadInt32();
                 item.SourceKind = ItemSourceKind.Backpack;
                 result.Items.Add(item);
             }
