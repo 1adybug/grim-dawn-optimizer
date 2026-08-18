@@ -383,8 +383,8 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC16 retains every item field needed to replay Seed-driven stat rolls.
-        private static readonly byte[] PayloadHeader = "GDOC16"u8.ToArray();
+        // GDOC17 adds equipment requirement-reduction fields used by loadout validation.
+        private static readonly byte[] PayloadHeader = "GDOC17"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)

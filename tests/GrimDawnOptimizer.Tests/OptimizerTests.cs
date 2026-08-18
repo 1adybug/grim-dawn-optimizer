@@ -81,6 +81,47 @@ public sealed class OptimizerTests
     }
 
     [Fact]
+    public async Task SearchNeverReturnsEquipmentTheCharacterCannotWear()
+    {
+        var wearable = Item("wearable-weapon", 100);
+        var impossible = new ItemInstance
+        {
+            Id = "impossible-weapon", Name = "impossible-weapon", Slot = EquipmentSlot.MainHand,
+            BaseRecord = "impossible-weapon", Seed = 1, CunningRequirement = 1000,
+            Stats = new StatBlock(new Dictionary<string, double>
+            {
+                [StatKeys.DamageFlat("fire")] = 10_000
+            }),
+            Source = new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc")
+        };
+        var character = new CharacterSnapshot
+        {
+            Name = "test", SaveFilePath = "test.gdc", Level = 100,
+            Physique = 100, Cunning = 100, Spirit = 100,
+            Items = [wearable, impossible],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string> { [EquipmentSlot.MainHand] = wearable.Id },
+            BaselineStats = new StatBlock(new Dictionary<string, double>
+            {
+                ["health"] = 1000, ["cunning"] = 100,
+                ["offensiveAbility"] = 1000, ["defensiveAbility"] = 1000
+            })
+        };
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1, ResultCount = 3, MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 100, CurrentPanelDps = 100,
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+
+        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
+            .OptimizeAsync(character, character.Items, [], new GameDataCatalog(), profile);
+
+        var result = Assert.Single(run.Results);
+        Assert.True(result.Loadout.IsValid, string.Join("; ", result.Loadout.ValidationErrors));
+        Assert.Equal(wearable.Id, result.Loadout.Slots[EquipmentSlot.MainHand].Item.Id);
+    }
+
+    [Fact]
     public async Task CurrentPanelDpsCalibratesReportedCandidateDps()
     {
         var item = Item("equipped-weapon", 100);

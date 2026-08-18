@@ -175,6 +175,10 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         }).ToList();
 
         var results = completedFinalists
+            // Invalid combinations must never be presented as actionable plans. Partial
+            // beam states remain eligible because later slots may supply the missing
+            // attributes or requirement reduction; filtering is intentionally final-only.
+            .Where(x => x.Loadout.IsValid)
             .Order(LoadoutResultComparer.Instance)
             // A result slot represents an equipment plan, not another spelling of the
             // same plan with different attachment ids. Keep the best attachment setup
@@ -608,7 +612,15 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         {
             StatKeys.DamageFlat(x), StatKeys.WeaponDamage(x), StatKeys.DamagePercent(x),
             StatKeys.DamageDot(x), StatKeys.DamageDotPercent(x), StatKeys.Resistance(x)
-        })).Concat(string.IsNullOrWhiteSpace(profile.Rotation.MainSkillRecord)
+        })).Concat(new[]
+        {
+            "physique", "cunning", "spirit",
+            "requirementReduction.global", "requirementReduction.armorPhysique",
+            "requirementReduction.rangedCunning", "requirementReduction.jewelrySpirit",
+            "requirementReduction.meleePhysique", "requirementReduction.meleeCunning",
+            "requirementReduction.meleeSpirit", "requirementReduction.shieldPhysique",
+            "requirementReduction.weaponPhysique", "requirementReduction.weaponSpirit"
+        }).Concat(string.IsNullOrWhiteSpace(profile.Rotation.MainSkillRecord)
             ? []
             : new[] { $"skillLevel.{profile.Rotation.MainSkillRecord}", $"skillModifier.{profile.Rotation.MainSkillRecord}" })
         .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
