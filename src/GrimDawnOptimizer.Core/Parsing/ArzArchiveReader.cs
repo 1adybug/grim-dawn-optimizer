@@ -11,6 +11,12 @@ internal sealed class ArzArchiveReader
 
     private static readonly HashSet<string> TextFields = BuildTextFields();
 
+    private static readonly string[] SeedStatPrefixes =
+    [
+        "offensive", "defensive", "retaliation", "character", "skill",
+        "conversion", "blockAbsorption", "blockRecovery"
+    ];
+
     public IReadOnlyDictionary<string, GameRecord> Read(string path, CancellationToken cancellationToken = default)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -98,7 +104,7 @@ internal sealed class ArzArchiveReader
                     if (values.Count > 0) text[key] = values;
                 }
             }
-            else if (NumericFields.Contains(key))
+            else if (NumericFields.Contains(key) || IsPotentialSeedStatField(name, key))
             {
                 var values = new double[count];
                 for (var i = 0; i < count; i++)
@@ -168,6 +174,7 @@ internal sealed class ArzArchiveReader
             "itemSkillLevelEq",
             "levelRequirement",
             "lootRandomizerJitter",
+            "lootRandomizerScale",
             "maxLevel",
             "minLevel",
             "offensiveLifeLeechMin",
@@ -244,6 +251,13 @@ internal sealed class ArzArchiveReader
             result.Add($"augmentMasteryLevel{index}");
         }
         return result;
+    }
+
+    private static bool IsPotentialSeedStatField(string recordName, string field)
+    {
+        if (!recordName.StartsWith("records/items/", StringComparison.OrdinalIgnoreCase)) return false;
+        if (field.Equals("lootRandomizerScale", StringComparison.OrdinalIgnoreCase)) return true;
+        return SeedStatPrefixes.Any(prefix => field.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 
     private static HashSet<string> BuildTextFields()

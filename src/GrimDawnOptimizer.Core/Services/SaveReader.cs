@@ -43,8 +43,12 @@ public sealed class SaveReader : ISaveReader
                     .Where(x => x is not null)
                     .Cast<ItemInstance>()
                     .ToArray();
-                if (converted.Length > 0)
-                    warnings.Add("装备 Seed 会在游戏内固定实际浮动值，但该映射算法未公开；运行优化前必须输入武器攻击 DPS 和当前所选主攻技能 DPS 进行分段校准。");
+                var exactSeedCount = converted.Count(x => x.SeedStatsResolved);
+                var expectedSeedCount = converted.Count(x => x.Seed != 0 && !x.SeedStatsResolved);
+                if (exactSeedCount > 0)
+                    warnings.Add($"已按存档 Seed 精确还原 {exactSeedCount} 件装备的实际浮动词条。");
+                if (expectedSeedCount > 0)
+                    warnings.Add($"另有 {expectedSeedCount} 件装备包含尚未建模的 Seed 字段，已保守回退到期望值。");
                 var ownedAttachments = BuildOwnedAttachments(allItems.Select(x => x.Item), catalog);
                 var current = converted.Where(x => x.Source.Kind == ItemSourceKind.Equipped)
                     .Select(x => (Item: x, Slot: raw.Items.FirstOrDefault(r => r.Seed == x.Seed && r.BaseRecord == x.BaseRecord)?.EquippedSlot))
@@ -244,26 +248,46 @@ public sealed class SaveReader : ISaveReader
         var slot = GameStatTranslator.ResolveSlot(baseRecord);
         if (slot is null) return null;
 
-        var records = new[]
+        var recordNames = new[]
         {
             raw.BaseRecord, raw.PrefixRecord, raw.SuffixRecord, raw.ModifierRecord,
             raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord
-        }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => catalog.Records.GetValueOrDefault(x)).Where(x => x is not null).Cast<GameRecord>().ToArray();
-        var stats = GameStatTranslator.Translate(records);
-        if (slot == EquipmentSlot.MainHand)
+        }.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+        var records = recordNames.Select(x => catalog.Records.GetValueOrDefault(x))
+            .Where(x => x is not null).Cast<GameRecord>().ToArray();
+        catalog.Records.TryGetValue(raw.PrefixRecord, out var prefixRecord);
+        catalog.Records.TryGetValue(raw.SuffixRecord, out var suffixRecord);
+        var seeded = SeededItemStatResolver.Resolve(baseRecord, prefixRecord, suffixRecord, raw.Seed);
+        var supplementalRecords = new[]
         {
-            var baseWeaponStats = GameStatTranslator.Translate([baseRecord]);
-            // Older physical weapons store their base roll as offensivePhysical,
-            // while current elemental weapons use offensiveBase<Type>. Only the
-            // legacy physical field needs moving out of global flat damage.
-            var legacyPhysical = baseWeaponStats[StatKeys.DamageFlat("physical")];
-            if (Math.Abs(legacyPhysical) > 1e-9)
-            {
-                stats.Add(StatKeys.DamageFlat("physical"), -legacyPhysical);
-                stats.Add(StatKeys.WeaponDamage("physical"), legacyPhysical);
-            }
+            raw.ModifierRecord, raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord
+        }.Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => catalog.Records.GetValueOrDefault(x)).Where(x => x is not null).Cast<GameRecord>().ToArray();
+
+        StatBlock stats;
+        if (seeded.IsExact)
+        {
+            stats = seeded.Stats;
+            stats.Add(GameStatTranslator.Translate(supplementalRecords));
         }
-        ApplyExpectedItemScale(stats, baseRecord.NumericValues["attributeScalePercent"]);
+        else
+        {
+            stats = GameStatTranslator.Translate(records);
+            if (slot == EquipmentSlot.MainHand)
+            {
+                var baseWeaponStats = GameStatTranslator.Translate([baseRecord]);
+                // Older physical weapons store their base roll as offensivePhysical,
+                // while current elemental weapons use offensiveBase<Type>. Only the
+                // legacy physical field needs moving out of global flat damage.
+                var legacyPhysical = baseWeaponStats[StatKeys.DamageFlat("physical")];
+                if (Math.Abs(legacyPhysical) > 1e-9)
+                {
+                    stats.Add(StatKeys.DamageFlat("physical"), -legacyPhysical);
+                    stats.Add(StatKeys.WeaponDamage("physical"), legacyPhysical);
+                }
+            }
+            ApplyExpectedItemScale(stats, baseRecord.NumericValues["attributeScalePercent"]);
+        }
         var source = new ItemSourceLocation(
             raw.SourceKind, filePath,
             raw.SourceKind == ItemSourceKind.Equipped && raw.EquippedSlot is not null ? (int)raw.EquippedSlot.Value : raw.ContainerIndex,
@@ -271,6 +295,15 @@ public sealed class SaveReader : ISaveReader
         var itemName = ResolveItemName(baseRecord, raw, catalog);
         var effects = BuildTriggeredEffects(records, catalog);
         var unsupported = new List<UnsupportedEffect>();
+        if (!seeded.IsExact && raw.Seed != 0)
+        {
+            var fields = string.Join(", ", seeded.UnmodeledFields.Take(4));
+            if (seeded.UnmodeledFields.Count > 4) fields += "…";
+            unsupported.Add(new UnsupportedEffect(
+                raw.BaseRecord,
+                $"装备 Seed 浮动值回退到期望值：{fields}",
+                ["dps", "effectiveHealth"]));
+        }
         foreach (var record in records)
         {
             var skill = record.Text("itemSkillName");
@@ -281,11 +314,7 @@ public sealed class SaveReader : ISaveReader
                 unsupported.Add(new UnsupportedEffect(skill, "尚未识别的装备触发技能", ["dps", "effectiveHealth"]));
         }
 
-        if (records.Length < new[]
-            {
-                raw.BaseRecord, raw.PrefixRecord, raw.SuffixRecord, raw.ModifierRecord,
-                raw.TransmuteRecord, raw.AscendantPrefixRecord, raw.AscendantSuffixRecord
-            }.Count(x => !string.IsNullOrWhiteSpace(x)))
+        if (records.Length < recordNames.Length)
             warnings.Add($"{itemName} 存在未在游戏数据库中找到的记录，结果已降低置信度");
 
         return new ItemInstance
@@ -299,6 +328,7 @@ public sealed class SaveReader : ISaveReader
             ModifierRecord = raw.ModifierRecord,
             TransmuteRecord = raw.TransmuteRecord,
             Seed = raw.Seed,
+            SeedStatsResolved = seeded.IsExact,
             ComponentRecord = raw.ComponentRecord,
             CompletionBonusRecord = raw.CompletionBonusRecord,
             ComponentSeed = raw.ComponentSeed,

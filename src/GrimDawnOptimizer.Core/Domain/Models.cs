@@ -104,6 +104,7 @@ public sealed class ItemInstance
     public string ModifierRecord { get; init; } = string.Empty;
     public string TransmuteRecord { get; init; } = string.Empty;
     public uint Seed { get; init; }
+    public bool SeedStatsResolved { get; init; }
     public string ComponentRecord { get; init; } = string.Empty;
     public string CompletionBonusRecord { get; init; } = string.Empty;
     public uint ComponentSeed { get; init; }

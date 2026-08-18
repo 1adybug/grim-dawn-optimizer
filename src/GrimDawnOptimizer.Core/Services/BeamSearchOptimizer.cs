@@ -262,7 +262,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         var (tiers, contributions) = scoring.Score(metrics);
         var confidence = calculated.UnsupportedEffects.Count switch
         {
-            0 when calculated.Slots.Values.All(x => x.Item.Seed == 0) => ConfidenceLevel.High,
+            0 when calculated.Slots.Values.All(x => x.Item.Seed == 0 || x.Item.SeedStatsResolved) => ConfidenceLevel.High,
             0 => ConfidenceLevel.Medium,
             <= 2 => ConfidenceLevel.Medium,
             _ => ConfidenceLevel.Low
