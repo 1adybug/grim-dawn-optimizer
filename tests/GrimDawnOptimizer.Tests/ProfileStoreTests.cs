@@ -31,7 +31,7 @@ public sealed class ProfileStoreTests
             var loaded = await store.LoadAsync();
 
             Assert.Single(loaded);
-            Assert.Equal(5, loaded[0].SchemaVersion);
+            Assert.Equal(6, loaded[0].SchemaVersion);
             Assert.Equal("火焰测试", loaded[0].Name);
             Assert.Equal(42, loaded[0].Rotation.FlatDamage[StatKeys.DamageFlat("fire")]);
         }
@@ -100,12 +100,13 @@ public sealed class ProfileStoreTests
 
             var migrated = Assert.Single(await store.LoadAsync());
 
-            Assert.Equal(5, migrated.SchemaVersion);
+            Assert.Equal(6, migrated.SchemaVersion);
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "fireResistance");
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "resistanceCoverage");
             Assert.Equal(SupportedMetricCatalog.Keys.Count, migrated.Metrics.Count);
             Assert.Equal(750, migrated.Scenario.IncomingDamage.PhysicalPerHit);
-            Assert.Equal(112.5, migrated.Scenario.IncomingDamage.ChaosPerHit);
+            Assert.Equal(100, migrated.Scenario.IncomingDamage.ChaosPerHit);
+            Assert.Equal(100, migrated.Scenario.IncomingDamage.BleedingPerHit);
         }
         finally
         {
@@ -160,7 +161,7 @@ public sealed class ProfileStoreTests
 
             var loaded = Assert.Single(await store.LoadAsync());
 
-            Assert.Equal(5, loaded.SchemaVersion);
+            Assert.Equal(6, loaded.SchemaVersion);
             Assert.Equal(2.5, Assert.Single(loaded.Metrics, x => x.Key == "dps").Weight);
             await store.SaveAsync([loaded]);
             var saved = await File.ReadAllTextAsync(path);
@@ -181,7 +182,8 @@ public sealed class ProfileStoreTests
         {
             incoming.PhysicalPerHit, incoming.PiercePerHit, incoming.FirePerHit,
             incoming.ColdPerHit, incoming.LightningPerHit, incoming.AcidPerHit,
-            incoming.VitalityPerHit, incoming.AetherPerHit, incoming.ChaosPerHit
+            incoming.VitalityPerHit, incoming.AetherPerHit, incoming.ChaosPerHit,
+            incoming.BleedingPerHit
         };
 
         Assert.All(values, value => Assert.True(value > 0));

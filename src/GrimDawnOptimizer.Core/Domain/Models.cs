@@ -91,7 +91,8 @@ public sealed record TriggeredEffect(
     StatBlock Damage,
     string Trigger = "OnAttack",
     double DurationSeconds = 0,
-    bool IsDefensive = false);
+    bool IsDefensive = false,
+    double WeaponDamagePercent = 0);
 
 public sealed class ItemInstance
 {
@@ -187,14 +188,15 @@ public sealed class CharacterSnapshot
 public sealed record IncomingDamageProfile(
     double HitsPerSecond = 1.2,
     double PhysicalPerHit = 750,
-    double FirePerHit = 112.5,
-    double ColdPerHit = 112.5,
-    double LightningPerHit = 112.5,
-    double AcidPerHit = 112.5,
-    double PiercePerHit = 112.5,
-    double VitalityPerHit = 112.5,
-    double AetherPerHit = 112.5,
-    double ChaosPerHit = 112.5);
+    double FirePerHit = 100,
+    double ColdPerHit = 100,
+    double LightningPerHit = 100,
+    double AcidPerHit = 100,
+    double PiercePerHit = 100,
+    double VitalityPerHit = 100,
+    double AetherPerHit = 100,
+    double ChaosPerHit = 100,
+    double BleedingPerHit = 100);
 
 public sealed class CombatScenario
 {
@@ -258,7 +260,7 @@ public sealed class MetricRule
 
 public sealed class OptimizationProfile
 {
-    public int SchemaVersion { get; set; } = 5;
+    public int SchemaVersion { get; set; } = 6;
     public string Name { get; set; } = "默认构筑";
     public CombatScenario Scenario { get; set; } = new();
     public SkillRotationDefinition Rotation { get; set; } = new();
@@ -372,6 +374,10 @@ public sealed class GameDataCatalog
     public IReadOnlyList<AttachmentDefinition> Attachments { get; init; } = [];
     public IReadOnlyDictionary<string, IReadOnlyDictionary<int, StatBlock>> SetBonuses { get; init; } =
         new Dictionary<string, IReadOnlyDictionary<int, StatBlock>>();
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyList<TriggeredEffect>>> SetBonusEffects { get; init; } =
+        new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<TriggeredEffect>>>();
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyList<UnsupportedEffect>>> SetBonusUnsupportedEffects { get; init; } =
+        new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<UnsupportedEffect>>>();
 }
 
 public sealed class GameRecord

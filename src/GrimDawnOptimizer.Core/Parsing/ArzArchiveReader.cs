@@ -104,7 +104,7 @@ internal sealed class ArzArchiveReader
                     if (values.Count > 0) text[key] = values;
                 }
             }
-            else if (NumericFields.Contains(key) || IsPotentialSeedStatField(name, key))
+            else if (NumericFields.Contains(key) || IsPotentialCombatStatField(name, key))
             {
                 var values = new double[count];
                 for (var i = 0; i < count; i++)
@@ -260,6 +260,9 @@ internal sealed class ArzArchiveReader
             result.Add($"offensiveSlow{damageType}DurationMin");
             result.Add($"offensiveSlow{damageType}DurationMax");
             result.Add($"offensiveSlow{damageType}Modifier");
+            result.Add($"defensive{damageType}");
+            result.Add($"defensive{damageType}Resistance");
+            result.Add($"defensive{damageType}MaxResist");
         }
         for (var index = 1; index <= 32; index++)
         {
@@ -269,9 +272,11 @@ internal sealed class ArzArchiveReader
         return result;
     }
 
-    private static bool IsPotentialSeedStatField(string recordName, string field)
+    private static bool IsPotentialCombatStatField(string recordName, string field)
     {
-        if (!recordName.StartsWith("records/items/", StringComparison.OrdinalIgnoreCase)) return false;
+        var relevantRecord = recordName.StartsWith("records/items/", StringComparison.OrdinalIgnoreCase) ||
+                             recordName.StartsWith("records/skills/", StringComparison.OrdinalIgnoreCase);
+        if (!relevantRecord) return false;
         if (field.Equals("lootRandomizerScale", StringComparison.OrdinalIgnoreCase)) return true;
         return SeedStatPrefixes.Any(prefix => field.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }

@@ -103,6 +103,7 @@ public sealed class CombatSimulator : ICombatSimulator
         var offensiveStats = stats.Clone();
         foreach (var (key, value) in rotation.FlatDamage.Values)
             if ((key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) && key.EndsWith(".percent", StringComparison.OrdinalIgnoreCase)) ||
+                key.Equals("damage.total.multiplierPercent", StringComparison.OrdinalIgnoreCase) ||
                 key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
                 key.StartsWith("rr.", StringComparison.OrdinalIgnoreCase))
                 offensiveStats.Add(key, value);
@@ -175,6 +176,13 @@ public sealed class CombatSimulator : ICombatSimulator
             rawDotDps += ApplyEnemyMitigation(type, boostedDot, scenario, offensiveStats);
         }
 
+        var totalDamageFactor = Math.Max(0, 1 + offensiveStats["damage.total.percent"] / 100d) *
+                                Math.Max(0, 1 + offensiveStats["damage.total.multiplierPercent"] / 100d);
+        rawDamagePerLandedHit *= totalDamageFactor;
+        sheetDamagePerHit *= totalDamageFactor;
+        rawDotDps *= totalDamageFactor;
+        sheetDotDps *= totalDamageFactor;
+
         var speedBonus = rotation.UsesAttackSpeed ? stats["attackSpeed"] : stats["castSpeed"];
         var weaponSpeedFactor = rotation.UsesAttackSpeed && stats["weaponAttackSpeedFactor"] > 0
             ? stats["weaponAttackSpeedFactor"]
@@ -182,12 +190,17 @@ public sealed class CombatSimulator : ICombatSimulator
         // Grim Dawn applies the weapon/animation base before the global speed
         // bonus and caps the resulting character-sheet speed, not the bonus in
         // isolation. This matters most for ranged dual wielding.
-        var actionSpeed = Math.Clamp(weaponSpeedFactor * (1 + speedBonus / 100d), 0.2, 2.0);
+        var speedCap = 2.0 + Math.Max(0, stats[rotation.UsesAttackSpeed ? "attackSpeed.maxBonus" : "castSpeed.maxBonus"]) / 100d;
+        var actionSpeed = Math.Clamp(weaponSpeedFactor * (1 + speedBonus / 100d), 0.2, speedCap);
         var attacksPerSecond = Math.Max(0.05, rotation.BaseAttacksPerSecond * actionSpeed);
-        if (rotation.CooldownSeconds > Epsilon)
-            attacksPerSecond = Math.Min(attacksPerSecond, 1d / rotation.CooldownSeconds);
+        var cooldown = rotation.CooldownSeconds *
+                       (1 - Math.Clamp(stats["cooldownReduction"] / 100d, 0, 0.8));
+        if (cooldown > Epsilon)
+            attacksPerSecond = Math.Min(attacksPerSecond, 1d / cooldown);
+        var energyPerUse = rotation.EnergyPerUse *
+                           (1 - Math.Clamp(stats["energyCostReduction"] / 100d, 0, 0.8));
         var energyAvailable = Math.Max(0, stats["energyRegen"] + stats["energy"] / Math.Max(1, scenario.DurationSeconds));
-        var energyNeeded = rotation.EnergyPerUse * attacksPerSecond;
+        var energyNeeded = energyPerUse * attacksPerSecond;
         if (energyNeeded > Epsilon)
             attacksPerSecond *= Math.Min(1, energyAvailable / energyNeeded);
 
@@ -218,7 +231,7 @@ public sealed class CombatSimulator : ICombatSimulator
             if (effect.CooldownSeconds > Epsilon)
                 triggerRate = Math.Min(triggerRate, 1d / effect.CooldownSeconds);
 
-            var procDamage = ResolveEffectDamage(effect.Damage, stats, scenario);
+            var procDamage = ResolveEffectDamage(effect, stats, scenario);
             procDps += triggerRate * procDamage;
             procModels.Add(new ProcModel(Math.Clamp(triggerRate / attacksPerSecond, 0, 1), procDamage));
         }
@@ -236,7 +249,14 @@ public sealed class CombatSimulator : ICombatSimulator
         var enemyHit = ResolveHitAndCrit(scenario.EnemyOffensiveAbility, stats["defensiveAbility"]).HitChance;
         var avoidance = Math.Clamp(stats["dodgeChance"] / 100d, 0, 0.8);
         var blockChance = Math.Clamp(stats["blockChance"] / 100d, 0, 0.9);
-        var blockAmount = Math.Max(0, stats["blockAmount"]);
+        var recovery = Math.Max(0, stats["blockRecoverySeconds"]) *
+                       (1 - Math.Clamp(stats["blockRecoveryReduction"] / 100d, 0, 0.9));
+        if (recovery > Epsilon && scenario.IncomingDamage.HitsPerSecond > Epsilon)
+            blockChance = Math.Min(blockChance, 1d / (recovery * scenario.IncomingDamage.HitsPerSecond));
+        var blockAbsorption = stats["blockAbsorption"] > 0
+            ? Math.Clamp(stats["blockAbsorption"] / 100d, 0, 1)
+            : 1d;
+        var blockAmount = Math.Max(0, stats["blockAmount"]) * blockAbsorption;
         var damageTakenPerHit = ResolveIncomingDamagePerHit(stats, scenario);
         var afterAvoidance = damageTakenPerHit * enemyHit * (1 - avoidance);
         var afterBlock = Math.Max(0, afterAvoidance - blockChance * Math.Min(blockAmount, afterAvoidance));
@@ -319,26 +339,35 @@ public sealed class CombatSimulator : ICombatSimulator
     }
 
     private static double ResolveEffectDamage(
-        StatBlock effect,
+        TriggeredEffect triggeredEffect,
         StatBlock owner,
         CombatScenario scenario,
         bool applyEnemyMitigation = true)
     {
+        var effect = triggeredEffect.Damage;
         var total = 0d;
         foreach (var type in StatKeys.DamageTypes)
         {
-            var raw = effect[StatKeys.DamageFlat(type)] + effect[type];
-            var boosted = raw * Math.Max(0, 1 + owner[StatKeys.DamagePercent(type)] / 100d);
-            total += applyEnemyMitigation ? ApplyEnemyMitigation(type, boosted, scenario, owner) : boosted;
+            var weapon = (owner[StatKeys.WeaponDamage(type)] + owner[StatKeys.DamageFlat(type)]) *
+                         Math.Max(0, triggeredEffect.WeaponDamagePercent) / 100d;
+            var raw = weapon + effect[StatKeys.DamageFlat(type)] + effect[type];
+            var typeBonus = owner[StatKeys.DamagePercent(type)] + effect[StatKeys.DamagePercent(type)];
+            var boosted = raw * Math.Max(0, 1 + typeBonus / 100d);
+            var dot = effect[$"damage.{type}.dotTotal"] * Math.Max(0, 1 +
+                (typeBonus + owner[StatKeys.DamageDotPercent(type)] + effect[StatKeys.DamageDotPercent(type)]) / 100d);
+            var combined = boosted + dot;
+            total += applyEnemyMitigation ? ApplyEnemyMitigation(type, combined, scenario, owner) : combined;
         }
-        return total;
+        var totalDamage = owner["damage.total.percent"] + effect["damage.total.percent"];
+        var totalMultiplier = owner["damage.total.multiplierPercent"] + effect["damage.total.multiplierPercent"];
+        return total * Math.Max(0, 1 + totalDamage / 100d) * Math.Max(0, 1 + totalMultiplier / 100d);
     }
 
     private static double ResolveIncomingDamagePerHit(StatBlock stats, CombatScenario scenario)
     {
         var incoming = scenario.IncomingDamage;
         var total = 0d;
-        foreach (var type in StatKeys.DamageTypes)
+        foreach (var type in StatKeys.IncomingDamageTypes)
         {
             var raw = type switch
             {
@@ -351,6 +380,7 @@ public sealed class CombatSimulator : ICombatSimulator
                 "vitality" => incoming.VitalityPerHit,
                 "aether" => incoming.AetherPerHit,
                 "chaos" => incoming.ChaosPerHit,
+                "bleeding" => incoming.BleedingPerHit,
                 _ => 0
             };
             var cap = 80 + stats[StatKeys.MaxResistance(type)];
@@ -370,7 +400,7 @@ public sealed class CombatSimulator : ICombatSimulator
     {
         var x = scenario.IncomingDamage;
         return x.PhysicalPerHit + x.PiercePerHit + x.FirePerHit + x.ColdPerHit + x.LightningPerHit +
-               x.AcidPerHit + x.VitalityPerHit + x.AetherPerHit + x.ChaosPerHit;
+               x.AcidPerHit + x.VitalityPerHit + x.AetherPerHit + x.ChaosPerHit + x.BleedingPerHit;
     }
 
     private static SimulationReport ToReport(CalculatedLoadout loadout, CombatBreakdown x) => new()

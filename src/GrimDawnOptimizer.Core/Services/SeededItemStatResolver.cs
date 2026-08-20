@@ -38,13 +38,14 @@ internal static class SeededItemStatResolver
             stats.Add(GameStatTranslator.Translate([WithoutSeedControlledValues(record)]));
 
         var rolledValues = new StatBlock(result.Stats);
-        // Match Item Assistant's bridge: chance-based lines are folded back into the
-        // corresponding raw field so existing stat translation can still consume them.
+        // Chance-based modifier lines are represented by their expectation. Folding the
+        // full rolled value into a permanent modifier overstates e.g. "20% chance of
+        // +250% Fire Damage" by five times.
         foreach (var proc in result.ProcLines ?? [])
         {
             if (proc.Min is not { } minimum) continue;
-            rolledValues.Add(proc.Field + "Min", minimum);
-            if (proc.Max is { } maximum) rolledValues.Add(proc.Field + "Max", maximum);
+            var chance = Math.Clamp(proc.Chance / 100d, 0, 1);
+            rolledValues.Add(proc.Field, minimum * chance);
         }
 
         var rolledRecord = new GameRecord

@@ -307,13 +307,18 @@ public sealed class SaveReader : ISaveReader
         }
         foreach (var record in records)
         {
-            var skill = record.Text("itemSkillName");
-            var modeledWeaponPool = !string.IsNullOrWhiteSpace(skill) &&
-                                    catalog.Records.TryGetValue(skill, out var granted) &&
-                                    (granted.Text("Class") + granted.RecordType).Contains("WPAttack", StringComparison.OrdinalIgnoreCase);
-            if (!string.IsNullOrWhiteSpace(skill) && !modeledWeaponPool && effects.All(x => x.Id != skill))
-                unsupported.Add(new UnsupportedEffect(skill, "尚未识别的装备触发技能", ["dps", "effectiveHealth"]));
+            var unsupportedFields = GameStatTranslator.FindUnsupportedCombatFields(record);
+            if (unsupportedFields.Count > 0)
+            {
+                var fields = string.Join(", ", unsupportedFields.Take(6));
+                if (unsupportedFields.Count > 6) fields += "…";
+                unsupported.Add(new UnsupportedEffect(
+                    record.RecordName,
+                    $"未建模装备词条：{fields}",
+                    ["dps", "effectiveHealth"]));
+            }
         }
+        unsupported.AddRange(FindUnsupportedItemSkillEffects(records, catalog, "未完整建模的装备技能"));
 
         if (records.Length < recordNames.Length)
             warnings.Add($"{itemName} 存在未在游戏数据库中找到的记录，结果已降低置信度");
@@ -505,9 +510,87 @@ public sealed class SaveReader : ISaveReader
                 catalog.Tags.GetValueOrDefault(skill.Text("skillDisplayName"), Path.GetFileNameWithoutExtension(skillName)),
                 chance,
                 cooldown,
-                GameStatTranslator.TranslateAtLevel(skill, Math.Max(1, (int)record.NumericValues["itemSkillLevelEq"])),
-                NormalizeTrigger(controller?.Text("triggerType"))));
+                TranslateTriggeredSkillDamage(skill, catalog, Math.Max(1, (int)record.NumericValues["itemSkillLevelEq"])),
+                NormalizeTrigger(controller?.Text("triggerType")),
+                WeaponDamagePercent: Math.Max(0, GameStatTranslator.NumericAtLevel(
+                    skill, "weaponDamagePct", Math.Max(1, (int)record.NumericValues["itemSkillLevelEq"])))));
         }
+        return result;
+    }
+
+    internal static IReadOnlyList<UnsupportedEffect> FindUnsupportedItemSkillEffects(
+        IReadOnlyList<GameRecord> records,
+        GameDataCatalog catalog,
+        string descriptionPrefix)
+    {
+        var result = new List<UnsupportedEffect>();
+        var modeledEffects = BuildTriggeredEffects(records, catalog);
+        foreach (var owner in records)
+        {
+            var skillName = owner.Text("itemSkillName");
+            if (string.IsNullOrWhiteSpace(skillName)) continue;
+            if (!catalog.Records.TryGetValue(skillName, out var skill))
+            {
+                result.Add(new UnsupportedEffect(skillName,
+                    $"{descriptionPrefix}：游戏数据库中未找到技能记录", ["dps", "effectiveHealth"]));
+                continue;
+            }
+
+            var skillClass = skill.Text("Class") + skill.RecordType;
+            if (skillClass.Contains("WPAttack", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var effect = modeledEffects.FirstOrDefault(x => x.Id.Equals(skillName, StringComparison.OrdinalIgnoreCase));
+            if (effect is null)
+            {
+                result.Add(new UnsupportedEffect(skillName,
+                    $"{descriptionPrefix}：授予型主动或被动技能", ["dps", "effectiveHealth"]));
+                continue;
+            }
+
+            if (!effect.Trigger.Equals("OnAttack", StringComparison.OrdinalIgnoreCase) &&
+                !effect.Trigger.Equals("OnCrit", StringComparison.OrdinalIgnoreCase))
+                result.Add(new UnsupportedEffect(skillName,
+                    $"{descriptionPrefix}：触发条件 {effect.Trigger}", ["dps", "effectiveHealth"]));
+
+            var hasDamage = effect.WeaponDamagePercent > 0 || StatKeys.DamageTypes.Any(type =>
+                Math.Abs(effect.Damage[StatKeys.DamageFlat(type)]) > 1e-9 ||
+                Math.Abs(effect.Damage[$"damage.{type}.dotTotal"]) > 1e-9);
+            if (!hasDamage)
+                result.Add(new UnsupportedEffect(skillName,
+                    $"{descriptionPrefix}：治疗、防御或增益型触发效果", ["dps", "effectiveHealth"]));
+
+            var linked = new[]
+            {
+                skill, catalog.Records.GetValueOrDefault(skill.Text("skillProjectileName")),
+                catalog.Records.GetValueOrDefault(skill.Text("buffSkillName")),
+                catalog.Records.GetValueOrDefault(skill.Text("buffSelfSkillName")),
+                catalog.Records.GetValueOrDefault(skill.Text("buffSelf2SkillName"))
+            }.Where(x => x is not null).Cast<GameRecord>();
+            var unsupportedFields = linked.SelectMany(GameStatTranslator.FindUnsupportedCombatFields)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (unsupportedFields.Length > 0)
+            {
+                var display = string.Join(", ", unsupportedFields.Take(6));
+                if (unsupportedFields.Length > 6) display += "…";
+                result.Add(new UnsupportedEffect(skillName,
+                    $"{descriptionPrefix}词条：{display}", ["dps", "effectiveHealth"]));
+            }
+        }
+        return result;
+    }
+
+    private static StatBlock TranslateTriggeredSkillDamage(GameRecord skill, GameDataCatalog catalog, int level)
+    {
+        var result = GameStatTranslator.TranslateAtLevel(skill, level);
+        result.Set("proc.weaponDamagePercent", Math.Max(0,
+            GameStatTranslator.NumericAtLevel(skill, "weaponDamagePct", level)));
+        foreach (var link in new[]
+                 {
+                     skill.Text("skillProjectileName"), skill.Text("buffSkillName"),
+                     skill.Text("buffSelfSkillName"), skill.Text("buffSelf2SkillName")
+                 }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+            if (catalog.Records.TryGetValue(link, out var linked))
+                result.Add(GameStatTranslator.TranslateAtLevel(linked, level));
         return result;
     }
 

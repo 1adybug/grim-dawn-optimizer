@@ -65,13 +65,16 @@ public sealed class GameDataSource : IGameDataSource
             progress?.Report((i + 1d) / Math.Max(1, files.Length));
         }
 
+        var setBonuses = BuildSetBonuses(records, tags);
         var catalog = new GameDataCatalog
         {
             Version = installation.Version,
             Records = records,
             Tags = tags,
             Attachments = BuildAttachments(records, tags),
-            SetBonuses = BuildSetBonuses(records)
+            SetBonuses = setBonuses.Stats,
+            SetBonusEffects = setBonuses.Effects,
+            SetBonusUnsupportedEffects = setBonuses.UnsupportedEffects
         };
         try
         {
@@ -145,11 +148,14 @@ public sealed class GameDataSource : IGameDataSource
 
             var stats = source.Stats.Clone();
             var effects = source.Effects.ToList();
+            var unsupportedEffects = source.UnsupportedEffects.ToList();
             if (!string.IsNullOrWhiteSpace(completionBonusRecord) &&
                 catalog.Records.TryGetValue(completionBonusRecord, out var completionBonus))
             {
                 stats.Add(GameStatTranslator.Translate([completionBonus]));
                 effects.AddRange(SaveReader.BuildTriggeredEffects([completionBonus], catalog));
+                unsupportedEffects.AddRange(BuildUnsupportedEffects(
+                    [completionBonus], catalog, "未建模完成奖励"));
             }
 
             var suffix = string.IsNullOrWhiteSpace(completionBonusRecord) ? "base" : completionBonusRecord;
@@ -169,7 +175,7 @@ public sealed class GameDataSource : IGameDataSource
                 RequiredReputation = source.RequiredReputation,
                 Stats = stats,
                 Effects = effects,
-                UnsupportedEffects = source.UnsupportedEffects
+                UnsupportedEffects = unsupportedEffects
             });
         }
     }
@@ -304,9 +310,30 @@ public sealed class GameDataSource : IGameDataSource
                 RequiredFaction = record.Text("factionName"),
                 RequiredReputation = record.NumericValues["factionValue"],
                 Stats = GameStatTranslator.Translate([record]),
-                Effects = SaveReader.BuildTriggeredEffects([record], catalogView)
+                Effects = SaveReader.BuildTriggeredEffects([record], catalogView),
+                UnsupportedEffects = BuildUnsupportedEffects([record], catalogView, "未建模附件")
             });
         }
+        return result;
+    }
+
+    private static IReadOnlyList<UnsupportedEffect> BuildUnsupportedEffects(
+        IReadOnlyList<GameRecord> records,
+        GameDataCatalog catalog,
+        string descriptionPrefix)
+    {
+        var result = new List<UnsupportedEffect>();
+        foreach (var record in records)
+        {
+            var fields = GameStatTranslator.FindUnsupportedCombatFields(record);
+            if (fields.Count == 0) continue;
+            var display = string.Join(", ", fields.Take(6));
+            if (fields.Count > 6) display += "…";
+            result.Add(new UnsupportedEffect(record.RecordName,
+                $"{descriptionPrefix}词条：{display}", ["dps", "effectiveHealth"]));
+        }
+        result.AddRange(SaveReader.FindUnsupportedItemSkillEffects(records, catalog,
+            $"{descriptionPrefix}技能"));
         return result;
     }
 
@@ -350,22 +377,42 @@ public sealed class GameDataSource : IGameDataSource
         ["spear", "staff", "axe", "mace", "sword", "dagger", "scepter", "ranged1h", "ranged2h", "axe2h", "mace2h", "sword2h", "spear2h"],
         StringComparer.OrdinalIgnoreCase);
 
-    private static IReadOnlyDictionary<string, IReadOnlyDictionary<int, StatBlock>> BuildSetBonuses(IReadOnlyDictionary<string, GameRecord> records)
+    private static SetBonusData BuildSetBonuses(
+        IReadOnlyDictionary<string, GameRecord> records,
+        IReadOnlyDictionary<string, string> tags)
     {
-        var result = new Dictionary<string, IReadOnlyDictionary<int, StatBlock>>(StringComparer.OrdinalIgnoreCase);
+        var stats = new Dictionary<string, IReadOnlyDictionary<int, StatBlock>>(StringComparer.OrdinalIgnoreCase);
+        var effects = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<TriggeredEffect>>>(StringComparer.OrdinalIgnoreCase);
+        var unsupported = new Dictionary<string, IReadOnlyDictionary<int, IReadOnlyList<UnsupportedEffect>>>(StringComparer.OrdinalIgnoreCase);
+        var catalogView = new GameDataCatalog { Records = records, Tags = tags };
         foreach (var record in records.Values.Where(x => x.RecordName.Contains("/itemsets/", StringComparison.OrdinalIgnoreCase)))
         {
             var bonuses = new Dictionary<int, StatBlock>();
+            var bonusEffects = new Dictionary<int, IReadOnlyList<TriggeredEffect>>();
+            var bonusUnsupported = new Dictionary<int, IReadOnlyList<UnsupportedEffect>>();
             for (var pieces = 2; pieces <= 9; pieces++)
             {
                 var bonusRecord = record.Text($"setBonus{pieces}");
                 if (!string.IsNullOrWhiteSpace(bonusRecord) && records.TryGetValue(bonusRecord, out var bonus))
+                {
                     bonuses[pieces] = GameStatTranslator.Translate([bonus]);
+                    bonusEffects[pieces] = SaveReader.BuildTriggeredEffects([bonus], catalogView);
+                    bonusUnsupported[pieces] = BuildUnsupportedEffects(
+                        [bonus], catalogView, $"未建模套装 {pieces} 件奖励");
+                }
             }
-            if (bonuses.Count > 0) result[record.RecordName] = bonuses;
+            if (bonuses.Count == 0) continue;
+            stats[record.RecordName] = bonuses;
+            effects[record.RecordName] = bonusEffects;
+            unsupported[record.RecordName] = bonusUnsupported;
         }
-        return result;
+        return new SetBonusData(stats, effects, unsupported);
     }
+
+    private sealed record SetBonusData(
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, StatBlock>> Stats,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyList<TriggeredEffect>>> Effects,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<int, IReadOnlyList<UnsupportedEffect>>> UnsupportedEffects);
 
     private static async Task<string> HashFilesAsync(IEnumerable<string> files, CancellationToken cancellationToken)
     {
@@ -383,9 +430,9 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC19 adds item requirement formulas and their input fields. Bumping the
-        // payload header forces catalogs created before that parser fix to be rebuilt.
-        private static readonly byte[] PayloadHeader = "GDOC19"u8.ToArray();
+        // GDOC20 retains every combat-prefixed equipment/skill field and stores set
+        // bonus diagnostics. Older catalogs cannot provide complete coverage warnings.
+        private static readonly byte[] PayloadHeader = "GDOC20"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)

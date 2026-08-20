@@ -128,6 +128,49 @@ public sealed class CombatSimulatorTests
     }
 
     [Fact]
+    public void CooldownAndEnergyCostReductionIncreaseLimitedSkillDps()
+    {
+        var baseline = Stats(
+            (StatKeys.WeaponDamage("physical"), 100), ("offensiveAbility", 3000),
+            ("energy", 100), ("energyRegen", 0));
+        var improved = baseline.Clone();
+        improved.Set("cooldownReduction", 50);
+        improved.Set("energyCostReduction", 50);
+        var rotation = new SkillRotationDefinition
+        {
+            BaseAttacksPerSecond = 10, WeaponDamagePercent = 100,
+            CooldownSeconds = 2, EnergyPerUse = 20
+        };
+
+        var withoutReduction = Simulate(baseline, Scenario(), rotation);
+        var withReduction = Simulate(improved, Scenario(), rotation);
+
+        Assert.True(withReduction.ExpectedDps > withoutReduction.ExpectedDps * 1.9);
+    }
+
+    [Fact]
+    public void BleedingResistanceAndBlockAbsorptionAffectEffectiveHealth()
+    {
+        var scenario = Scenario();
+        scenario.IncomingDamage = new IncomingDamageProfile(
+            HitsPerSecond: 1, PhysicalPerHit: 500, FirePerHit: 0, ColdPerHit: 0,
+            LightningPerHit: 0, AcidPerHit: 0, PiercePerHit: 0, VitalityPerHit: 0,
+            AetherPerHit: 0, ChaosPerHit: 0, BleedingPerHit: 500);
+        var partial = Stats(
+            ("health", 10_000), ("defensiveAbility", 2_800), ("blockChance", 90),
+            ("blockAmount", 500), ("blockAbsorption", 50));
+        var protectedStats = partial.Clone();
+        protectedStats.Set("bleedingResistance", 80);
+        protectedStats.Set("blockAbsorption", 100);
+
+        var partialReport = Simulate(partial, scenario);
+        var protectedReport = Simulate(protectedStats, scenario);
+
+        Assert.True(protectedReport.IncomingDps < partialReport.IncomingDps);
+        Assert.True(protectedReport.EffectiveHealth > partialReport.EffectiveHealth);
+    }
+
+    [Fact]
     public async Task MonteCarloIsReproducibleForFixedSeed()
     {
         var character = Character(Stats(
@@ -148,6 +191,16 @@ public sealed class CombatSimulatorTests
         var character = Character(stats);
         var loadout = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>(), new GameDataCatalog());
         return _simulator.Simulate(character, loadout, scenario, Rotation());
+    }
+
+    private SimulationReport Simulate(
+        StatBlock stats,
+        CombatScenario scenario,
+        SkillRotationDefinition rotation)
+    {
+        var character = Character(stats);
+        var loadout = _engine.Calculate(character, new Dictionary<EquipmentSlot, LoadoutVariant>(), new GameDataCatalog());
+        return _simulator.Simulate(character, loadout, scenario, rotation);
     }
 
     private static CharacterSnapshot Character(StatBlock baseline) => new()

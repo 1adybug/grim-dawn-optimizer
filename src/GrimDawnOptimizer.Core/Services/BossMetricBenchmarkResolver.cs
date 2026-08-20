@@ -79,7 +79,7 @@ public static class BossMetricBenchmarkResolver
 
     public static double ResistanceCoverage(StatBlock stats)
     {
-        var ratios = StatKeys.DamageTypes
+        var ratios = StatKeys.IncomingDamageTypes
             .Select(type => Math.Clamp(stats[StatKeys.Resistance(type)], -100, 80) / 80d)
             .ToArray();
         if (ratios.Length == 0) return 0;
@@ -91,7 +91,8 @@ public static class BossMetricBenchmarkResolver
         var incoming = scenario.IncomingDamage;
         var perHit = incoming.PhysicalPerHit + incoming.PiercePerHit + incoming.FirePerHit +
                      incoming.ColdPerHit + incoming.LightningPerHit + incoming.AcidPerHit +
-                     incoming.VitalityPerHit + incoming.AetherPerHit + incoming.ChaosPerHit;
+                     incoming.VitalityPerHit + incoming.AetherPerHit + incoming.ChaosPerHit +
+                     incoming.BleedingPerHit;
         return Math.Max(0, perHit * Math.Max(0, incoming.HitsPerSecond));
     }
 

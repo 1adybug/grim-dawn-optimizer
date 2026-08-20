@@ -174,7 +174,7 @@
                             </TextBlock>
                             <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="{StaticResource Muted}">
                                 <Run Text="BOSS 基准：" FontWeight="SemiBold" Foreground="{StaticResource Text}" />
-                                <Run Text="DPS 对比击杀时限所需 DPS；有效生命对比同期原始承伤。承伤靶子覆盖物理、穿刺、火、冰、电、酸、活力、虚化和混乱，因此所有抗性会自然进入有效生命，但不会重复计分。" />
+                                <Run Text="DPS 对比击杀时限所需 DPS；有效生命对比同期原始承伤。承伤靶子覆盖物理、穿刺、火、冰、电、酸、活力、虚化、混乱和流血，因此所有抗性会自然进入有效生命，但不会重复计分。" />
                             </TextBlock>
                         </StackPanel>
                     </Border>

@@ -185,7 +185,8 @@ public static class SkillRotationFactory
         var learned = character.Skills.Where(x => x.Level > 0 &&
                      !x.Record.Equals(selectedRecord, StringComparison.OrdinalIgnoreCase) &&
                      !x.Record.Contains("/default/", StringComparison.OrdinalIgnoreCase))
-            .Select(x => (x.Record, x.Name, Level: Math.Max(1, x.Level)))
+            .Select(x => (x.Record, x.Name, Level: Math.Max(1,
+                x.Level + ResolveCurrentSkillBonus(character, catalog, x.Record, equippedVariants))))
             .Concat(ResolveGrantedWeaponPoolSkills(character, catalog, equippedVariants));
         foreach (var skill in learned
                      .GroupBy(x => x.Record, StringComparer.OrdinalIgnoreCase)
@@ -272,7 +273,7 @@ public static class SkillRotationFactory
         return mainItem?.Slot == EquipmentSlot.MainHand && offItem?.Slot == EquipmentSlot.MainHand;
     }
 
-    private static int ResolveCurrentSkillBonus(
+    internal static int ResolveCurrentSkillBonus(
         CharacterSnapshot character,
         GameDataCatalog catalog,
         string skillRecord,
@@ -280,6 +281,7 @@ public static class SkillRotationFactory
     {
         if (string.IsNullOrWhiteSpace(skillRecord)) return 0;
         var bonus = 0d;
+        var masteryRecord = ResolveMasteryRecord(character, skillRecord);
         foreach (var (item, variant) in ResolveEquippedItems(character, equippedVariants))
         {
             foreach (var recordName in ResolveEquippedRecordNames(item, variant))
@@ -287,11 +289,26 @@ public static class SkillRotationFactory
                 if (!catalog.Records.TryGetValue(recordName, out var record)) continue;
                 bonus += record.NumericValues["augmentAllLevel"];
                 for (var index = 1; index <= 32; index++)
+                {
                     if (record.Text($"augmentSkillName{index}").Equals(skillRecord, StringComparison.OrdinalIgnoreCase))
                         bonus += record.NumericValues[$"augmentSkillLevel{index}"];
+                    if (!string.IsNullOrWhiteSpace(masteryRecord) &&
+                        record.Text($"augmentMasteryName{index}").Equals(masteryRecord, StringComparison.OrdinalIgnoreCase))
+                        bonus += record.NumericValues[$"augmentMasteryLevel{index}"];
+                }
             }
         }
         return Math.Max(0, (int)Math.Round(bonus));
+    }
+
+    private static string ResolveMasteryRecord(CharacterSnapshot character, string skillRecord)
+    {
+        var directory = Path.GetDirectoryName(skillRecord)?.Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(directory)) return string.Empty;
+        return character.Skills.FirstOrDefault(x =>
+            (Path.GetDirectoryName(x.Record)?.Replace('\\', '/') ?? string.Empty)
+                .Equals(directory, StringComparison.OrdinalIgnoreCase) &&
+            Path.GetFileName(x.Record).StartsWith("_classtraining", StringComparison.OrdinalIgnoreCase))?.Record ?? string.Empty;
     }
 
     private static IReadOnlyList<GameRecord> ResolveCurrentSkillModifiers(

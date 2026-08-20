@@ -15,7 +15,7 @@ public sealed class ScoringEngineTests
             IncomingDamage = new IncomingDamageProfile(
                 HitsPerSecond: 1.2, PhysicalPerHit: 1200, FirePerHit: 450,
                 ColdPerHit: 0, LightningPerHit: 0, AcidPerHit: 0, PiercePerHit: 0,
-                VitalityPerHit: 0, AetherPerHit: 0, ChaosPerHit: 0)
+                VitalityPerHit: 0, AetherPerHit: 0, ChaosPerHit: 0, BleedingPerHit: 0)
         };
         var rules = new[]
         {
@@ -51,6 +51,6 @@ public sealed class ScoringEngineTests
         oneGap.Set(StatKeys.Resistance("chaos"), 0);
 
         Assert.Equal(1, BossMetricBenchmarkResolver.ResistanceCoverage(capped), 9);
-        Assert.Equal(0.7 * 8 / 9d, BossMetricBenchmarkResolver.ResistanceCoverage(oneGap), 9);
+        Assert.Equal(0.7 * 9 / 10d, BossMetricBenchmarkResolver.ResistanceCoverage(oneGap), 9);
     }
 }

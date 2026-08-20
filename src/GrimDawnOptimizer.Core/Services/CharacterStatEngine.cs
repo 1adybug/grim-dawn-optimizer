@@ -7,8 +7,10 @@ public static class StatKeys
 {
     public static readonly string[] DamageTypes =
     [
-        "physical", "pierce", "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos"
+        "physical", "pierce", "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos", "bleeding"
     ];
+
+    public static readonly string[] IncomingDamageTypes = DamageTypes;
 
     public static string Resistance(string damageType) => $"{damageType}Resistance";
     public static string MaxResistance(string damageType) => $"{damageType}MaxResistance";
@@ -55,14 +57,27 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             if (!catalog.SetBonuses.TryGetValue(setId, out var bonuses)) continue;
             foreach (var (requiredPieces, bonus) in bonuses)
                 if (count >= requiredPieces)
+                {
                     stats.Add(bonus);
+                    if (catalog.SetBonusEffects.TryGetValue(setId, out var effectsByPieces))
+                        effects.AddRange(effectsByPieces.GetValueOrDefault(requiredPieces) ?? []);
+                    if (catalog.SetBonusUnsupportedEffects.TryGetValue(setId, out var unsupportedByPieces))
+                        unsupported.AddRange(unsupportedByPieces.GetValueOrDefault(requiredPieces) ?? []);
+                }
         }
+
+        ApplyEquipmentSkillBonuses(stats, character, slots, catalog);
 
         ApplyPercentModifier(stats, "physique");
         ApplyPercentModifier(stats, "cunning");
         ApplyPercentModifier(stats, "spirit");
         ApplyPercentModifier(stats, "health");
         ApplyPercentModifier(stats, "energy");
+        ApplyPercentModifier(stats, "healthRegen");
+        ApplyPercentModifier(stats, "energyRegen");
+        ApplyPercentModifier(stats, "armor");
+        ApplyPercentModifier(stats, "blockChance");
+        ApplyPercentModifier(stats, "blockAmount");
         if (stats["usePlayerAbilityFormula"] > 0)
             ApplyPlayerAbilityFormula(stats);
         else
@@ -79,6 +94,7 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         var sheetSpirit = stats["spirit"];
         stats.Add(StatKeys.DamagePercent("physical"), sheetCunning * 0.41);
         stats.Add(StatKeys.DamagePercent("pierce"), sheetCunning * 0.41);
+        stats.Add(StatKeys.DamagePercent("bleeding"), sheetCunning * 0.41);
         foreach (var damageType in new[] { "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos" })
             stats.Add(StatKeys.DamagePercent(damageType), sheetSpirit * 0.47);
 
@@ -127,6 +143,43 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         EquipmentSlot.OffHand => itemSlot == EquipmentSlot.OffHand || canDualWield && itemSlot == EquipmentSlot.MainHand,
         _ => target == itemSlot
     };
+
+    private static void ApplyEquipmentSkillBonuses(
+        StatBlock stats,
+        CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots,
+        GameDataCatalog catalog)
+    {
+        foreach (var skill in character.Skills.Where(x => x.Level > 0))
+        {
+            if (!catalog.Records.TryGetValue(skill.Record, out var record) ||
+                !SkillRotationFactory.ContributesPersistentStats(record)) continue;
+            var @class = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
+            if (@class.Contains("Mastery", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var bonus = SkillRotationFactory.ResolveCurrentSkillBonus(character, catalog, skill.Record, slots);
+            if (bonus <= 0) continue;
+            var baseLevel = Math.Max(skill.Level, skill.DevotionLevel);
+            var effectiveLevel = baseLevel + bonus;
+            AddLevelDelta(record, baseLevel, effectiveLevel);
+            foreach (var childName in new[]
+                     {
+                         record.Text("buffSkillName"), record.Text("buffSelfSkillName"),
+                         record.Text("buffSelf2SkillName")
+                     }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+                if (catalog.Records.TryGetValue(childName, out var child))
+                    AddLevelDelta(child, baseLevel, effectiveLevel);
+        }
+        return;
+
+        void AddLevelDelta(GameRecord record, int baseLevel, int effectiveLevel)
+        {
+            var improved = GameStatTranslator.TranslateAtLevel(record, effectiveLevel);
+            var baseline = GameStatTranslator.TranslateAtLevel(record, baseLevel);
+            improved.Add(baseline, -1);
+            stats.Add(improved);
+        }
+    }
 
     private static int ReducedRequirement(int requirement, double reductionPercent)
     {

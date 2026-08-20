@@ -16,7 +16,8 @@ public static class BossScenarioFactory
             ["acid"] = "defensivePoison",
             ["vitality"] = "defensiveLife",
             ["aether"] = "defensiveAether",
-            ["chaos"] = "defensiveChaos"
+            ["chaos"] = "defensiveChaos",
+            ["bleeding"] = "defensiveBleeding"
         };
 
     public static CombatScenario ApplyAverageBoss(
@@ -153,7 +154,7 @@ public static class BossScenarioFactory
         {
             ["physical"] = 18, ["pierce"] = 18, ["fire"] = 25, ["cold"] = 25,
             ["lightning"] = 25, ["acid"] = 25, ["vitality"] = 25,
-            ["aether"] = 25, ["chaos"] = 25
+            ["aether"] = 25, ["chaos"] = 25, ["bleeding"] = 18
         };
         return new BossSample(health, Math.Max(50, level * 22), 2400 + level * 5,
             2400 + level * 5, 60, resistances, true);
