@@ -250,6 +250,11 @@ public sealed class ParserGoldenTests
         var cached = await source.LoadCatalogAsync(install);
         Assert.Equal(123, first.Records["records/items/test.dbr"].NumericValues["characterLife"]);
         Assert.Equal(123, cached.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+        Assert.Equal(512, first.Records["records/items/test.dbr"].NumericValues["strengthRequirement"]);
+        Assert.Equal(410, first.Records["records/items/test.dbr"].NumericValues["dexterityRequirement"]);
+        Assert.Equal(320, first.Records["records/items/test.dbr"].NumericValues["intelligenceRequirement"]);
+        Assert.Equal("records/game/itemcostformulas_heavy.dbr", first.Records["records/items/test.dbr"].Text("itemCostName"));
+        Assert.Equal("itemLevel * 10 + 84", first.Records["records/items/test.dbr"].Text("handsStrengthEquation"));
         await using (var connection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Mode=ReadOnly;Pooling=False"))
         {
             await connection.OpenAsync();
@@ -281,6 +286,80 @@ public sealed class ParserGoldenTests
         var catalog = await source.LoadCatalogAsync(install);
 
         Assert.Equal(789, catalog.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+    }
+
+    [Fact]
+    public async Task SaveReaderUsesGameEquipmentRequirementFields()
+    {
+        using var fixture = new TemporaryFixture();
+        var playerPath = fixture.Write("player.gdc", BuildCharacter());
+        const string itemRecord = "records/items/gearhands/test.dbr";
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>(StringComparer.OrdinalIgnoreCase)
+            {
+                [itemRecord] = new GameRecord
+                {
+                    RecordName = itemRecord,
+                    RecordType = "ArmorProtective_Hands",
+                    NumericValues = new StatBlock(new Dictionary<string, double>
+                    {
+                        ["strengthRequirement"] = 512,
+                        ["dexterityRequirement"] = 410,
+                        ["intelligenceRequirement"] = 320
+                    })
+                }
+            }
+        };
+        var location = new SaveLocation(fixture.Root, "test", [playerPath], null, null);
+
+        var character = Assert.Single(await new SaveReader().ReadCharactersAsync(location, catalog));
+        var item = Assert.Single(character.Items);
+
+        Assert.Equal(512, item.PhysiqueRequirement);
+        Assert.Equal(410, item.CunningRequirement);
+        Assert.Equal(320, item.SpiritRequirement);
+    }
+
+    [Fact]
+    public async Task SaveReaderEvaluatesRequirementFormulaWhenStoredValueIsZero()
+    {
+        using var fixture = new TemporaryFixture();
+        var playerPath = fixture.Write("player.gdc", BuildCharacter());
+        const string itemRecord = "records/items/gearhands/test.dbr";
+        const string formulaRecord = "records/game/itemcostformulas_heavy.dbr";
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>(StringComparer.OrdinalIgnoreCase)
+            {
+                [itemRecord] = new GameRecord
+                {
+                    RecordName = itemRecord,
+                    RecordType = "ArmorProtective_Hands",
+                    NumericValues = new StatBlock(new Dictionary<string, double> { ["itemLevel"] = 40 }),
+                    TextValues = new Dictionary<string, IReadOnlyList<string>>
+                    {
+                        ["itemCostName"] = [formulaRecord]
+                    }
+                },
+                [formulaRecord] = new GameRecord
+                {
+                    RecordName = formulaRecord,
+                    TextValues = new Dictionary<string, IReadOnlyList<string>>
+                    {
+                        ["handsStrengthEquation"] = ["itemLevel * 10 + 84"]
+                    }
+                }
+            }
+        };
+        var location = new SaveLocation(fixture.Root, "test", [playerPath], null, null);
+
+        var character = Assert.Single(await new SaveReader().ReadCharactersAsync(location, catalog));
+        var item = Assert.Single(character.Items);
+
+        Assert.Equal(484, item.PhysiqueRequirement);
+        Assert.Equal(0, item.CunningRequirement);
+        Assert.Equal(0, item.SpiritRequirement);
     }
 
     private static byte[] BuildCharacter()
@@ -579,7 +658,13 @@ public sealed class ParserGoldenTests
 
     private static byte[] BuildArz(uint value)
     {
-        var strings = new[] { "records/items/test.dbr", "characterLife", "Class", "WeaponArmor_Offhand" };
+        var strings = new[]
+        {
+            "records/items/test.dbr", "characterLife", "Class", "WeaponArmor_Offhand",
+            "strengthRequirement", "dexterityRequirement", "intelligenceRequirement",
+            "itemCostName", "records/game/itemcostformulas_heavy.dbr",
+            "handsStrengthEquation", "itemLevel * 10 + 84"
+        };
         using var stringStream = new MemoryStream();
         using (var stringsWriter = new BinaryWriter(stringStream, Encoding.ASCII, leaveOpen: true))
         {
@@ -592,7 +677,7 @@ public sealed class ParserGoldenTests
             }
         }
 
-        var record = new byte[24];
+        var record = new byte[84];
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(0, 2), 0);
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(2, 2), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(4, 4), 1);
@@ -601,6 +686,11 @@ public sealed class ParserGoldenTests
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(14, 2), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(16, 4), 2);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(20, 4), 3);
+        WriteNumericField(record, 24, 4, 512);
+        WriteNumericField(record, 36, 5, 410);
+        WriteNumericField(record, 48, 6, 320);
+        WriteTextField(record, 60, 7, 8);
+        WriteTextField(record, 72, 9, 10);
         var compressed = new byte[LZ4Codec.MaximumOutputSize(record.Length)];
         var compressedLength = LZ4Codec.Encode(record, 0, record.Length, compressed, 0, compressed.Length);
 
@@ -629,6 +719,22 @@ public sealed class ParserGoldenTests
         writer.Write(stringTable);
         writer.Write(compressed, 0, compressedLength);
         return stream.ToArray();
+    }
+
+    private static void WriteNumericField(byte[] record, int offset, uint keyIndex, uint value)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(offset, 2), 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(offset + 2, 2), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(offset + 4, 4), keyIndex);
+        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(offset + 8, 4), value);
+    }
+
+    private static void WriteTextField(byte[] record, int offset, uint keyIndex, uint valueIndex)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(offset, 2), 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(offset + 2, 2), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(offset + 4, 4), keyIndex);
+        BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(offset + 8, 4), valueIndex);
     }
 
     private sealed class TemporaryFixture : IDisposable

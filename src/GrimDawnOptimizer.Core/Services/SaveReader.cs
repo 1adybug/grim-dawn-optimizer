@@ -294,6 +294,7 @@ public sealed class SaveReader : ISaveReader
             raw.X, raw.Y);
         var itemName = ResolveItemName(baseRecord, raw, catalog);
         var effects = BuildTriggeredEffects(records, catalog);
+        var requirements = ResolveEquipmentRequirements(baseRecord, catalog);
         var unsupported = new List<UnsupportedEffect>();
         if (!seeded.IsExact && raw.Seed != 0)
         {
@@ -335,9 +336,9 @@ public sealed class SaveReader : ISaveReader
             AugmentRecord = raw.AugmentRecord,
             AugmentSeed = raw.AugmentSeed,
             LevelRequirement = (int)records.Max(x => x.NumericValues["levelRequirement"]),
-            PhysiqueRequirement = (int)baseRecord.NumericValues["characterStrengthReq"],
-            CunningRequirement = (int)baseRecord.NumericValues["characterDexterityReq"],
-            SpiritRequirement = (int)baseRecord.NumericValues["characterIntelligenceReq"],
+            PhysiqueRequirement = requirements.Physique,
+            CunningRequirement = requirements.Cunning,
+            SpiritRequirement = requirements.Spirit,
             IsTwoHanded = GameStatTranslator.IsTwoHanded(baseRecord),
             AttachmentQualifier = GameStatTranslator.ResolveAttachmentQualifier(baseRecord),
             SetId = baseRecord.Text("itemSetName"),
@@ -347,6 +348,118 @@ public sealed class SaveReader : ISaveReader
             Source = source
         };
     }
+
+    internal static EquipmentRequirements ResolveEquipmentRequirements(
+        GameRecord record,
+        GameDataCatalog catalog)
+    {
+        var direct = new EquipmentRequirements(
+            ReadEquipmentRequirement(record, "strengthRequirement", "characterStrengthReq"),
+            ReadEquipmentRequirement(record, "dexterityRequirement", "characterDexterityReq"),
+            ReadEquipmentRequirement(record, "intelligenceRequirement", "characterIntelligenceReq"));
+        var itemClass = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
+        var equations = RequirementEquations(itemClass);
+        if (equations == default) return direct;
+
+        var formulaRecordName = record.Text("itemCostName");
+        if (string.IsNullOrWhiteSpace(formulaRecordName))
+            formulaRecordName = "records/game/itemcostformulas.dbr";
+        if (!catalog.Records.TryGetValue(formulaRecordName, out var formulas)) return direct;
+
+        var variables = BuildRequirementVariables(record);
+        return new EquipmentRequirements(
+            EvaluateRequirement(formulas.Text(equations.Physique), variables, direct.Physique),
+            EvaluateRequirement(formulas.Text(equations.Cunning), variables, direct.Cunning),
+            EvaluateRequirement(formulas.Text(equations.Spirit), variables, direct.Spirit));
+    }
+
+    private static EquipmentRequirementEquations RequirementEquations(string itemClass) => itemClass switch
+    {
+        "ArmorProtective_Head" => new("headStrengthEquation", "", "headIntelligenceEquation"),
+        "ArmorProtective_Shoulders" => new("shouldersStrengthEquation", "", ""),
+        "ArmorProtective_Chest" => new("chestStrengthEquation", "", "chestIntelligenceEquation"),
+        "ArmorProtective_Hands" => new("handsStrengthEquation", "", ""),
+        "ArmorProtective_Legs" => new("legsStrengthEquation", "", ""),
+        "ArmorProtective_Feet" => new("feetStrengthEquation", "", ""),
+        "ArmorProtective_Waist" => new("waistStrengthEquation", "", ""),
+        "ArmorJewelry_Amulet" or "ArmorJewelry_Medal" => new("", "", "amuletIntelligenceEquation"),
+        "ArmorJewelry_Ring" => new("", "", "ringIntelligenceEquation"),
+        "WeaponArmor_Offhand" => new("", "", "offhandIntelligenceEquation"),
+        "WeaponArmor_Shield" => new("shieldStrengthEquation", "", ""),
+        "WeaponMelee_Axe" => new("axeStrengthEquation", "", ""),
+        "WeaponMelee_Mace" or "WeaponHunting_Spear" or "WeaponMelee_Spear2h" =>
+            new("maceStrengthEquation", "", ""),
+        "WeaponMelee_Sword" => new("", "swordDexterityEquation", ""),
+        "WeaponMelee_Dagger" or "WeaponMagical_Staff" =>
+            new("", "daggerDexterityEquation", "daggerIntelligenceEquation"),
+        "WeaponMelee_Scepter" => new("scepterStrengthEquation", "", "scepterIntelligenceEquation"),
+        "WeaponHunting_Ranged1h" => new("", "ranged1hDexterityEquation", ""),
+        "WeaponMelee_Axe2h" or "WeaponMelee_Mace2h" or "WeaponMelee_Sword2h" =>
+            new("melee2hStrengthEquation", "", ""),
+        "WeaponHunting_Ranged2h" => new("", "ranged2hDexterityEquation", ""),
+        _ => default
+    };
+
+    private static Dictionary<string, double> BuildRequirementVariables(GameRecord record)
+    {
+        var itemLevel = record.NumericValues["itemLevel"];
+        if (itemLevel <= 0) itemLevel = record.NumericValues["levelRequirement"];
+        var pierceMin = record.NumericValues["offensivePierceRatioMin"];
+        var pierceMax = record.NumericValues["offensivePierceRatioMax"];
+        var damageTypes = new[] { "Aether", "Chaos", "Cold", "Fire", "Life", "Lightning", "Poison" };
+        var damageAverage = damageTypes.Sum(type => AverageRange(
+            record.NumericValues[$"offensiveBase{type}Min"],
+            record.NumericValues[$"offensiveBase{type}Max"]));
+        damageAverage += AverageRange(
+            record.NumericValues["offensivePhysicalMin"] + record.NumericValues["offensiveBasePhysicalMin"],
+            record.NumericValues["offensivePhysicalMax"] + record.NumericValues["offensiveBasePhysicalMax"]);
+
+        return new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["itemLevel"] = itemLevel,
+            ["charAttackSpeed"] = record.NumericValues["characterAttackSpeed"],
+            ["defenseAttrArmor"] = record.NumericValues["defensiveProtection"],
+            ["itemBaseCost"] = 1000,
+            ["shieldBlockDefense"] = Math.Max(record.NumericValues["defensiveBlock"], record.NumericValues["defensiveBlockAmount"]),
+            ["shieldBlockChance"] = record.NumericValues["defensiveBlockChance"],
+            ["damageAvgPierceRatio"] = AverageRange(pierceMin, pierceMax),
+            ["damageAvgBase"] = damageAverage,
+            ["totalAttCount"] = CountRequirementAttributes(record),
+            ["itemPrefixCost"] = 0,
+            ["itemSuffixCost"] = 0
+        };
+    }
+
+    private static int CountRequirementAttributes(GameRecord record) => record.NumericValues.Values.Count(x =>
+        x.Value > 0 &&
+        (x.Key.StartsWith("offensive", StringComparison.OrdinalIgnoreCase) ||
+         x.Key.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
+         x.Key.StartsWith("character", StringComparison.OrdinalIgnoreCase)) &&
+        !x.Key.EndsWith(".min", StringComparison.OrdinalIgnoreCase) &&
+        !x.Key.EndsWith(".max", StringComparison.OrdinalIgnoreCase));
+
+    private static double AverageRange(double minimum, double maximum) =>
+        maximum > 0 ? (minimum + maximum) / 2d : minimum;
+
+    private static int EvaluateRequirement(
+        string formula,
+        IReadOnlyDictionary<string, double> variables,
+        int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(formula) ||
+            !FormulaEvaluator.TryEvaluate(formula, variables, out var value)) return fallback;
+        return (int)Math.Floor(Math.Max(0, value) + 0.5);
+    }
+
+    private static int ReadEquipmentRequirement(GameRecord record, string field, string legacyField)
+    {
+        var value = record.NumericValues[field];
+        if (value <= 0) value = record.NumericValues[legacyField];
+        return (int)Math.Ceiling(Math.Max(0, value) - 1e-9);
+    }
+
+    internal readonly record struct EquipmentRequirements(int Physique, int Cunning, int Spirit);
+    private readonly record struct EquipmentRequirementEquations(string Physique, string Cunning, string Spirit);
 
     internal static void ApplyExpectedItemScale(StatBlock stats, double attributeScalePercent)
     {

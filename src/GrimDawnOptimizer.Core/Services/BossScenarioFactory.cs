@@ -172,20 +172,29 @@ public static class BossScenarioFactory
 internal sealed class FormulaEvaluator
 {
     private readonly string _formula;
-    private readonly double _characterLevel;
+    private readonly IReadOnlyDictionary<string, double> _variables;
     private int _position;
 
-    private FormulaEvaluator(string formula, double characterLevel)
+    private FormulaEvaluator(string formula, IReadOnlyDictionary<string, double> variables)
     {
         _formula = formula;
-        _characterLevel = characterLevel;
+        _variables = variables;
     }
 
-    public static bool TryEvaluate(string formula, double characterLevel, out double value)
+    public static bool TryEvaluate(string formula, double characterLevel, out double value) =>
+        TryEvaluate(formula, new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["charLevel"] = characterLevel
+        }, out value);
+
+    public static bool TryEvaluate(
+        string formula,
+        IReadOnlyDictionary<string, double> variables,
+        out double value)
     {
         try
         {
-            var parser = new FormulaEvaluator(formula, characterLevel);
+            var parser = new FormulaEvaluator(formula, variables);
             value = parser.ParseExpression();
             parser.SkipWhitespace();
             return parser._position == parser._formula.Length && double.IsFinite(value);
@@ -247,7 +256,7 @@ internal sealed class FormulaEvaluator
             var start = _position++;
             while (_position < _formula.Length && (char.IsLetterOrDigit(_formula[_position]) || _formula[_position] == '_')) _position++;
             var identifier = _formula[start.._position];
-            return identifier.Equals("charLevel", StringComparison.OrdinalIgnoreCase) ? _characterLevel : 0;
+            return _variables.TryGetValue(identifier, out var value) ? value : 0;
         }
 
         var numberStart = _position;

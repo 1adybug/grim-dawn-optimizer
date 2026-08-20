@@ -383,8 +383,9 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC17 adds equipment requirement-reduction fields used by loadout validation.
-        private static readonly byte[] PayloadHeader = "GDOC17"u8.ToArray();
+        // GDOC19 adds item requirement formulas and their input fields. Bumping the
+        // payload header forces catalogs created before that parser fix to be rebuilt.
+        private static readonly byte[] PayloadHeader = "GDOC19"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)
