@@ -6,6 +6,16 @@ namespace GrimDawnOptimizer.Tests;
 public sealed class ProfileStoreTests
 {
     [Fact]
+    public void NewProfileUsesRecommendedOptimizationDefaults()
+    {
+        var profile = new OptimizationProfile();
+
+        Assert.Equal(180, profile.SearchBudgetSeconds);
+        Assert.Equal(10, profile.ResultCount);
+        Assert.Equal(4000, profile.MonteCarloTrials);
+    }
+
+    [Fact]
     public async Task ProfileRoundTripsWithStatBlocksAndSchemaVersion()
     {
         var root = Path.Combine(Path.GetTempPath(), "gd-optimizer-tests", Guid.NewGuid().ToString("N"));

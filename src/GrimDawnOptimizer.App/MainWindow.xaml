@@ -245,7 +245,7 @@
                                    Foreground="{StaticResource Accent}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
                         <TextBlock Text="两项均填写游戏中未计敌人防御的当前数值。它们只用于本次载入，不会保存为方案默认值。"
                                    Foreground="{StaticResource Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
-                        <TextBlock Text="建议搜索 60–180 秒；时间越长，多样性 Beam、邻域搜索和多起点扰动覆盖越充分。"
+                        <TextBlock Text="默认搜索 180 秒、返回 10 个候选并各抽样 4,000 次；时间越长，多样性 Beam、邻域搜索和多起点扰动覆盖越充分。"
                                    Foreground="{StaticResource Accent}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0" />
                     </StackPanel>
                     <Grid Margin="0,16,0,0">

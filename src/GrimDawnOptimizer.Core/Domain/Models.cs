@@ -263,9 +263,9 @@ public sealed class OptimizationProfile
     public CombatScenario Scenario { get; set; } = new();
     public SkillRotationDefinition Rotation { get; set; } = new();
     public List<MetricRule> Metrics { get; set; } = SupportedMetricCatalog.CreateDefaults();
-    public int SearchBudgetSeconds { get; set; } = 60;
+    public int SearchBudgetSeconds { get; set; } = 180;
     public int ResultCount { get; set; } = 10;
-    public int MonteCarloTrials { get; set; } = 2000;
+    public int MonteCarloTrials { get; set; } = 4000;
     public bool UseUnlockedAttachments { get; set; } = true;
     [JsonIgnore]
     public double CurrentWeaponAttackDps { get; set; }
