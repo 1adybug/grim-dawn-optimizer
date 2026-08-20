@@ -224,7 +224,7 @@
                             <TextBox Text="{Binding Profile.SearchBudgetSeconds, UpdateSourceTrigger=PropertyChanged}" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Margin="6,0">
-                            <TextBlock Text="候选数" Style="{StaticResource Label}" />
+                            <TextBlock Text="最终候选数" Style="{StaticResource Label}" />
                             <TextBox Text="{Binding Profile.ResultCount, UpdateSourceTrigger=PropertyChanged}" />
                         </StackPanel>
                         <StackPanel Grid.Column="2" Margin="6,0,0,0">

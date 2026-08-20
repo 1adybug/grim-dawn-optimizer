@@ -7,6 +7,7 @@ namespace GrimDawnOptimizer.Core.Services;
 
 public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 {
+    private const int TransitionParentCount = 10;
     private const int MaxComponentOptionsPerItem = 24;
     private const int MaxAugmentOptionsPerItem = 16;
     private const int MaxVariantsPerItem = 48;
@@ -161,6 +162,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         LocalImprove(character, finalists, variantsBySlot, catalog, profile, scoring, localDeadline, watch, ref evaluated, progress, cancellationToken);
         MultiStartImprove(character, finalists, variantsBySlot, currentSlots, catalog, profile, scoring,
             budget, watch, ref evaluated, progress, cancellationToken);
+        var searchReachedBudget = watch.Elapsed >= budget;
 
         // A local-search seed can temporarily lose its off-hand when a two-handed
         // weapon is tested, or remain partial when the time budget expires between
@@ -174,7 +176,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             return Evaluate(character, slots, catalog, profile, scoring);
         }).ToList();
 
-        var results = completedFinalists
+        var transitionParents = completedFinalists
             // Invalid combinations must never be presented as actionable plans. Partial
             // beam states remain eligible because later slots may supply the missing
             // attributes or requirement reduction; filtering is intentionally final-only.
@@ -185,8 +187,27 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             // for each physical equipment combination so the candidate list is useful.
             .GroupBy(x => EquipmentSignature(x.Loadout.Slots))
             .Select(x => x.First())
-            .Take(resultCount)
+            .Take(TransitionParentCount)
             .ToList();
+
+        var results = ExpandTransitionCandidates(
+            character,
+            transitionParents,
+            currentSlots,
+            catalog,
+            profile,
+            scoring,
+            resultCount,
+            watch,
+            ref evaluated,
+            progress,
+            cancellationToken);
+
+        // A character with no alternative wearable item has no non-empty transition
+        // combination. Preserve the old useful fallback instead of returning a blank UI;
+        // once any real transition exists, the unchanged current loadout never competes.
+        if (results.Count == 0)
+            results = transitionParents.Take(resultCount).ToList();
 
         // Keep optimizing the complete equipment + attachment plan, but expose a
         // target-free comparison that strips every component and augment. This lets
@@ -216,7 +237,6 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         for (var i = 0; i < results.Count; i++)
         {
             results[i].Rank = i + 1;
-            if (watch.Elapsed >= budget + TimeSpan.FromSeconds(30)) break;
             cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(new SearchProgress("MonteCarlo", evaluated, i + 1, bestScore, watch.Elapsed, $"复核候选 {i + 1}/{results.Count}"));
             var seed = StableSeed(profile.Name, Signature(results[i].Loadout.Slots));
@@ -239,7 +259,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             EvaluatedCandidates = evaluated,
             Iterations = iteration,
             Elapsed = watch.Elapsed,
-            StopReason = watch.Elapsed >= budget ? "达到搜索时间预算；已返回当前最佳候选" : "候选空间已完成近似搜索"
+            StopReason = searchReachedBudget
+                ? "达到搜索时间预算；已完成过渡组合评分并返回当前最佳候选"
+                : "候选空间与过渡组合已完成近似搜索"
         };
     }
 
@@ -251,6 +273,17 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         ScoringEngine scoring)
     {
         var calculated = _statEngine.Calculate(character, slots, catalog);
+        return EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
+    }
+
+    private LoadoutResult EvaluateCalculated(
+        CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots,
+        CalculatedLoadout calculated,
+        GameDataCatalog catalog,
+        OptimizationProfile profile,
+        ScoringEngine scoring)
+    {
         var rotation = ResolveRotation(character, catalog, profile, slots);
         var rawSimulation = _simulator.Simulate(character, calculated, profile.Scenario, rotation);
         var rawWeaponSimulation = _simulator.Simulate(
@@ -282,6 +315,135 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Confidence = confidence
         };
     }
+
+    private List<LoadoutResult> ExpandTransitionCandidates(
+        CharacterSnapshot character,
+        IReadOnlyList<LoadoutResult> parents,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> currentSlots,
+        GameDataCatalog catalog,
+        OptimizationProfile profile,
+        ScoringEngine scoring,
+        int resultCount,
+        Stopwatch watch,
+        ref int evaluated,
+        IProgress<SearchProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var totalCombinations = parents.Sum(parent =>
+            TransitionCombinationCount(currentSlots, parent.Loadout.Slots));
+        if (totalCombinations == 0) return [];
+
+        var seenPlans = new HashSet<string>(StringComparer.Ordinal);
+        var topByEquipment = new Dictionary<string, LoadoutResult>(StringComparer.Ordinal);
+        long generated = 0;
+        var validUnique = 0;
+
+        foreach (var parent in parents)
+        foreach (var slots in EnumerateTransitionLoadouts(currentSlots, parent.Loadout.Slots))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            generated++;
+
+            var planSignature = Signature(slots);
+            if (seenPlans.Add(planSignature))
+            {
+                evaluated++;
+                var calculated = _statEngine.Calculate(character, slots, catalog);
+                if (calculated.IsValid)
+                {
+                    var result = EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
+                    validUnique++;
+                    RetainTopResult(topByEquipment, result, resultCount);
+                }
+            }
+
+            if (generated % 512 == 0)
+                progress?.Report(new SearchProgress(
+                    "TransitionExpansion", evaluated, parents.Count,
+                    topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()
+                        ?.TierScores.FirstOrDefault() ?? double.NegativeInfinity,
+                    watch.Elapsed,
+                    $"组合评分 {generated:N0}/{totalCombinations:N0} · {validUnique:N0} 套合法唯一方案"));
+        }
+
+        progress?.Report(new SearchProgress(
+            "TransitionExpansion", evaluated, parents.Count,
+            topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()?.TierScores.FirstOrDefault()
+                ?? double.NegativeInfinity,
+            watch.Elapsed,
+            $"组合评分完成：{generated:N0} 次生成 · {validUnique:N0} 套合法唯一方案"));
+
+        return topByEquipment.Values.Order(LoadoutResultComparer.Instance).ToList();
+    }
+
+    private static void RetainTopResult(
+        Dictionary<string, LoadoutResult> topByEquipment,
+        LoadoutResult candidate,
+        int limit)
+    {
+        var equipmentSignature = EquipmentSignature(candidate.Loadout.Slots);
+        if (topByEquipment.TryGetValue(equipmentSignature, out var existing))
+        {
+            if (LoadoutResultComparer.Instance.Compare(candidate, existing) < 0)
+                topByEquipment[equipmentSignature] = candidate;
+            return;
+        }
+
+        if (topByEquipment.Count < limit)
+        {
+            topByEquipment[equipmentSignature] = candidate;
+            return;
+        }
+
+        var worst = topByEquipment.MaxBy(x => x.Value, LoadoutResultComparer.Instance);
+        if (LoadoutResultComparer.Instance.Compare(candidate, worst.Value) >= 0) return;
+        topByEquipment.Remove(worst.Key);
+        topByEquipment[equipmentSignature] = candidate;
+    }
+
+    internal static long TransitionCombinationCount(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent)
+    {
+        var changes = TransitionChanges(current, parent);
+        return changes.Count == 0 ? 0 : (1L << changes.Count) - 1;
+    }
+
+    internal static IEnumerable<IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>> EnumerateTransitionLoadouts(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent)
+    {
+        var changes = TransitionChanges(current, parent);
+        var combinationCount = changes.Count == 0 ? 0L : (1L << changes.Count) - 1;
+        for (var mask = 1L; mask <= combinationCount; mask++)
+        {
+            var slots = new Dictionary<EquipmentSlot, LoadoutVariant>(current);
+            for (var index = 0; index < changes.Count; index++)
+            {
+                if ((mask & (1L << index)) == 0) continue;
+                var (slot, variant) = changes[index];
+                slots[slot] = variant;
+                if (slot == EquipmentSlot.MainHand && variant.Item.IsTwoHanded)
+                    slots.Remove(EquipmentSlot.OffHand);
+            }
+            yield return slots;
+        }
+    }
+
+    private static IReadOnlyList<(EquipmentSlot Slot, LoadoutVariant Variant)> TransitionChanges(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent) =>
+        TargetSlots
+            .Where(parent.ContainsKey)
+            .Where(slot => !current.TryGetValue(slot, out var equipped) ||
+                           !SameVariant(equipped, parent[slot]))
+            .Select(slot => (slot, parent[slot]))
+            .ToArray();
+
+    private static bool SameVariant(LoadoutVariant left, LoadoutVariant right) =>
+        string.Equals(left.Item.Id, right.Item.Id, StringComparison.Ordinal) &&
+        string.Equals(left.Component?.Id, right.Component?.Id, StringComparison.Ordinal) &&
+        string.Equals(left.Augment?.Id, right.Augment?.Id, StringComparison.Ordinal);
 
     private void LocalImprove(
         CharacterSnapshot character,

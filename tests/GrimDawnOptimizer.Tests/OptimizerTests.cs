@@ -78,6 +78,7 @@ public sealed class OptimizerTests
             .Distinct(StringComparer.Ordinal)
             .Count());
         Assert.Contains(run.Results, x => x.Loadout.Slots.Values.Any(v => v.Item.Id == itemB.Id));
+        Assert.All(run.Results, x => Assert.Equal("augment-a", x.Loadout.Slots[EquipmentSlot.MainHand].Augment?.Id));
     }
 
     [Fact]
@@ -405,6 +406,195 @@ public sealed class OptimizerTests
         Assert.False(BeamSearchOptimizer.IsAttachmentCompatible(ammo, sword, character, owned));
     }
 
+    [Fact]
+    public void TransitionEnumerationCoversEveryNonEmptySubsetAndReachesFullParent()
+    {
+        var slots = new[] { EquipmentSlot.Head, EquipmentSlot.Chest, EquipmentSlot.MainHand };
+        var current = slots.ToDictionary(
+            slot => slot,
+            slot => new LoadoutVariant(ItemAt($"current-{slot}", slot), null, null));
+        var parent = slots.ToDictionary(
+            slot => slot,
+            slot => new LoadoutVariant(ItemAt($"parent-{slot}", slot), null, null));
+
+        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
+
+        Assert.Equal(7, BeamSearchOptimizer.TransitionCombinationCount(current, parent));
+        Assert.Equal(7, combinations.Length);
+        Assert.DoesNotContain(combinations, x => slots.All(slot => x[slot].Item.Id == current[slot].Item.Id));
+        Assert.Contains(combinations, x => slots.All(slot => x[slot].Item.Id == parent[slot].Item.Id));
+    }
+
+    [Fact]
+    public void TwelveTransitionChangesProduce4095Combinations()
+    {
+        var slots = new[]
+        {
+            EquipmentSlot.Head, EquipmentSlot.Shoulders, EquipmentSlot.Chest, EquipmentSlot.Hands,
+            EquipmentSlot.Legs, EquipmentSlot.Feet, EquipmentSlot.Waist, EquipmentSlot.Amulet,
+            EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight
+        };
+        var current = slots.ToDictionary(
+            slot => slot,
+            slot => new LoadoutVariant(ItemAt($"current-{slot}", slot), null, null));
+        var parent = slots.ToDictionary(
+            slot => slot,
+            slot => new LoadoutVariant(ItemAt($"parent-{slot}", slot), null, null));
+
+        Assert.Equal(4095, BeamSearchOptimizer.TransitionCombinationCount(current, parent));
+        Assert.Equal(4095, BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).Count());
+    }
+
+    [Fact]
+    public void AttachmentOnlyChangeIsARealTransitionAndUnselectedSlotsKeepInstalledAttachments()
+    {
+        var currentComponent = Component("current-component", EquipmentSlot.Head);
+        var parentComponent = Component("parent-component", EquipmentSlot.Head);
+        var unchangedComponent = Component("unchanged-component", EquipmentSlot.Chest);
+        var sharedHead = ItemAt("shared-head", EquipmentSlot.Head);
+        var sharedChest = ItemAt("shared-chest", EquipmentSlot.Chest);
+        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Head] = new(sharedHead, currentComponent, null),
+            [EquipmentSlot.Chest] = new(sharedChest, unchangedComponent, null)
+        };
+        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Head] = new(sharedHead, parentComponent, null),
+            [EquipmentSlot.Chest] = new(sharedChest, unchangedComponent, null)
+        };
+
+        var result = Assert.Single(BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent));
+
+        Assert.Equal(parentComponent.Id, result[EquipmentSlot.Head].Component?.Id);
+        Assert.Equal(unchangedComponent.Id, result[EquipmentSlot.Chest].Component?.Id);
+    }
+
+    [Fact]
+    public void EquippingTwoHandedParentAutomaticallyClearsCurrentOffhand()
+    {
+        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(ItemAt("current-main", EquipmentSlot.MainHand), null, null),
+            [EquipmentSlot.OffHand] = new(ItemAt("current-off", EquipmentSlot.OffHand), null, null)
+        };
+        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(ItemAt("parent-two-hand", EquipmentSlot.MainHand, twoHanded: true), null, null)
+        };
+
+        var result = Assert.Single(BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent));
+
+        Assert.True(result[EquipmentSlot.MainHand].Item.IsTwoHanded);
+        Assert.False(result.ContainsKey(EquipmentSlot.OffHand));
+    }
+
+    [Fact]
+    public void OneHandAndOffhandParentFromCurrentTwoHandHasTwoLegalTransitionSteps()
+    {
+        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(ItemAt("current-two-hand", EquipmentSlot.MainHand, twoHanded: true), null, null)
+        };
+        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(ItemAt("parent-main", EquipmentSlot.MainHand), null, null),
+            [EquipmentSlot.OffHand] = new(ItemAt("parent-off", EquipmentSlot.OffHand), null, null)
+        };
+        var character = CharacterWithCurrent(current);
+        var engine = new CharacterStatEngine();
+
+        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
+        var legal = combinations.Count(x => engine.Calculate(character, x, new GameDataCatalog()).IsValid);
+
+        Assert.Equal(3, combinations.Length);
+        Assert.Equal(2, legal);
+        Assert.Contains(combinations, x =>
+            x.TryGetValue(EquipmentSlot.MainHand, out var main) && main.Item.Id == "parent-main" &&
+            !x.ContainsKey(EquipmentSlot.OffHand));
+    }
+
+    [Fact]
+    public void SwappingCurrentRingsRequiresSelectingBothParentSlots()
+    {
+        var left = ItemAt("left-ring", EquipmentSlot.RingLeft);
+        var right = ItemAt("right-ring", EquipmentSlot.RingRight);
+        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.RingLeft] = new(left, null, null),
+            [EquipmentSlot.RingRight] = new(right, null, null)
+        };
+        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.RingLeft] = new(right, null, null),
+            [EquipmentSlot.RingRight] = new(left, null, null)
+        };
+        var character = CharacterWithCurrent(current);
+        var engine = new CharacterStatEngine();
+
+        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
+        var legal = combinations.Where(x => engine.Calculate(character, x, new GameDataCatalog()).IsValid).ToArray();
+
+        var result = Assert.Single(legal);
+        Assert.Equal(right.Id, result[EquipmentSlot.RingLeft].Item.Id);
+        Assert.Equal(left.Id, result[EquipmentSlot.RingRight].Item.Id);
+    }
+
+    [Fact]
+    public async Task OptimizerGloballyRanksTransitionSubsetsAndReturnsOnlyConfiguredTopResults()
+    {
+        var currentMain = ItemAt("current-main", EquipmentSlot.MainHand, fireDamage: 20);
+        var currentHead = ItemAt("current-head", EquipmentSlot.Head);
+        var currentChest = ItemAt("current-chest", EquipmentSlot.Chest);
+        var parentMain = ItemAt("parent-main", EquipmentSlot.MainHand, fireDamage: 100);
+        var parentHead = ItemAt("parent-head", EquipmentSlot.Head, fireDamage: 30);
+        var parentChest = ItemAt("parent-chest", EquipmentSlot.Chest, fireDamage: 25);
+        var character = new CharacterSnapshot
+        {
+            Name = "transition-ranking",
+            SaveFilePath = "transition-ranking.gdc",
+            Level = 100,
+            Physique = 1000,
+            Cunning = 1000,
+            Spirit = 1000,
+            Items = [currentMain, currentHead, currentChest, parentMain, parentHead, parentChest],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string>
+            {
+                [EquipmentSlot.MainHand] = currentMain.Id,
+                [EquipmentSlot.Head] = currentHead.Id,
+                [EquipmentSlot.Chest] = currentChest.Id
+            },
+            BaselineStats = new StatBlock(new Dictionary<string, double>
+            {
+                ["health"] = 10_000,
+                ["offensiveAbility"] = 3000,
+                ["defensiveAbility"] = 2800
+            })
+        };
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 3,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 100,
+            CurrentPanelDps = 100,
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+
+        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
+            .OptimizeAsync(character, character.Items, [], new GameDataCatalog(), profile);
+
+        Assert.Equal(3, run.Results.Count);
+        Assert.Equal(Enumerable.Range(1, 3), run.Results.Select(x => x.Rank));
+        Assert.True(run.Results.Zip(run.Results.Skip(1), (left, right) =>
+            left.TierScores[0] >= right.TierScores[0]).All(x => x));
+        Assert.All(run.Results, result => Assert.True(result.Simulation.MonteCarloDpsHigh95 > 0));
+        Assert.DoesNotContain(run.Results, result =>
+            result.Loadout.Slots[EquipmentSlot.MainHand].Item.Id == currentMain.Id &&
+            result.Loadout.Slots[EquipmentSlot.Head].Item.Id == currentHead.Id &&
+            result.Loadout.Slots[EquipmentSlot.Chest].Item.Id == currentChest.Id);
+    }
+
     private static StatBlock BuildAttachmentStats(int index)
     {
         var stats = new StatBlock();
@@ -436,6 +626,52 @@ public sealed class OptimizerTests
         {
             [StatKeys.DamageFlat("fire")] = fireDamage
         })
+    };
+
+    private static AttachmentDefinition Component(string id, EquipmentSlot slot) => new()
+    {
+        Id = id,
+        Name = id,
+        Kind = AttachmentKind.Component,
+        CompatibleSlots = new HashSet<EquipmentSlot> { slot }
+    };
+
+    private static CharacterSnapshot CharacterWithCurrent(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current) => new()
+    {
+        Name = "transition-test",
+        SaveFilePath = "transition-test.gdc",
+        Level = 100,
+        Physique = 1000,
+        Cunning = 1000,
+        Spirit = 1000,
+        Items = current.Values.Select(x => x.Item).ToArray(),
+        CurrentLoadout = current.ToDictionary(x => x.Key, x => x.Value.Item.Id),
+        BaselineStats = new StatBlock(new Dictionary<string, double>
+        {
+            ["health"] = 10_000,
+            ["offensiveAbility"] = 3000,
+            ["defensiveAbility"] = 2800
+        })
+    };
+
+    private static ItemInstance ItemAt(
+        string id,
+        EquipmentSlot targetSlot,
+        double fireDamage = 0,
+        bool twoHanded = false) => new()
+    {
+        Id = id,
+        Name = id,
+        Slot = targetSlot is EquipmentSlot.RingLeft or EquipmentSlot.RingRight ? EquipmentSlot.Ring : targetSlot,
+        BaseRecord = id,
+        Seed = 1,
+        IsTwoHanded = twoHanded,
+        Stats = new StatBlock(new Dictionary<string, double>
+        {
+            [StatKeys.DamageFlat("fire")] = fireDamage
+        }),
+        Source = new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc")
     };
 
     private static ItemInstance CopyWithQualifier(ItemInstance source, string qualifier) => new()
