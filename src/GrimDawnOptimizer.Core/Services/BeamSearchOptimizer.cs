@@ -1017,10 +1017,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         double currentSkillDps,
         double currentWeaponDps)
     {
-        profile.RuntimeWeaponDpsCalibrationFactor = Math.Clamp(
-            profile.CurrentWeaponAttackDps / currentWeaponDps,
-            0.5,
-            2);
+        profile.RuntimeWeaponDpsCalibrationFactor =
+            profile.CurrentWeaponAttackDps / currentWeaponDps;
 
         var rawSkillAddedDps = currentSkillDps - currentWeaponDps;
         var panelSkillAddedDps = profile.CurrentPanelDps - profile.CurrentWeaponAttackDps;
@@ -1035,16 +1033,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         {
             if (rawSkillAddedDps * panelSkillAddedDps <= 0)
                 throw new InvalidOperationException("主攻技能 DPS 与武器攻击 DPS 的关系不符合当前技能，请核对两个输入值和所选主攻技能。");
-            profile.RuntimeSkillAddedDpsCalibrationFactor = Math.Clamp(
-                panelSkillAddedDps / rawSkillAddedDps,
-                0.5,
-                2);
+            profile.RuntimeSkillAddedDpsCalibrationFactor =
+                panelSkillAddedDps / rawSkillAddedDps;
         }
 
-        profile.RuntimeDpsCalibrationFactor = Math.Clamp(
-            profile.CurrentPanelDps / currentSkillDps,
-            0.5,
-            2);
+        profile.RuntimeDpsCalibrationFactor =
+            profile.CurrentPanelDps / currentSkillDps;
     }
 
     private static SimulationReport ApplyDpsCalibration(

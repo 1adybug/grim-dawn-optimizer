@@ -163,17 +163,27 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             if (@class.Contains("Mastery", StringComparison.OrdinalIgnoreCase)) continue;
 
             var bonus = SkillRotationFactory.ResolveCurrentSkillBonus(character, catalog, skill.Record, slots);
-            if (bonus <= 0) continue;
-            var baseLevel = Math.Max(skill.Level, skill.DevotionLevel);
-            var effectiveLevel = baseLevel + bonus;
-            AddLevelDelta(record, baseLevel, effectiveLevel);
-            foreach (var childName in new[]
-                     {
-                         record.Text("buffSkillName"), record.Text("buffSelfSkillName"),
-                         record.Text("buffSelf2SkillName")
-                     }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
-                if (catalog.Records.TryGetValue(childName, out var child))
-                    AddLevelDelta(child, baseLevel, effectiveLevel);
+            if (bonus > 0)
+            {
+                var baseLevel = Math.Max(skill.Level, skill.DevotionLevel);
+                var effectiveLevel = baseLevel + bonus;
+                AddLevelDelta(record, baseLevel, effectiveLevel);
+                foreach (var childName in new[]
+                         {
+                             record.Text("buffSkillName"), record.Text("buffSelfSkillName"),
+                             record.Text("buffSelf2SkillName")
+                         }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
+                    if (catalog.Records.TryGetValue(childName, out var child))
+                        AddLevelDelta(child, baseLevel, effectiveLevel);
+            }
+
+            // Item skill modifiers are not ordinary item stats: the game applies
+            // them only while their target skill is active. Direct attack modifiers
+            // are folded into SkillRotationFactory.Build; modifiers for toggled and
+            // passive skills must instead become persistent loadout stats here.
+            foreach (var modifier in SkillRotationFactory.ResolveCurrentSkillModifiers(
+                         character, catalog, skill.Record, slots))
+                stats.Add(GameStatTranslator.TranslateAtLevel(modifier, 1));
         }
         return;
 

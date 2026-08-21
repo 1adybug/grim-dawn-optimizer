@@ -141,15 +141,18 @@ public sealed class OptimizerTests
         var profile = new OptimizationProfile
         {
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
-            CurrentWeaponAttackDps = 300,
-            CurrentPanelDps = 300,
+            // The raw model is intentionally far above this input. Calibration
+            // must still use the user's exact current sheet value rather than
+            // silently clipping the factor to the former 0.5 lower bound.
+            CurrentWeaponAttackDps = 30,
+            CurrentPanelDps = 30,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
 
         var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
             .OptimizeAsync(character, character.Items, [], new GameDataCatalog(), profile);
 
-        Assert.Equal(300, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
+        Assert.Equal(30, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
         Assert.NotEqual(1, profile.RuntimeDpsCalibrationFactor);
         Assert.NotEqual(1, profile.RuntimeWeaponDpsCalibrationFactor);
     }

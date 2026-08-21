@@ -527,6 +527,32 @@ public sealed class SaveReader : ISaveReader
         var modeledEffects = BuildTriggeredEffects(records, catalog);
         foreach (var owner in records)
         {
+            for (var index = 1; index <= 32; index++)
+            {
+                var modifiedSkillName = owner.Text($"modifiedSkillName{index}");
+                var modifierSkillName = owner.Text($"modifierSkillName{index}");
+                if (string.IsNullOrWhiteSpace(modifiedSkillName) &&
+                    string.IsNullOrWhiteSpace(modifierSkillName)) continue;
+                if (string.IsNullOrWhiteSpace(modifierSkillName) ||
+                    !catalog.Records.TryGetValue(modifierSkillName, out var modifier))
+                {
+                    result.Add(new UnsupportedEffect(
+                        string.IsNullOrWhiteSpace(modifierSkillName) ? owner.RecordName : modifierSkillName,
+                        $"{descriptionPrefix}：技能修正记录缺失",
+                        ["dps", "effectiveHealth"]));
+                    continue;
+                }
+
+                var modifierUnsupportedFields = GameStatTranslator.FindUnsupportedCombatFields(modifier);
+                if (modifierUnsupportedFields.Count == 0) continue;
+                var modifierDisplay = string.Join(", ", modifierUnsupportedFields.Take(6));
+                if (modifierUnsupportedFields.Count > 6) modifierDisplay += "…";
+                result.Add(new UnsupportedEffect(
+                    modifierSkillName,
+                    $"{descriptionPrefix}修正词条：{modifierDisplay}",
+                    ["dps", "effectiveHealth"]));
+            }
+
             var skillName = owner.Text("itemSkillName");
             if (string.IsNullOrWhiteSpace(skillName)) continue;
             if (!catalog.Records.TryGetValue(skillName, out var skill))

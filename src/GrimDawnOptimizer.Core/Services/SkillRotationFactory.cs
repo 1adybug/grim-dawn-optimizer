@@ -311,7 +311,7 @@ public static class SkillRotationFactory
             Path.GetFileName(x.Record).StartsWith("_classtraining", StringComparison.OrdinalIgnoreCase))?.Record ?? string.Empty;
     }
 
-    private static IReadOnlyList<GameRecord> ResolveCurrentSkillModifiers(
+    internal static IReadOnlyList<GameRecord> ResolveCurrentSkillModifiers(
         CharacterSnapshot character,
         GameDataCatalog catalog,
         string skillRecord,

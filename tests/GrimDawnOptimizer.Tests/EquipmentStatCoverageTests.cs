@@ -265,6 +265,103 @@ public sealed class EquipmentStatCoverageTests
     }
 
     [Fact]
+    public void EquipmentModifierForEnabledPersistentSkillUpdatesLoadoutStats()
+    {
+        const string skillName = "records/skills/test/aura.dbr";
+        const string buffName = "records/skills/test/aura_buff.dbr";
+        const string itemName = "records/items/test/aura-medal.dbr";
+        const string modifierName = "records/skills/items/aura-medal-modifier.dbr";
+        var skill = new GameRecord
+        {
+            RecordName = skillName,
+            RecordType = "Skill_BuffRadiusToggled",
+            TextValues = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["Class"] = ["Skill_BuffRadiusToggled"],
+                ["buffSkillName"] = [buffName]
+            }
+        };
+        var buff = new GameRecord
+        {
+            RecordName = buffName,
+            RecordType = "SkillBuff_Passive",
+            TextValues = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["Class"] = ["SkillBuff_Passive"]
+            }
+        };
+        var itemRecord = new GameRecord
+        {
+            RecordName = itemName,
+            TextValues = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["modifiedSkillName1"] = [skillName],
+                ["modifierSkillName1"] = [modifierName]
+            }
+        };
+        var modifier = Record(modifierName, new Dictionary<string, double>
+        {
+            ["offensivePhysicalMin"] = 30
+        });
+        var character = new CharacterSnapshot
+        {
+            Name = "aura", SaveFilePath = "test.gdc", Level = 100,
+            Skills = [new CharacterSkill(skillName, "常驻光环", 1, 0, true, "", "")]
+        };
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [skillName] = skill, [buffName] = buff,
+                [itemName] = itemRecord, [modifierName] = modifier
+            }
+        };
+
+        var result = new CharacterStatEngine().Calculate(character,
+            new Dictionary<EquipmentSlot, LoadoutVariant>
+            {
+                [EquipmentSlot.Medal] = new(Item("技能勋章", new StatBlock(), EquipmentSlot.Medal, baseRecord: itemName), null, null)
+            }, catalog);
+
+        Assert.Equal(30, result.Stats[StatKeys.DamageFlat("physical")]);
+    }
+
+    [Fact]
+    public void UnknownEquipmentSkillModifierFieldIsReportedInsteadOfSilentlyIgnored()
+    {
+        const string ownerName = "records/items/test/modifier-owner.dbr";
+        const string skillName = "records/skills/test/aura.dbr";
+        const string modifierName = "records/skills/items/future-modifier.dbr";
+        var owner = new GameRecord
+        {
+            RecordName = ownerName,
+            TextValues = new Dictionary<string, IReadOnlyList<string>>
+            {
+                ["modifiedSkillName1"] = [skillName],
+                ["modifierSkillName1"] = [modifierName]
+            }
+        };
+        var modifier = Record(modifierName, new Dictionary<string, double>
+        {
+            ["offensiveUnknownFutureDamage"] = 42
+        });
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [skillName] = new GameRecord { RecordName = skillName },
+                [modifierName] = modifier
+            }
+        };
+
+        var warning = Assert.Single(SaveReader.FindUnsupportedItemSkillEffects(
+            [owner], catalog, "未完整建模的装备技能"));
+
+        Assert.Equal(modifierName, warning.Record);
+        Assert.Contains("offensiveUnknownFutureDamage", warning.Description);
+    }
+
+    [Fact]
     public void TriggeredSkillIncludesLinkedDirectDotAndWeaponDamage()
     {
         const string ownerName = "records/items/test/proc.dbr";
