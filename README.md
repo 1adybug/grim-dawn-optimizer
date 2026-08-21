@@ -6,7 +6,8 @@
 
 ## 已实现
 
-- `.NET 8 + WPF`、MVVM、Windows x64、自包含单文件发布。
+- `.NET 8 + WPF + WPF UI 4.3`、MVVM、Windows x64、自包含单文件发布；界面采用原生 Fluent / Mica 外壳。
+- 数据源、构筑、搜索与结果四个独立工作区；支持跟随系统、浅色和深色主题，并同步 Windows 强调色与高对比设置。
 - 自动发现 Steam、Steam Cloud、GOG/本地文档路径，并可手动选择目录。
 - 只读解析 `player.gdc`、`transfer.gst` / `transfer.gsh`、`ARZ`、`ARC`、中文/英文标签；数据库按输入文件 SHA-256 写入可删除的 SQLite 缓存。
 - 为每个实物构造稳定 ID，保留词缀、随机种子、组件、增幅、完成奖励、来源页和坐标；防止同一实物重复装备。
@@ -31,7 +32,7 @@ dotnet test .\GrimDawnOptimizer.sln
 dotnet run --project .\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj
 ```
 
-没有游戏也可以点击右上角“演示数据”验证读取与搜索界面；运行搜索前仍需手动输入两个正数的面板 DPS 测试值。
+没有游戏也可以在“数据源”工作区点击“演示数据”验证读取与搜索流程；运行搜索前仍需手动输入两个正数的面板 DPS 测试值。
 
 生成无需安装 .NET 运行时的便携包：
 
@@ -41,7 +42,7 @@ dotnet publish .\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj `
   -o .\artifacts\win-x64
 ```
 
-启动 `artifacts\win-x64\GrimDawnOptimizer.App.exe` 即可。首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以安全删除并自动重建。方案也保存在该目录。
+启动 `artifacts\win-x64\GrimDawnOptimizer.App.exe` 即可。首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以安全删除并自动重建。优化方案、目录历史与 `ui-settings.json` UI 偏好均保存在该目录，但彼此独立；UI 偏好文件使用 `schemaVersion: 1` 并以原子替换方式写入。
 
 ## 持续集成与发布
 

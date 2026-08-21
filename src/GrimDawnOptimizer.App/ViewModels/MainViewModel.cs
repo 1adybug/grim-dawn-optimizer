@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using GrimDawnOptimizer.App.Services;
 using GrimDawnOptimizer.Core.Contracts;
 using GrimDawnOptimizer.Core.Domain;
 using GrimDawnOptimizer.Core.Services;
@@ -15,6 +16,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ILoadoutOptimizer _optimizer;
     private readonly IProfileStore _profileStore;
     private readonly ISourceHistoryStore _sourceHistoryStore;
+    private readonly UiPreferencesStore _uiPreferencesStore;
     private SourceHistorySettings _sourceHistory = new();
     private bool _restoringSources;
     private readonly SemaphoreSlim _sourceHistorySaveLock = new(1, 1);
@@ -25,6 +27,9 @@ public sealed class MainViewModel : ObservableObject
     private CharacterSnapshot? _selectedCharacter;
     private CharacterSkill? _selectedSkill;
     private ResultViewModel? _selectedResult;
+    private WorkspaceSection _currentWorkspace = WorkspaceSection.Sources;
+    private ThemePreference _selectedThemePreference = ThemePreference.System;
+    private bool _restoringUiPreferences;
     private string _status = "正在发现游戏与存档…";
     private string _searchStats = "尚未运行";
     private string _currentWeaponAttackDpsInput = string.Empty;
@@ -42,6 +47,7 @@ public sealed class MainViewModel : ObservableObject
         _optimizer = new BeamSearchOptimizer(statEngine, simulator);
         _profileStore = new JsonProfileStore();
         _sourceHistoryStore = new JsonSourceHistoryStore();
+        _uiPreferencesStore = new UiPreferencesStore();
 
         DiscoverCommand = new AsyncRelayCommand(DiscoverAsync, () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSelectedAsync, () => !IsBusy && SelectedInstallation is not null && SelectedSaveLocation is not null);
@@ -56,6 +62,17 @@ public sealed class MainViewModel : ObservableObject
         DeleteGameDirectoryCommand = new RelayCommand(DeleteGameDirectory, x => x is GameInstallation);
         DeleteSaveDirectoryCommand = new RelayCommand(DeleteSaveDirectory, x => x is SaveLocation);
         SaveProfileCommand = new AsyncRelayCommand(SaveProfileAsync, () => !IsBusy);
+        NavigateCommand = new RelayCommand(Navigate, CanNavigate);
+        Results.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(CanOpenResults));
+            NavigateCommand.RaiseCanExecuteChanged();
+        };
+        Characters.CollectionChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(HasCharacters));
+            OnPropertyChanged(nameof(HasNoCharacters));
+        };
     }
 
     public ObservableCollection<GameInstallation> Installations { get; } = [];
@@ -73,6 +90,66 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand DeleteGameDirectoryCommand { get; }
     public RelayCommand DeleteSaveDirectoryCommand { get; }
     public AsyncRelayCommand SaveProfileCommand { get; }
+    public RelayCommand NavigateCommand { get; }
+
+    public IReadOnlyList<ThemePreferenceOption> ThemeOptions { get; } =
+    [
+        new(ThemePreference.System, "跟随系统"),
+        new(ThemePreference.Light, "浅色"),
+        new(ThemePreference.Dark, "深色")
+    ];
+
+    public WorkspaceSection CurrentWorkspace
+    {
+        get => _currentWorkspace;
+        private set
+        {
+            if (!SetProperty(ref _currentWorkspace, value)) return;
+            OnPropertyChanged(nameof(IsSourcesWorkspace));
+            OnPropertyChanged(nameof(IsBuildWorkspace));
+            OnPropertyChanged(nameof(IsSearchWorkspace));
+            OnPropertyChanged(nameof(IsResultsWorkspace));
+            OnPropertyChanged(nameof(WorkspaceTitle));
+            OnPropertyChanged(nameof(WorkspaceDescription));
+        }
+    }
+
+    public bool IsSourcesWorkspace => CurrentWorkspace == WorkspaceSection.Sources;
+    public bool IsBuildWorkspace => CurrentWorkspace == WorkspaceSection.Build;
+    public bool IsSearchWorkspace => CurrentWorkspace == WorkspaceSection.Search;
+    public bool IsResultsWorkspace => CurrentWorkspace == WorkspaceSection.Results;
+    public bool CanOpenBuild => SelectedCharacter is not null;
+    public bool CanOpenSearch => SelectedCharacter is not null;
+    public bool CanOpenResults => Results.Count > 0;
+    public bool HasCharacters => Characters.Count > 0;
+    public bool HasNoCharacters => Characters.Count == 0;
+    public string AppVersion { get; } = FormatVersion(typeof(MainViewModel).Assembly.GetName().Version);
+    public string WorkspaceTitle => CurrentWorkspace switch
+    {
+        WorkspaceSection.Sources => "数据源",
+        WorkspaceSection.Build => "构筑参数",
+        WorkspaceSection.Search => "运行优化",
+        WorkspaceSection.Results => "最佳候选",
+        _ => string.Empty
+    };
+    public string WorkspaceDescription => CurrentWorkspace switch
+    {
+        WorkspaceSection.Sources => "连接游戏与存档，选择要分析的角色。",
+        WorkspaceSection.Build => "确认评分偏好、战斗目标与主攻技能。",
+        WorkspaceSection.Search => "校准面板 DPS，并控制搜索范围。",
+        WorkspaceSection.Results => "比较候选方案、装备替换与来源位置。",
+        _ => string.Empty
+    };
+
+    public ThemePreference SelectedThemePreference
+    {
+        get => _selectedThemePreference;
+        set
+        {
+            if (!SetProperty(ref _selectedThemePreference, value)) return;
+            if (!_restoringUiPreferences) _ = PersistUiPreferencesAsync();
+        }
+    }
 
     public GameInstallation? SelectedInstallation
     {
@@ -110,6 +187,8 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _selectedCharacter, value)) return;
+            Results.Clear();
+            SelectedResult = null;
             ResetCurrentPanelDps();
             ActiveSkills.Clear();
             if (value is not null && _catalog is not null)
@@ -135,6 +214,11 @@ public sealed class MainViewModel : ObservableObject
             ApplyAverageBossScenario();
             OnPropertyChanged(nameof(CharacterSummary));
             OnPropertyChanged(nameof(BuildFoundationSummary));
+            OnPropertyChanged(nameof(CanOpenBuild));
+            OnPropertyChanged(nameof(CanOpenSearch));
+            NavigateCommand.RaiseCanExecuteChanged();
+            if (value is null && CurrentWorkspace != WorkspaceSection.Sources)
+                CurrentWorkspace = WorkspaceSection.Sources;
             RefreshCommands();
         }
     }
@@ -252,6 +336,16 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
+        _restoringUiPreferences = true;
+        try
+        {
+            var preferences = await _uiPreferencesStore.LoadAsync();
+            SelectedThemePreference = preferences.Theme;
+        }
+        finally
+        {
+            _restoringUiPreferences = false;
+        }
         var profiles = await _profileStore.LoadAsync();
         Profile = profiles.FirstOrDefault() ?? new OptimizationProfile();
         _sourceHistory = await _sourceHistoryStore.LoadAsync();
@@ -259,6 +353,22 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public Task FlushSourceHistoryAsync() => PersistSourceHistoryAsync();
+
+    public Task FlushUiPreferencesAsync() => PersistUiPreferencesAsync();
+
+    private void Navigate(object? value)
+    {
+        if (value is WorkspaceSection section && CanNavigate(section)) CurrentWorkspace = section;
+    }
+
+    private bool CanNavigate(object? value) => value switch
+    {
+        WorkspaceSection.Sources => true,
+        WorkspaceSection.Build => CanOpenBuild,
+        WorkspaceSection.Search => CanOpenSearch,
+        WorkspaceSection.Results => CanOpenResults,
+        _ => false
+    };
 
     public async Task UseGameFolderAsync(string path)
     {
@@ -451,6 +561,16 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    private async Task PersistUiPreferencesAsync()
+    {
+        try
+        {
+            await _uiPreferencesStore.SaveAsync(new UiPreferences { Theme = SelectedThemePreference });
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
     private static void MoveToFront(List<string> paths, string path)
     {
         RemovePath(paths, path);
@@ -491,6 +611,7 @@ public sealed class MainViewModel : ObservableObject
             Status = SelectedCharacter is null
                 ? "没有找到可读取的角色"
                 : $"已载入 {Characters.Count} 个角色；{SelectedCharacter.ImportWarnings.Count} 条导入提示";
+            if (SelectedCharacter is not null) CurrentWorkspace = WorkspaceSection.Build;
         }
         catch (OperationCanceledException) { Status = "导入已取消"; }
         catch (Exception ex) { Status = $"导入失败：{ex.Message}"; }
@@ -505,6 +626,7 @@ public sealed class MainViewModel : ObservableObject
         Characters.Add(character);
         SelectedCharacter = character;
         Status = "已载入脱敏演示装备池；输入两项面板 DPS 测试值后可运行优化";
+        CurrentWorkspace = WorkspaceSection.Build;
     }
 
     private async Task OptimizeAsync()
@@ -556,6 +678,7 @@ public sealed class MainViewModel : ObservableObject
                 : string.Empty;
             Status = $"{run.StopReason}{calibration}；存档哈希保持不变";
             ProgressValue = 100;
+            if (Results.Count > 0) CurrentWorkspace = WorkspaceSection.Results;
         }
         catch (OperationCanceledException) { Status = "优化已取消"; }
         catch (Exception ex) { Status = $"优化失败：{ex.Message}"; }
@@ -611,6 +734,10 @@ public sealed class MainViewModel : ObservableObject
         string.IsNullOrWhiteSpace(input)
             ? missingMessage
             : "请输入大于 0 且不超过 10,000,000 的有效数值。";
+
+    private static string FormatVersion(Version? version) => version is null
+        ? "版本未知"
+        : $"版本 {version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
 
     private static int ResolveGrantedSkillLevel(
         CharacterSnapshot character,
@@ -673,5 +800,6 @@ public sealed class MainViewModel : ObservableObject
         OptimizeCommand.RaiseCanExecuteChanged();
         SaveProfileCommand.RaiseCanExecuteChanged();
         (CancelCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        NavigateCommand.RaiseCanExecuteChanged();
     }
 }

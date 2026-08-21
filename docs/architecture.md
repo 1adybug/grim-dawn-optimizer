@@ -18,11 +18,11 @@ Steam / GOG / 手动目录
               确定性战斗报告 → 固定种子 Monte Carlo
 ```
 
-核心边界由 `IGameDataSource`、`ISaveReader`、`ICharacterStatEngine`、`ICombatSimulator` 和 `ILoadoutOptimizer` 分隔。WPF 层只处理目录选择、方案编辑、进度、取消和结果展示。
+核心边界由 `IGameDataSource`、`ISaveReader`、`ICharacterStatEngine`、`ICombatSimulator` 和 `ILoadoutOptimizer` 分隔。WPF 层只处理目录选择、方案编辑、进度、取消和结果展示；`MainViewModel` 额外维护数据源、构筑、搜索和结果四个工作区的导航状态，不改变核心契约。
 
 ## 只读保证
 
-解析器全部使用 `File.ReadAllBytes` 或以 `FileAccess.Read` 打开的流。应用在优化前后对选定存档目录下的存档文件计算 SHA-256；任何变化都会转成显式错误。唯一写入位置是 `%LOCALAPPDATA%\GrimDawnOptimizer` 下的 JSON 方案和 SQLite 缓存。
+解析器全部使用 `File.ReadAllBytes` 或以 `FileAccess.Read` 打开的流。应用在优化前后对选定存档目录下的存档文件计算 SHA-256；任何变化都会转成显式错误。唯一写入位置是 `%LOCALAPPDATA%\GrimDawnOptimizer` 下的 JSON 方案、目录历史、独立的 `ui-settings.json` UI 偏好和 SQLite 缓存。
 
 ## 搜索确定性
 

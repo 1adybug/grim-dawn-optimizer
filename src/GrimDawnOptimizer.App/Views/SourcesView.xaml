@@ -1,0 +1,184 @@
+<UserControl x:Class="GrimDawnOptimizer.App.Views.SourcesView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.12*" MinWidth="360" />
+            <ColumnDefinition Width="1" />
+            <ColumnDefinition Width="*" MinWidth="320" />
+        </Grid.ColumnDefinitions>
+
+        <ScrollViewer Grid.Column="0" Style="{StaticResource PageScrollViewer}" Margin="0,0,28,0">
+            <StackPanel>
+                <Grid>
+                    <StackPanel>
+                        <TextBlock Text="连接数据" Style="{StaticResource SectionTitle}" />
+                        <TextBlock Text="程序只读取游戏数据库、角色和仓库，不会写入存档。"
+                                   Style="{StaticResource SecondaryText}"
+                                   Margin="0,5,0,0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <ui:Button Content="重新发现"
+                                   Icon="{ui:SymbolIcon ArrowClockwise16}"
+                                   Appearance="Secondary"
+                                   Command="{Binding DiscoverCommand}"
+                                   Margin="0,0,8,0" />
+                        <ui:Button Content="演示数据"
+                                   Icon="{ui:SymbolIcon Beaker16}"
+                                   Appearance="Secondary"
+                                   Command="{Binding DemoCommand}" />
+                    </StackPanel>
+                </Grid>
+
+                <Border Style="{StaticResource Divider}" />
+
+                <TextBlock Text="游戏目录" Style="{StaticResource FieldLabel}" />
+                <ComboBox ItemsSource="{Binding Installations}"
+                          SelectedItem="{Binding SelectedInstallation}"
+                          HorizontalContentAlignment="Stretch"
+                          AutomationProperties.Name="游戏目录">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid MinWidth="330">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding RootPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding RootPath}" />
+                                    <TextBlock Text="{Binding Source}"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <ui:Button Grid.Column="1"
+                                           Icon="{ui:SymbolIcon Dismiss16}"
+                                           Appearance="Transparent"
+                                           ToolTip="仅从历史列表移除，不删除磁盘目录"
+                                           AutomationProperties.Name="移除游戏目录"
+                                           Command="{Binding DataContext.DeleteGameDirectoryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                           CommandParameter="{Binding}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <ui:Button Content="选择游戏目录"
+                           Icon="{ui:SymbolIcon FolderOpen16}"
+                           Appearance="Secondary"
+                           Click="BrowseGame_Click"
+                           HorizontalAlignment="Left"
+                           Margin="0,8,0,20" />
+
+                <TextBlock Text="存档目录" Style="{StaticResource FieldLabel}" />
+                <ComboBox ItemsSource="{Binding SaveLocations}"
+                          SelectedItem="{Binding SelectedSaveLocation}"
+                          HorizontalContentAlignment="Stretch"
+                          AutomationProperties.Name="存档目录">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid MinWidth="330">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding RootPath}" TextTrimming="CharacterEllipsis" ToolTip="{Binding RootPath}" />
+                                    <TextBlock Text="{Binding Source}"
+                                               FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <ui:Button Grid.Column="1"
+                                           Icon="{ui:SymbolIcon Dismiss16}"
+                                           Appearance="Transparent"
+                                           ToolTip="仅从历史列表移除，不删除磁盘目录"
+                                           AutomationProperties.Name="移除存档目录"
+                                           Command="{Binding DataContext.DeleteSaveDirectoryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                           CommandParameter="{Binding}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <ui:Button Content="选择存档目录"
+                           Icon="{ui:SymbolIcon FolderOpen16}"
+                           Appearance="Secondary"
+                           Click="BrowseSave_Click"
+                           HorizontalAlignment="Left"
+                           Margin="0,8,0,24" />
+
+                <ui:Button Content="读取角色与仓库"
+                           Icon="{ui:SymbolIcon DatabaseArrowDown20}"
+                           Appearance="Primary"
+                           Command="{Binding LoadCommand}"
+                           HorizontalAlignment="Left"
+                           MinWidth="180" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Column="1" Background="{DynamicResource DividerStrokeColorDefaultBrush}" />
+
+        <Grid Grid.Column="2" Margin="28,0,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <StackPanel Margin="0,0,0,16">
+                <TextBlock Text="角色" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="{Binding CharacterSummary}" Style="{StaticResource SecondaryText}" Margin="0,5,0,0" />
+            </StackPanel>
+
+            <ListBox Grid.Row="1"
+                     ItemsSource="{Binding Characters}"
+                     SelectedItem="{Binding SelectedCharacter}"
+                     Visibility="{Binding HasCharacters, Converter={StaticResource BoolVisibility}}"
+                     HorizontalContentAlignment="Stretch"
+                     BorderThickness="0"
+                     Background="Transparent">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="4,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="36" Height="36" CornerRadius="18"
+                                    Background="{DynamicResource AccentFillColorSecondaryBrush}">
+                                <ui:SymbolIcon Symbol="Person20" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Margin="12,0">
+                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14" />
+                                <TextBlock Text="{Binding SaveFilePath}"
+                                           FontSize="12"
+                                           TextTrimming="CharacterEllipsis"
+                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding Level, StringFormat=Lv. {0}}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <StackPanel Grid.Row="1"
+                        Visibility="{Binding HasNoCharacters, Converter={StaticResource BoolVisibility}}"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="280">
+                <ui:SymbolIcon Symbol="PersonSearch32"
+                               FontSize="34"
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                <TextBlock Text="尚未读取角色"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           Margin="0,14,0,5" />
+                <TextBlock Text="选择有效的游戏和存档目录，或载入演示数据。"
+                           Style="{StaticResource SecondaryText}"
+                           TextAlignment="Center" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

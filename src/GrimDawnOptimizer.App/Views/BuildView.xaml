@@ -1,0 +1,151 @@
+<UserControl x:Class="GrimDawnOptimizer.App.Views.BuildView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:vm="clr-namespace:GrimDawnOptimizer.App.ViewModels">
+    <ScrollViewer Style="{StaticResource PageScrollViewer}">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.08*" MinWidth="390" />
+                <ColumnDefinition Width="1" />
+                <ColumnDefinition Width="*" MinWidth="350" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Margin="0,0,28,20">
+                <Grid>
+                    <StackPanel>
+                        <TextBlock Text="评分偏好" Style="{StaticResource SectionTitle}" />
+                        <TextBlock Text="只在输出完成度和综合有效生命之间调整侧重。"
+                                   Style="{StaticResource SecondaryText}"
+                                   Margin="0,5,0,0" />
+                    </StackPanel>
+                    <ui:Button Content="保存方案"
+                               Icon="{ui:SymbolIcon Save16}"
+                               Appearance="Secondary"
+                               Command="{Binding SaveProfileCommand}"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center" />
+                </Grid>
+
+                <ItemsControl ItemsSource="{Binding Metrics}" Margin="0,20,0,0">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Margin="0,0,16,0" ToolTip="{Binding Description}">
+                                <TextBlock Text="{Binding DisplayName}" Style="{StaticResource FieldLabel}" />
+                                <ui:NumberBox Value="{Binding Weight, Mode=TwoWay}"
+                                              SmallChange="0.25"
+                                              MaxDecimalPlaces="2"
+                                              SpinButtonPlacementMode="Compact"
+                                              AutomationProperties.Name="{Binding DisplayName}" />
+                                <TextBlock Text="{Binding Description}"
+                                           Style="{StaticResource SecondaryText}"
+                                           FontSize="12"
+                                           Margin="0,6,0,0"
+                                           MaxHeight="54" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Expander Header="这些参数怎么填" Margin="0,20,0,0">
+                    <StackPanel Margin="0,8,12,4">
+                        <TextBlock Text="权重表示输出和生存之间的相对偏好；2 表示影响是 1 的两倍。属性名称与算法固定，不能增删。"
+                                   Style="{StaticResource SecondaryText}" />
+                        <TextBlock Text="BOSS 基准会把 DPS 对比击杀时限所需输出，并把有效生命对比同期原始承伤。"
+                                   Style="{StaticResource SecondaryText}"
+                                   Margin="0,7,0,0" />
+                    </StackPanel>
+                </Expander>
+
+                <Border Style="{StaticResource Divider}" />
+
+                <TextBlock Text="构筑基础" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="{Binding CharacterSummary}" Style="{StaticResource SecondaryText}" Margin="0,5,0,18" />
+                <TextBlock Text="主攻技能" Style="{StaticResource FieldLabel}" />
+                <ComboBox ItemsSource="{Binding ActiveSkills}"
+                          SelectedItem="{Binding SelectedSkill}"
+                          DisplayMemberPath="Name"
+                          AutomationProperties.Name="主攻技能" />
+                <TextBlock Text="{Binding BuildFoundationSummary}"
+                           Style="{StaticResource SecondaryText}"
+                           FontSize="12"
+                           Margin="0,7,0,0" />
+            </StackPanel>
+
+            <Border Grid.Column="1" Background="{DynamicResource DividerStrokeColorDefaultBrush}" />
+
+            <StackPanel Grid.Column="2" Margin="28,0,0,20">
+                <TextBlock Text="战斗目标" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="基于当前角色等级，从游戏数据库汇总同级 BOSS。"
+                           Style="{StaticResource SecondaryText}"
+                           Margin="0,5,0,16" />
+
+                <ui:InfoBar IsOpen="True"
+                            IsClosable="False"
+                            Severity="Informational"
+                            Title="同级 BOSS 自动基准"
+                            Message="{Binding EnemyProfileSummary}" />
+
+                <Grid Margin="0,20,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="敌人等级" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding Profile.Scenario.EnemyLevel, StringFormat=Lv. {0}}"
+                                   Style="{StaticResource MetricValue}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                        <TextBlock Text="敌人护甲" Style="{StaticResource FieldLabel}" />
+                        <TextBlock Text="{Binding Profile.Scenario.EnemyArmor, StringFormat={}{0:N0}}"
+                                   Style="{StaticResource MetricValue}" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Margin="0,22,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="战斗时长（秒）" Style="{StaticResource FieldLabel}" />
+                        <ui:NumberBox Value="{Binding Profile.Scenario.DurationSeconds, Mode=TwoWay}"
+                                      Minimum="1"
+                                      Maximum="600"
+                                      SmallChange="5"
+                                      MaxDecimalPlaces="1"
+                                      SpinButtonPlacementMode="Compact" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                        <TextBlock Text="目标数量" Style="{StaticResource FieldLabel}" />
+                        <ui:NumberBox Value="{Binding Profile.Scenario.TargetCount, Mode=TwoWay}"
+                                      Minimum="1"
+                                      Maximum="100"
+                                      SmallChange="1"
+                                      MaxDecimalPlaces="0"
+                                      SpinButtonPlacementMode="Compact" />
+                    </StackPanel>
+                </Grid>
+
+                <TextBlock Text="抗性概览" Style="{StaticResource FieldLabel}" Margin="0,22,0,6" />
+                <TextBlock Text="{Binding EnemyResistanceSummary}" Style="{StaticResource SecondaryText}" />
+                <TextBlock Text="{Binding ScoreBenchmarkSummary}"
+                           Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                           TextWrapping="Wrap"
+                           Margin="0,10,0,0" />
+
+                <ui:Button Content="继续设置搜索"
+                           Icon="{ui:SymbolIcon ArrowRight16}"
+                           Appearance="Primary"
+                           Command="{Binding NavigateCommand}"
+                           CommandParameter="{x:Static vm:WorkspaceSection.Search}"
+                           HorizontalAlignment="Right"
+                           Margin="0,28,0,0" />
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

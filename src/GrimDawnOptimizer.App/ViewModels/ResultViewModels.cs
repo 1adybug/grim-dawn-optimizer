@@ -60,6 +60,8 @@ public sealed class ResultViewModel
     public string ScoreBreakdown { get; }
     public IReadOnlyList<SlotResultViewModel> SlotRows { get; }
     public IReadOnlyList<string> WarningRows { get; }
+    public bool HasWarnings => WarningRows.Count > 0;
+    public string WarningSummary => string.Join(Environment.NewLine, WarningRows);
 
     private static string FormatNumber(double value) => double.IsPositiveInfinity(value) ? "∞" : value switch
     {
