@@ -268,11 +268,21 @@ public sealed class MainViewModel : ObservableObject
             RefreshCommands();
         }
     }
-    public bool IsCurrentWeaponAttackDpsValid => TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
-    public bool IsCurrentWeaponAttackDpsInvalid => !IsCurrentWeaponAttackDpsValid;
+    public bool UsesSeparateWeaponDpsCalibration =>
+        BeamSearchOptimizer.RequiresWeaponDpsCalibration(Profile.Rotation);
+    public string DpsCalibrationInstructions => UsesSeparateWeaponDpsCalibration
+        ? "当前技能包含可可靠拆分的武器伤害：先输入主攻技能 DPS，再输入默认武器攻击 DPS，用两个锚点校准。"
+        : "当前技能使用单点校准，只需输入游戏技能栏显示的 DPS；切换角色或主攻技能后需要重新填写。";
+    public string CurrentPanelDpsLabel => SelectedSkill is null
+        ? "当前默认攻击 DPS"
+        : "当前主攻技能 DPS";
+    public bool IsCurrentWeaponAttackDpsValid =>
+        !UsesSeparateWeaponDpsCalibration || TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
+    public bool IsCurrentWeaponAttackDpsInvalid =>
+        UsesSeparateWeaponDpsCalibration && !TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
     public string CurrentWeaponAttackDpsValidationMessage => RequiredDpsValidationMessage(
         CurrentWeaponAttackDpsInput,
-        "必须输入游戏面板中的武器攻击 DPS。");
+        "该技能需要输入游戏面板中的默认武器攻击 DPS。");
     public string CurrentPanelDpsInput
     {
         get => _currentPanelDpsInput;
@@ -625,17 +635,23 @@ public sealed class MainViewModel : ObservableObject
         Characters.Clear();
         Characters.Add(character);
         SelectedCharacter = character;
-        Status = "已载入脱敏演示装备池；输入两项面板 DPS 测试值后可运行优化";
+        Status = "已载入脱敏演示装备池；按当前技能提示输入面板 DPS 后可运行优化";
         CurrentWorkspace = WorkspaceSection.Build;
     }
 
     private async Task OptimizeAsync()
     {
         if (SelectedCharacter is null || _catalog is null) return;
-        if (!TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps) ||
-            !TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps))
+        if (!TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps))
         {
-            Status = "请先输入武器攻击 DPS 和当前主攻技能 DPS";
+            Status = "请先输入当前主攻技能的游戏面板 DPS";
+            return;
+        }
+        var weaponAttackDps = 0d;
+        if (UsesSeparateWeaponDpsCalibration &&
+            !TryParseRequiredDps(CurrentWeaponAttackDpsInput, out weaponAttackDps))
+        {
+            Status = "当前技能还需要输入默认武器攻击的游戏面板 DPS";
             return;
         }
         Profile.CurrentWeaponAttackDps = weaponAttackDps;
@@ -672,10 +688,16 @@ public sealed class MainViewModel : ObservableObject
             foreach (var result in run.Results) Results.Add(new ResultViewModel(result, SelectedCharacter, Profile.Metrics));
             SelectedResult = Results.FirstOrDefault();
             SearchStats = $"{run.EvaluatedCandidates:N0} 次评估 · {run.Elapsed.TotalSeconds:0.0}s · {run.Iterations} 轮";
-            var calibration = Math.Abs(Profile.RuntimeWeaponDpsCalibrationFactor - 1) > 0.0005 ||
-                              Math.Abs(Profile.RuntimeSkillAddedDpsCalibrationFactor - 1) > 0.0005
-                ? $"；武器校准 ×{Profile.RuntimeWeaponDpsCalibrationFactor:0.000}，技能附加校准 ×{Profile.RuntimeSkillAddedDpsCalibrationFactor:0.000}"
-                : string.Empty;
+            var calibration = Profile.RuntimeDpsCalibrationMode switch
+            {
+                DpsCalibrationMode.SingleAnchor =>
+                    $"；单点 DPS 校准 ×{Profile.RuntimeDpsCalibrationFactor:0.000}",
+                DpsCalibrationMode.DualAnchor =>
+                    $"；武器校准 ×{Profile.RuntimeWeaponDpsCalibrationFactor:0.000}，技能附加校准 ×{Profile.RuntimeSkillAddedDpsCalibrationFactor:0.000}",
+                DpsCalibrationMode.SingleAnchorFallback =>
+                    $"；双锚点差值不稳定，已回退单点校准 ×{Profile.RuntimeDpsCalibrationFactor:0.000}",
+                _ => string.Empty
+            };
             Status = $"{run.StopReason}{calibration}；存档哈希保持不变";
             ProgressValue = 100;
             if (Results.Count > 0) CurrentWorkspace = WorkspaceSection.Results;
@@ -693,7 +715,10 @@ public sealed class MainViewModel : ObservableObject
         Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 300);
         Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);
         Profile.MonteCarloTrials = Math.Clamp(Profile.MonteCarloTrials, 500, 10_000);
-        Profile.CurrentWeaponAttackDps = TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps) ? weaponAttackDps : 0;
+        Profile.CurrentWeaponAttackDps = UsesSeparateWeaponDpsCalibration &&
+                                         TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps)
+            ? weaponAttackDps
+            : 0;
         Profile.CurrentPanelDps = TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps) ? panelDps : 0;
     }
 
@@ -702,6 +727,8 @@ public sealed class MainViewModel : ObservableObject
         if (SelectedCharacter is null || _catalog is null) return;
         Profile.Rotation = SkillRotationFactory.Build(SelectedCharacter, _catalog, SelectedSkill);
         OnPropertyChanged(nameof(Profile));
+        NotifyDpsCalibrationProperties();
+        RefreshCommands();
     }
 
     private void ResetCurrentPanelDps()
@@ -718,7 +745,18 @@ public sealed class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(IsCurrentPanelDpsValid));
         OnPropertyChanged(nameof(IsCurrentPanelDpsInvalid));
         OnPropertyChanged(nameof(CurrentPanelDpsValidationMessage));
+        NotifyDpsCalibrationProperties();
         OptimizeCommand.RaiseCanExecuteChanged();
+    }
+
+    private void NotifyDpsCalibrationProperties()
+    {
+        OnPropertyChanged(nameof(UsesSeparateWeaponDpsCalibration));
+        OnPropertyChanged(nameof(DpsCalibrationInstructions));
+        OnPropertyChanged(nameof(CurrentPanelDpsLabel));
+        OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsValid));
+        OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsInvalid));
+        OnPropertyChanged(nameof(CurrentWeaponAttackDpsValidationMessage));
     }
 
     private static bool TryParseRequiredDps(string? input, out double dps) =>

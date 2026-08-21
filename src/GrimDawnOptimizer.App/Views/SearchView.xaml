@@ -12,22 +12,11 @@
 
             <StackPanel Grid.Column="0" Margin="0,0,28,20">
                 <TextBlock Text="面板校准" Style="{StaticResource SectionTitle}" />
-                <TextBlock Text="输入游戏中未计敌人防御的当前数值；切换角色或主攻技能后需要重新填写。"
+                <TextBlock Text="{Binding DpsCalibrationInstructions}"
                            Style="{StaticResource SecondaryText}"
                            Margin="0,5,0,20" />
 
-                <TextBlock Text="武器攻击 DPS" Style="{StaticResource FieldLabel}" />
-                <ui:TextBox Text="{Binding CurrentWeaponAttackDpsInput, UpdateSourceTrigger=PropertyChanged}"
-                            PlaceholderText="例如 18,500"
-                            ClearButtonEnabled="True"
-                            AutomationProperties.Name="武器攻击 DPS" />
-                <TextBlock Text="{Binding CurrentWeaponAttackDpsValidationMessage}"
-                           Visibility="{Binding IsCurrentWeaponAttackDpsInvalid, Converter={StaticResource BoolVisibility}}"
-                           Foreground="{DynamicResource SystemFillColorCriticalBrush}"
-                           FontSize="12"
-                           Margin="0,6,0,0" />
-
-                <TextBlock Text="当前主攻技能 DPS" Style="{StaticResource FieldLabel}" Margin="0,20,0,6" />
+                <TextBlock Text="{Binding CurrentPanelDpsLabel}" Style="{StaticResource FieldLabel}" />
                 <ui:TextBox Text="{Binding CurrentPanelDpsInput, UpdateSourceTrigger=PropertyChanged}"
                             PlaceholderText="例如 42,000"
                             ClearButtonEnabled="True"
@@ -37,6 +26,19 @@
                            Foreground="{DynamicResource SystemFillColorCriticalBrush}"
                            FontSize="12"
                            Margin="0,6,0,0" />
+
+                <StackPanel Visibility="{Binding UsesSeparateWeaponDpsCalibration, Converter={StaticResource BoolVisibility}}">
+                    <TextBlock Text="默认武器攻击 DPS" Style="{StaticResource FieldLabel}" Margin="0,20,0,6" />
+                    <ui:TextBox Text="{Binding CurrentWeaponAttackDpsInput, UpdateSourceTrigger=PropertyChanged}"
+                                PlaceholderText="例如 18,500"
+                                ClearButtonEnabled="True"
+                                AutomationProperties.Name="默认武器攻击 DPS" />
+                    <TextBlock Text="{Binding CurrentWeaponAttackDpsValidationMessage}"
+                               Visibility="{Binding IsCurrentWeaponAttackDpsInvalid, Converter={StaticResource BoolVisibility}}"
+                               Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                               FontSize="12"
+                               Margin="0,6,0,0" />
+                </StackPanel>
 
                 <Border Style="{StaticResource Divider}" />
 
@@ -111,7 +113,7 @@
                             IsClosable="False"
                             Severity="Informational"
                             Title="推荐默认值"
-                            Message="180 秒、10 个候选、每个候选 4,000 次抽样。时间预算结束后仍会进行有独立上限的替换组合复核。"
+                            Message="180 秒、10 个候选、每个候选 4,000 次抽样。"
                             Margin="0,24,0,0" />
 
                 <TextBlock Text="{Binding BuildFoundationSummary}"

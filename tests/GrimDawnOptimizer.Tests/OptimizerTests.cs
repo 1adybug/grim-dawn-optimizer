@@ -144,7 +144,7 @@ public sealed class OptimizerTests
             // The raw model is intentionally far above this input. Calibration
             // must still use the user's exact current sheet value rather than
             // silently clipping the factor to the former 0.5 lower bound.
-            CurrentWeaponAttackDps = 30,
+            CurrentWeaponAttackDps = 0,
             CurrentPanelDps = 30,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
         };
@@ -154,7 +154,9 @@ public sealed class OptimizerTests
 
         Assert.Equal(30, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
         Assert.NotEqual(1, profile.RuntimeDpsCalibrationFactor);
-        Assert.NotEqual(1, profile.RuntimeWeaponDpsCalibrationFactor);
+        Assert.Equal(DpsCalibrationMode.SingleAnchor, profile.RuntimeDpsCalibrationMode);
+        Assert.Equal(profile.RuntimeDpsCalibrationFactor, profile.RuntimeWeaponDpsCalibrationFactor, 10);
+        Assert.Equal(profile.RuntimeDpsCalibrationFactor, profile.RuntimeSkillAddedDpsCalibrationFactor, 10);
     }
 
     [Fact]
@@ -223,6 +225,7 @@ public sealed class OptimizerTests
             .OptimizeAsync(character, character.Items, [], catalog, profile);
 
         Assert.Equal(panelSkillDps, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
+        Assert.Equal(DpsCalibrationMode.DualAnchor, profile.RuntimeDpsCalibrationMode);
         Assert.Equal(1.1, profile.RuntimeWeaponDpsCalibrationFactor, 6);
         Assert.Equal(1.2, profile.RuntimeSkillAddedDpsCalibrationFactor, 6);
     }
@@ -347,10 +350,8 @@ public sealed class OptimizerTests
             $"预期并行模拟，实际最大并发为 {simulator.MaxConcurrentCalls}");
     }
 
-    [Theory]
-    [InlineData(0, 100)]
-    [InlineData(100, 0)]
-    public async Task SearchRejectsEitherMissingDpsCalibrationInput(double weaponDps, double skillDps)
+    [Fact]
+    public async Task SingleAnchorSearchDoesNotRequireWeaponDps()
     {
         var (character, catalog) = DemoDataFactory.Create();
         var profile = new OptimizationProfile
@@ -358,15 +359,125 @@ public sealed class OptimizerTests
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
-            CurrentWeaponAttackDps = weaponDps,
-            CurrentPanelDps = skillDps
+            CurrentWeaponAttackDps = 0,
+            CurrentPanelDps = 100
         };
         var optimizer = new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator());
 
-        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+        var run = await optimizer.OptimizeAsync(
+            character, character.Items, catalog.Attachments, catalog, profile);
+
+        Assert.NotEmpty(run.Results);
+        Assert.Equal(DpsCalibrationMode.SingleAnchor, profile.RuntimeDpsCalibrationMode);
+    }
+
+    [Fact]
+    public async Task ActiveSearchStillRequiresMainSkillPanelDps()
+    {
+        var (character, catalog) = DemoDataFactory.Create();
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentPanelDps = 0
+        };
+        var optimizer = new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator());
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             optimizer.OptimizeAsync(character, character.Items, catalog.Attachments, catalog, profile));
 
-        Assert.Contains("DPS 为必填项", exception.Message);
+        Assert.Contains("主攻技能", exception.Message);
+    }
+
+    [Fact]
+    public async Task PureSpellUsesOnlyMainSkillPanelDps()
+    {
+        var (character, catalog, skill) = SkillCalibrationFixture(
+            "pure-spell", "Skill_AttackProjectile", weaponDamagePercent: 0, flatFireDamage: 50);
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 0,
+            CurrentPanelDps = 500,
+            Rotation = new SkillRotationDefinition { MainSkillRecord = skill.Record },
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+
+        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
+            .OptimizeAsync(character, character.Items, [], catalog, profile);
+
+        Assert.Equal(500, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
+        Assert.Equal(DpsCalibrationMode.SingleAnchor, profile.RuntimeDpsCalibrationMode);
+    }
+
+    [Fact]
+    public async Task ReliableWeaponDamageSkillRequiresWeaponAttackDps()
+    {
+        var (character, catalog, skill) = SkillCalibrationFixture(
+            "weapon-skill", "Skill_WeaponPool_BasicAttack", weaponDamagePercent: 200);
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 0,
+            CurrentPanelDps = 500,
+            Rotation = new SkillRotationDefinition { MainSkillRecord = skill.Record }
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
+                .OptimizeAsync(character, character.Items, [], catalog, profile));
+
+        Assert.Contains("武器攻击", exception.Message);
+    }
+
+    [Fact]
+    public async Task IllConditionedDualAnchorAutomaticallyFallsBackToSingleAnchor()
+    {
+        var (character, catalog, skill) = SkillCalibrationFixture(
+            "near-weapon-skill", "Skill_WeaponPool_BasicAttack", weaponDamagePercent: 101);
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 50,
+            CurrentPanelDps = 500,
+            Rotation = new SkillRotationDefinition { MainSkillRecord = skill.Record },
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+
+        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
+            .OptimizeAsync(character, character.Items, [], catalog, profile);
+
+        Assert.Equal(500, Assert.Single(run.Results).Simulation.UnmitigatedDps, 6);
+        Assert.Equal(DpsCalibrationMode.SingleAnchorFallback, profile.RuntimeDpsCalibrationMode);
+        Assert.Equal(profile.RuntimeDpsCalibrationFactor, profile.RuntimeWeaponDpsCalibrationFactor, 10);
+        Assert.Equal(profile.RuntimeDpsCalibrationFactor, profile.RuntimeSkillAddedDpsCalibrationFactor, 10);
+    }
+
+    [Fact]
+    public void WeaponDpsRequirementUsesRotationReliabilityAndWeaponDamage()
+    {
+        Assert.False(BeamSearchOptimizer.RequiresWeaponDpsCalibration(new SkillRotationDefinition
+        {
+            IsFallback = true,
+            WeaponDamagePercent = 100
+        }));
+        Assert.False(BeamSearchOptimizer.RequiresWeaponDpsCalibration(new SkillRotationDefinition
+        {
+            IsFallback = false,
+            WeaponDamagePercent = 0
+        }));
+        Assert.True(BeamSearchOptimizer.RequiresWeaponDpsCalibration(new SkillRotationDefinition
+        {
+            IsFallback = false,
+            WeaponDamagePercent = 150
+        }));
     }
 
     [Fact]
@@ -459,195 +570,6 @@ public sealed class OptimizerTests
         Assert.False(BeamSearchOptimizer.IsAttachmentCompatible(ammo, sword, character, owned));
     }
 
-    [Fact]
-    public void TransitionEnumerationCoversEveryNonEmptySubsetAndReachesFullParent()
-    {
-        var slots = new[] { EquipmentSlot.Head, EquipmentSlot.Chest, EquipmentSlot.MainHand };
-        var current = slots.ToDictionary(
-            slot => slot,
-            slot => new LoadoutVariant(ItemAt($"current-{slot}", slot), null, null));
-        var parent = slots.ToDictionary(
-            slot => slot,
-            slot => new LoadoutVariant(ItemAt($"parent-{slot}", slot), null, null));
-
-        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
-
-        Assert.Equal(7, BeamSearchOptimizer.TransitionCombinationCount(current, parent));
-        Assert.Equal(7, combinations.Length);
-        Assert.DoesNotContain(combinations, x => slots.All(slot => x[slot].Item.Id == current[slot].Item.Id));
-        Assert.Contains(combinations, x => slots.All(slot => x[slot].Item.Id == parent[slot].Item.Id));
-    }
-
-    [Fact]
-    public void TwelveTransitionChangesProduce4095Combinations()
-    {
-        var slots = new[]
-        {
-            EquipmentSlot.Head, EquipmentSlot.Shoulders, EquipmentSlot.Chest, EquipmentSlot.Hands,
-            EquipmentSlot.Legs, EquipmentSlot.Feet, EquipmentSlot.Waist, EquipmentSlot.Amulet,
-            EquipmentSlot.Medal, EquipmentSlot.Relic, EquipmentSlot.RingLeft, EquipmentSlot.RingRight
-        };
-        var current = slots.ToDictionary(
-            slot => slot,
-            slot => new LoadoutVariant(ItemAt($"current-{slot}", slot), null, null));
-        var parent = slots.ToDictionary(
-            slot => slot,
-            slot => new LoadoutVariant(ItemAt($"parent-{slot}", slot), null, null));
-
-        Assert.Equal(4095, BeamSearchOptimizer.TransitionCombinationCount(current, parent));
-        Assert.Equal(4095, BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).Count());
-    }
-
-    [Fact]
-    public void AttachmentOnlyChangeIsARealTransitionAndUnselectedSlotsKeepInstalledAttachments()
-    {
-        var currentComponent = Component("current-component", EquipmentSlot.Head);
-        var parentComponent = Component("parent-component", EquipmentSlot.Head);
-        var unchangedComponent = Component("unchanged-component", EquipmentSlot.Chest);
-        var sharedHead = ItemAt("shared-head", EquipmentSlot.Head);
-        var sharedChest = ItemAt("shared-chest", EquipmentSlot.Chest);
-        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.Head] = new(sharedHead, currentComponent, null),
-            [EquipmentSlot.Chest] = new(sharedChest, unchangedComponent, null)
-        };
-        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.Head] = new(sharedHead, parentComponent, null),
-            [EquipmentSlot.Chest] = new(sharedChest, unchangedComponent, null)
-        };
-
-        var result = Assert.Single(BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent));
-
-        Assert.Equal(parentComponent.Id, result[EquipmentSlot.Head].Component?.Id);
-        Assert.Equal(unchangedComponent.Id, result[EquipmentSlot.Chest].Component?.Id);
-    }
-
-    [Fact]
-    public void EquippingTwoHandedParentAutomaticallyClearsCurrentOffhand()
-    {
-        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.MainHand] = new(ItemAt("current-main", EquipmentSlot.MainHand), null, null),
-            [EquipmentSlot.OffHand] = new(ItemAt("current-off", EquipmentSlot.OffHand), null, null)
-        };
-        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.MainHand] = new(ItemAt("parent-two-hand", EquipmentSlot.MainHand, twoHanded: true), null, null)
-        };
-
-        var result = Assert.Single(BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent));
-
-        Assert.True(result[EquipmentSlot.MainHand].Item.IsTwoHanded);
-        Assert.False(result.ContainsKey(EquipmentSlot.OffHand));
-    }
-
-    [Fact]
-    public void OneHandAndOffhandParentFromCurrentTwoHandHasTwoLegalTransitionSteps()
-    {
-        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.MainHand] = new(ItemAt("current-two-hand", EquipmentSlot.MainHand, twoHanded: true), null, null)
-        };
-        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.MainHand] = new(ItemAt("parent-main", EquipmentSlot.MainHand), null, null),
-            [EquipmentSlot.OffHand] = new(ItemAt("parent-off", EquipmentSlot.OffHand), null, null)
-        };
-        var character = CharacterWithCurrent(current);
-        var engine = new CharacterStatEngine();
-
-        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
-        var legal = combinations.Count(x => engine.Calculate(character, x, new GameDataCatalog()).IsValid);
-
-        Assert.Equal(3, combinations.Length);
-        Assert.Equal(2, legal);
-        Assert.Contains(combinations, x =>
-            x.TryGetValue(EquipmentSlot.MainHand, out var main) && main.Item.Id == "parent-main" &&
-            !x.ContainsKey(EquipmentSlot.OffHand));
-    }
-
-    [Fact]
-    public void SwappingCurrentRingsRequiresSelectingBothParentSlots()
-    {
-        var left = ItemAt("left-ring", EquipmentSlot.RingLeft);
-        var right = ItemAt("right-ring", EquipmentSlot.RingRight);
-        var current = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.RingLeft] = new(left, null, null),
-            [EquipmentSlot.RingRight] = new(right, null, null)
-        };
-        var parent = new Dictionary<EquipmentSlot, LoadoutVariant>
-        {
-            [EquipmentSlot.RingLeft] = new(right, null, null),
-            [EquipmentSlot.RingRight] = new(left, null, null)
-        };
-        var character = CharacterWithCurrent(current);
-        var engine = new CharacterStatEngine();
-
-        var combinations = BeamSearchOptimizer.EnumerateTransitionLoadouts(current, parent).ToArray();
-        var legal = combinations.Where(x => engine.Calculate(character, x, new GameDataCatalog()).IsValid).ToArray();
-
-        var result = Assert.Single(legal);
-        Assert.Equal(right.Id, result[EquipmentSlot.RingLeft].Item.Id);
-        Assert.Equal(left.Id, result[EquipmentSlot.RingRight].Item.Id);
-    }
-
-    [Fact]
-    public async Task OptimizerGloballyRanksTransitionSubsetsAndReturnsOnlyConfiguredTopResults()
-    {
-        var currentMain = ItemAt("current-main", EquipmentSlot.MainHand, fireDamage: 20);
-        var currentHead = ItemAt("current-head", EquipmentSlot.Head);
-        var currentChest = ItemAt("current-chest", EquipmentSlot.Chest);
-        var parentMain = ItemAt("parent-main", EquipmentSlot.MainHand, fireDamage: 100);
-        var parentHead = ItemAt("parent-head", EquipmentSlot.Head, fireDamage: 30);
-        var parentChest = ItemAt("parent-chest", EquipmentSlot.Chest, fireDamage: 25);
-        var character = new CharacterSnapshot
-        {
-            Name = "transition-ranking",
-            SaveFilePath = "transition-ranking.gdc",
-            Level = 100,
-            Physique = 1000,
-            Cunning = 1000,
-            Spirit = 1000,
-            Items = [currentMain, currentHead, currentChest, parentMain, parentHead, parentChest],
-            CurrentLoadout = new Dictionary<EquipmentSlot, string>
-            {
-                [EquipmentSlot.MainHand] = currentMain.Id,
-                [EquipmentSlot.Head] = currentHead.Id,
-                [EquipmentSlot.Chest] = currentChest.Id
-            },
-            BaselineStats = new StatBlock(new Dictionary<string, double>
-            {
-                ["health"] = 10_000,
-                ["offensiveAbility"] = 3000,
-                ["defensiveAbility"] = 2800
-            })
-        };
-        var profile = new OptimizationProfile
-        {
-            SearchBudgetSeconds = 1,
-            ResultCount = 3,
-            MonteCarloTrials = 500,
-            CurrentWeaponAttackDps = 100,
-            CurrentPanelDps = 100,
-            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
-        };
-
-        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator())
-            .OptimizeAsync(character, character.Items, [], new GameDataCatalog(), profile);
-
-        Assert.Equal(3, run.Results.Count);
-        Assert.Equal(Enumerable.Range(1, 3), run.Results.Select(x => x.Rank));
-        Assert.True(run.Results.Zip(run.Results.Skip(1), (left, right) =>
-            left.TierScores[0] >= right.TierScores[0]).All(x => x));
-        Assert.All(run.Results, result => Assert.True(result.Simulation.MonteCarloDpsHigh95 > 0));
-        Assert.DoesNotContain(run.Results, result =>
-            result.Loadout.Slots[EquipmentSlot.MainHand].Item.Id == currentMain.Id &&
-            result.Loadout.Slots[EquipmentSlot.Head].Item.Id == currentHead.Id &&
-            result.Loadout.Slots[EquipmentSlot.Chest].Item.Id == currentChest.Id);
-    }
-
     private static StatBlock BuildAttachmentStats(int index)
     {
         var stats = new StatBlock();
@@ -681,45 +603,71 @@ public sealed class OptimizerTests
         })
     };
 
-    private static AttachmentDefinition Component(string id, EquipmentSlot slot) => new()
+    private static (CharacterSnapshot Character, GameDataCatalog Catalog, CharacterSkill Skill)
+        SkillCalibrationFixture(
+            string id,
+            string recordClass,
+            double weaponDamagePercent,
+            double flatFireDamage = 0)
     {
-        Id = id,
-        Name = id,
-        Kind = AttachmentKind.Component,
-        CompatibleSlots = new HashSet<EquipmentSlot> { slot }
-    };
-
-    private static CharacterSnapshot CharacterWithCurrent(
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current) => new()
-    {
-        Name = "transition-test",
-        SaveFilePath = "transition-test.gdc",
-        Level = 100,
-        Physique = 1000,
-        Cunning = 1000,
-        Spirit = 1000,
-        Items = current.Values.Select(x => x.Item).ToArray(),
-        CurrentLoadout = current.ToDictionary(x => x.Key, x => x.Value.Item.Id),
-        BaselineStats = new StatBlock(new Dictionary<string, double>
+        var skillRecord = $"records/skills/test/{id}.dbr";
+        var skill = new CharacterSkill(skillRecord, id, 1, 0, true, "", "");
+        var weapon = Item($"{id}-weapon", 100);
+        var character = new CharacterSnapshot
         {
-            ["health"] = 10_000,
-            ["offensiveAbility"] = 3000,
-            ["defensiveAbility"] = 2800
-        })
-    };
+            Name = id,
+            SaveFilePath = $"{id}.gdc",
+            Level = 100,
+            Physique = 1000,
+            Cunning = 1000,
+            Spirit = 1000,
+            Skills = [skill],
+            Items = [weapon],
+            CurrentLoadout = new Dictionary<EquipmentSlot, string>
+            {
+                [EquipmentSlot.MainHand] = weapon.Id
+            },
+            BaselineStats = new StatBlock(new Dictionary<string, double>
+            {
+                ["health"] = 10_000,
+                ["offensiveAbility"] = 3000,
+                ["defensiveAbility"] = 2800
+            })
+        };
+        var catalog = new GameDataCatalog
+        {
+            Records = new Dictionary<string, GameRecord>
+            {
+                [skillRecord] = new GameRecord
+                {
+                    RecordName = skillRecord,
+                    RecordType = recordClass,
+                    TextValues = new Dictionary<string, IReadOnlyList<string>>
+                    {
+                        ["Class"] = [recordClass]
+                    },
+                    NumericSeries = new Dictionary<string, IReadOnlyList<double>>
+                    {
+                        ["weaponDamagePct"] = [weaponDamagePercent],
+                        ["offensiveFireMin"] = [flatFireDamage],
+                        ["offensiveFireMax"] = [flatFireDamage]
+                    }
+                }
+            }
+        };
+        return (character, catalog, skill);
+    }
 
     private static ItemInstance ItemAt(
         string id,
         EquipmentSlot targetSlot,
-        double fireDamage = 0,
-        bool twoHanded = false) => new()
+        double fireDamage = 0) => new()
     {
         Id = id,
         Name = id,
         Slot = targetSlot is EquipmentSlot.RingLeft or EquipmentSlot.RingRight ? EquipmentSlot.Ring : targetSlot,
         BaseRecord = id,
         Seed = 1,
-        IsTwoHanded = twoHanded,
         Stats = new StatBlock(new Dictionary<string, double>
         {
             [StatKeys.DamageFlat("fire")] = fireDamage

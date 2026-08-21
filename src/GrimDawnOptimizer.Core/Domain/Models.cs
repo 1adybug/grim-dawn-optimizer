@@ -28,6 +28,7 @@ public enum ItemSourceKind { Equipped, AlternateWeaponSet, Backpack, PersonalSta
 public enum AttachmentKind { Component, Augment }
 public enum MetricDirection { Maximize, Minimize }
 public enum ConfidenceLevel { High, Medium, Low }
+public enum DpsCalibrationMode { None, SingleAnchor, DualAnchor, SingleAnchorFallback }
 
 public sealed record ItemSourceLocation(
     ItemSourceKind Kind,
@@ -279,6 +280,8 @@ public sealed class OptimizationProfile
     public double RuntimeWeaponDpsCalibrationFactor { get; set; } = 1;
     [JsonIgnore]
     public double RuntimeSkillAddedDpsCalibrationFactor { get; set; } = 1;
+    [JsonIgnore]
+    public DpsCalibrationMode RuntimeDpsCalibrationMode { get; set; }
 }
 
 public sealed class LoadoutVariant(ItemInstance item, AttachmentDefinition? component, AttachmentDefinition? augment)

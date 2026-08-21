@@ -8,7 +8,6 @@ namespace GrimDawnOptimizer.Core.Services;
 
 public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 {
-    private const int TransitionParentCount = 10;
     private const int MaxComponentOptionsPerItem = 24;
     private const int MaxAugmentOptionsPerItem = 16;
     private const int MaxVariantsPerItem = 48;
@@ -49,15 +48,6 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         IProgress<SearchProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (!double.IsFinite(profile.CurrentWeaponAttackDps) || profile.CurrentWeaponAttackDps is <= 0 or > 10_000_000)
-            throw new ArgumentOutOfRangeException(
-                nameof(profile),
-                "武器攻击 DPS 为必填项，且必须是大于 0 的有效数值。");
-        if (!double.IsFinite(profile.CurrentPanelDps) || profile.CurrentPanelDps is <= 0 or > 10_000_000)
-            throw new ArgumentOutOfRangeException(
-                nameof(profile),
-                "当前主攻技能 DPS 为必填项，且必须是大于 0 的有效数值。");
-
         var watch = Stopwatch.StartNew();
         var budget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds, 1, 300));
         var resultCount = Math.Clamp(profile.ResultCount, 1, 50);
@@ -76,11 +66,11 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             currentCalculated,
             profile.Scenario,
             ResolveWeaponAttackRotation(character, catalog, currentSlots));
-        if (currentSimulation.UnmitigatedDps <= 0)
-            throw new InvalidOperationException("当前配装无法计算出有效的未计抗性 DPS，不能应用面板校准。");
-        if (currentWeaponSimulation.UnmitigatedDps <= 0)
-            throw new InvalidOperationException("当前配装无法计算出有效的武器攻击 DPS，不能应用面板校准。");
-        ConfigureDpsCalibration(profile, currentSimulation.UnmitigatedDps, currentWeaponSimulation.UnmitigatedDps);
+        ConfigureDpsCalibration(
+            profile,
+            currentRotation,
+            currentSimulation.UnmitigatedDps,
+            currentWeaponSimulation.UnmitigatedDps);
         currentSimulation = ApplyDpsCalibration(currentSimulation, currentWeaponSimulation, profile);
         var currentMetrics = ExtractMetrics(currentCalculated, currentSimulation);
         var benchmarks = BossMetricBenchmarkResolver.Resolve(profile.Metrics, profile.Scenario, currentMetrics);
@@ -196,7 +186,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             return Evaluate(character, slots, catalog, profile, scoring);
         }).ToList();
 
-        var transitionParents = completedFinalists
+        var results = completedFinalists
             // Invalid combinations must never be presented as actionable plans. Partial
             // beam states remain eligible because later slots may supply the missing
             // attributes or requirement reduction; filtering is intentionally final-only.
@@ -207,27 +197,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             // for each physical equipment combination so the candidate list is useful.
             .GroupBy(x => EquipmentSignature(x.Loadout.Slots))
             .Select(x => x.First())
-            .Take(TransitionParentCount)
+            .Take(resultCount)
             .ToList();
-
-        var results = ExpandTransitionCandidates(
-            character,
-            transitionParents,
-            currentSlots,
-            catalog,
-            profile,
-            scoring,
-            resultCount,
-            watch,
-            ref evaluated,
-            progress,
-            cancellationToken);
-
-        // A character with no alternative wearable item has no non-empty transition
-        // combination. Preserve the old useful fallback instead of returning a blank UI;
-        // once any real transition exists, the unchanged current loadout never competes.
-        if (results.Count == 0)
-            results = transitionParents.Take(resultCount).ToList();
 
         // Keep optimizing the complete equipment + attachment plan, but expose a
         // target-free comparison that strips every component and augment. This lets
@@ -289,8 +260,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Iterations = iteration,
             Elapsed = watch.Elapsed,
             StopReason = (searchReachedBudget
-                ? "达到搜索时间预算；已完成过渡组合评分并返回当前最佳候选"
-                : "候选空间与过渡组合已完成近似搜索") +
+                ? "达到搜索时间预算；已返回当前最佳候选"
+                : "候选空间已完成近似搜索") +
                 $"；并行 {_maxDegreeOfParallelism} 线程"
         };
     }
@@ -345,162 +316,6 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Confidence = confidence
         };
     }
-
-    private List<LoadoutResult> ExpandTransitionCandidates(
-        CharacterSnapshot character,
-        IReadOnlyList<LoadoutResult> parents,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> currentSlots,
-        GameDataCatalog catalog,
-        OptimizationProfile profile,
-        ScoringEngine scoring,
-        int resultCount,
-        Stopwatch watch,
-        ref int evaluated,
-        IProgress<SearchProgress>? progress,
-        CancellationToken cancellationToken)
-    {
-        var totalCombinations = parents.Sum(parent =>
-            TransitionCombinationCount(currentSlots, parent.Loadout.Slots));
-        if (totalCombinations == 0) return [];
-
-        var seenPlans = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
-        var topByEquipment = new Dictionary<string, LoadoutResult>(StringComparer.Ordinal);
-        var topGate = new object();
-        var transitionBudget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds * 0.25, 3, 45));
-        var transitionDeadline = watch.Elapsed + transitionBudget;
-        long generated = 0;
-        var evaluatedInPhase = 0;
-        var validUnique = 0;
-        var reachedTransitionDeadline = 0;
-        var evaluatedBeforePhase = evaluated;
-        var transitionCandidates = parents.SelectMany(parent =>
-            EnumerateTransitionLoadouts(currentSlots, parent.Loadout.Slots));
-
-        Parallel.ForEach(
-            transitionCandidates,
-            CreateParallelOptions(cancellationToken),
-            (slots, loopState) =>
-        {
-            if (watch.Elapsed >= transitionDeadline)
-            {
-                Interlocked.Exchange(ref reachedTransitionDeadline, 1);
-                loopState.Stop();
-                return;
-            }
-
-            var generatedNow = Interlocked.Increment(ref generated);
-            var planSignature = Signature(slots);
-            if (seenPlans.TryAdd(planSignature, 0))
-            {
-                Interlocked.Increment(ref evaluatedInPhase);
-                var calculated = _statEngine.Calculate(character, slots, catalog);
-                if (calculated.IsValid)
-                {
-                    var result = EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
-                    Interlocked.Increment(ref validUnique);
-                    lock (topGate)
-                    {
-                        RetainTopResult(topByEquipment, result, resultCount);
-                    }
-                }
-            }
-
-            if (generatedNow % 512 == 0)
-            {
-                lock (topGate)
-                {
-                    progress?.Report(new SearchProgress(
-                        "TransitionExpansion", evaluatedBeforePhase + Volatile.Read(ref evaluatedInPhase), parents.Count,
-                        topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()
-                            ?.TierScores.FirstOrDefault() ?? double.NegativeInfinity,
-                        watch.Elapsed,
-                        $"并行组合评分 {generatedNow:N0}/{totalCombinations:N0} · {Volatile.Read(ref validUnique):N0} 套合法唯一方案 · {_maxDegreeOfParallelism} 线程"));
-                }
-            }
-        });
-        evaluated += evaluatedInPhase;
-        var deadlineReached = Volatile.Read(ref reachedTransitionDeadline) != 0;
-
-        progress?.Report(new SearchProgress(
-            "TransitionExpansion", evaluated, parents.Count,
-            topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()?.TierScores.FirstOrDefault()
-                ?? double.NegativeInfinity,
-            watch.Elapsed,
-            deadlineReached
-                ? $"达到组合阶段时间上限：{generated:N0}/{totalCombinations:N0} 次生成 · {validUnique:N0} 套合法唯一方案"
-                : $"组合评分完成：{generated:N0} 次生成 · {validUnique:N0} 套合法唯一方案"));
-
-        return topByEquipment.Values.Order(LoadoutResultComparer.Instance).ToList();
-    }
-
-    private static void RetainTopResult(
-        Dictionary<string, LoadoutResult> topByEquipment,
-        LoadoutResult candidate,
-        int limit)
-    {
-        var equipmentSignature = EquipmentSignature(candidate.Loadout.Slots);
-        if (topByEquipment.TryGetValue(equipmentSignature, out var existing))
-        {
-            if (LoadoutResultComparer.Instance.Compare(candidate, existing) < 0)
-                topByEquipment[equipmentSignature] = candidate;
-            return;
-        }
-
-        if (topByEquipment.Count < limit)
-        {
-            topByEquipment[equipmentSignature] = candidate;
-            return;
-        }
-
-        var worst = topByEquipment.MaxBy(x => x.Value, LoadoutResultComparer.Instance);
-        if (LoadoutResultComparer.Instance.Compare(candidate, worst.Value) >= 0) return;
-        topByEquipment.Remove(worst.Key);
-        topByEquipment[equipmentSignature] = candidate;
-    }
-
-    internal static long TransitionCombinationCount(
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent)
-    {
-        var changes = TransitionChanges(current, parent);
-        return changes.Count == 0 ? 0 : (1L << changes.Count) - 1;
-    }
-
-    internal static IEnumerable<IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>> EnumerateTransitionLoadouts(
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent)
-    {
-        var changes = TransitionChanges(current, parent);
-        var combinationCount = changes.Count == 0 ? 0L : (1L << changes.Count) - 1;
-        for (var mask = 1L; mask <= combinationCount; mask++)
-        {
-            var slots = new Dictionary<EquipmentSlot, LoadoutVariant>(current);
-            for (var index = 0; index < changes.Count; index++)
-            {
-                if ((mask & (1L << index)) == 0) continue;
-                var (slot, variant) = changes[index];
-                slots[slot] = variant;
-                if (slot == EquipmentSlot.MainHand && variant.Item.IsTwoHanded)
-                    slots.Remove(EquipmentSlot.OffHand);
-            }
-            yield return slots;
-        }
-    }
-
-    private static IReadOnlyList<(EquipmentSlot Slot, LoadoutVariant Variant)> TransitionChanges(
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> parent) =>
-        TargetSlots
-            .Where(parent.ContainsKey)
-            .Where(slot => !current.TryGetValue(slot, out var equipped) ||
-                           !SameVariant(equipped, parent[slot]))
-            .Select(slot => (slot, parent[slot]))
-            .ToArray();
-
-    private static bool SameVariant(LoadoutVariant left, LoadoutVariant right) =>
-        string.Equals(left.Item.Id, right.Item.Id, StringComparison.Ordinal) &&
-        string.Equals(left.Component?.Id, right.Component?.Id, StringComparison.Ordinal) &&
-        string.Equals(left.Augment?.Id, right.Augment?.Id, StringComparison.Ordinal);
 
     private void LocalImprove(
         CharacterSnapshot character,
@@ -1012,33 +827,68 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return result;
     }
 
+    public static bool RequiresWeaponDpsCalibration(SkillRotationDefinition rotation) =>
+        !rotation.IsFallback && rotation.WeaponDamagePercent > 0;
+
     private static void ConfigureDpsCalibration(
         OptimizationProfile profile,
+        SkillRotationDefinition rotation,
         double currentSkillDps,
         double currentWeaponDps)
     {
-        profile.RuntimeWeaponDpsCalibrationFactor =
-            profile.CurrentWeaponAttackDps / currentWeaponDps;
+        profile.RuntimeDpsCalibrationFactor = 1;
+        profile.RuntimeWeaponDpsCalibrationFactor = 1;
+        profile.RuntimeSkillAddedDpsCalibrationFactor = 1;
+        profile.RuntimeDpsCalibrationMode = DpsCalibrationMode.None;
+
+        // A retaliation-only or otherwise non-active setup has no sheet-DPS
+        // anchor. Leave it uncalibrated instead of blocking the optimizer.
+        if (!double.IsFinite(currentSkillDps) || currentSkillDps <= 0) return;
+
+        ValidatePanelDps(profile.CurrentPanelDps, "当前主攻技能的游戏面板 DPS");
+        var singleFactor = profile.CurrentPanelDps / currentSkillDps;
+        profile.RuntimeDpsCalibrationFactor = singleFactor;
+
+        if (!RequiresWeaponDpsCalibration(rotation) ||
+            !double.IsFinite(currentWeaponDps) || currentWeaponDps <= 0)
+        {
+            UseSingleAnchor(profile, singleFactor, DpsCalibrationMode.SingleAnchor);
+            return;
+        }
+
+        ValidatePanelDps(profile.CurrentWeaponAttackDps, "当前武器攻击的游戏面板 DPS");
 
         var rawSkillAddedDps = currentSkillDps - currentWeaponDps;
         var panelSkillAddedDps = profile.CurrentPanelDps - profile.CurrentWeaponAttackDps;
-        if (Math.Abs(rawSkillAddedDps) < 1e-9)
+        var stableDifferenceFloor = Math.Max(1, Math.Abs(currentSkillDps) * 0.05);
+        if (Math.Abs(rawSkillAddedDps) < stableDifferenceFloor)
         {
-            var tolerance = Math.Max(1, profile.CurrentPanelDps * 0.005);
-            if (Math.Abs(panelSkillAddedDps) > tolerance)
-                throw new InvalidOperationException("当前选择为默认武器攻击时，两项面板 DPS 应填写相同数值。");
-            profile.RuntimeSkillAddedDpsCalibrationFactor = profile.RuntimeWeaponDpsCalibrationFactor;
-        }
-        else
-        {
-            if (rawSkillAddedDps * panelSkillAddedDps <= 0)
-                throw new InvalidOperationException("主攻技能 DPS 与武器攻击 DPS 的关系不符合当前技能，请核对两个输入值和所选主攻技能。");
-            profile.RuntimeSkillAddedDpsCalibrationFactor =
-                panelSkillAddedDps / rawSkillAddedDps;
+            UseSingleAnchor(profile, singleFactor, DpsCalibrationMode.SingleAnchorFallback);
+            return;
         }
 
-        profile.RuntimeDpsCalibrationFactor =
-            profile.CurrentPanelDps / currentSkillDps;
+        if (rawSkillAddedDps * panelSkillAddedDps <= 0)
+            throw new InvalidOperationException("主攻技能 DPS 与武器攻击 DPS 的关系不符合当前技能，请核对两个输入值和所选主攻技能。");
+
+        profile.RuntimeWeaponDpsCalibrationFactor = profile.CurrentWeaponAttackDps / currentWeaponDps;
+        profile.RuntimeSkillAddedDpsCalibrationFactor = panelSkillAddedDps / rawSkillAddedDps;
+        profile.RuntimeDpsCalibrationMode = DpsCalibrationMode.DualAnchor;
+    }
+
+    private static void UseSingleAnchor(
+        OptimizationProfile profile,
+        double factor,
+        DpsCalibrationMode mode)
+    {
+        profile.RuntimeWeaponDpsCalibrationFactor = factor;
+        profile.RuntimeSkillAddedDpsCalibrationFactor = factor;
+        profile.RuntimeDpsCalibrationMode = mode;
+    }
+
+    private static void ValidatePanelDps(double value, string fieldName)
+    {
+        if (!double.IsFinite(value) || value <= 0 || value > 10_000_000)
+            throw new InvalidOperationException($"必须输入有效的{fieldName}（大于 0，且不超过 10,000,000）。");
     }
 
     private static SimulationReport ApplyDpsCalibration(
