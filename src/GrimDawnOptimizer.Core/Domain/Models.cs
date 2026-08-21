@@ -321,11 +321,17 @@ public sealed class CalculatedLoadout
 public sealed class SimulationReport
 {
     public double ExpectedDps { get; init; }
+    public double RetaliationDps { get; init; }
     public double UnmitigatedDps { get; init; }
     public double TimeToKillSeconds { get; init; }
     public double EffectiveHealth { get; init; }
     public double IncomingDps { get; init; }
     public double SustainPerSecond { get; init; }
+    public double Health { get; init; }
+    public double RawIncomingDps { get; init; }
+    public double HealthRegenPerSecond { get; init; }
+    public double EffectiveLifeSteal { get; init; }
+    public double LifeStealEligibleDps { get; init; }
     public double TimeToDeathSeconds { get; init; }
     public double HitChance { get; init; }
     public double CritChance { get; init; }

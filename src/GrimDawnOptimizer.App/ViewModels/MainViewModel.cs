@@ -231,7 +231,7 @@ public sealed class MainViewModel : ObservableObject
         {
             var scenario = Profile.Scenario;
             var source = scenario.BossSampleCount > 0 ? $"{scenario.BossSampleCount} 类 BOSS" : "内置估算";
-            return $"{source} · 生命 {scenario.EnemyHealth:N0} · 护甲 {scenario.EnemyArmor:N0} · OA/DA {scenario.EnemyOffensiveAbility:N0}/{scenario.EnemyDefensiveAbility:N0}";
+            return $"{source} · 生命 {scenario.EnemyHealth:N0} · 护甲 {scenario.EnemyArmor:N0} · OA/DA {scenario.EnemyOffensiveAbility:N0}/{scenario.EnemyDefensiveAbility:N0} · 来袭 {scenario.IncomingDamage.HitsPerSecond:0.##}/s · 吸血抗 {scenario.EnemyLifeLeechResistance:0.#}%";
         }
     }
     public string EnemyResistanceSummary => string.Join("  ", new[]

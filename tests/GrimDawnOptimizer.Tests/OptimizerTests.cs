@@ -1,3 +1,4 @@
+using GrimDawnOptimizer.Core.Contracts;
 using GrimDawnOptimizer.Core.Domain;
 using GrimDawnOptimizer.Core.Services;
 using System.Diagnostics;
@@ -292,6 +293,55 @@ public sealed class OptimizerTests
         watch.Stop();
         Assert.NotEmpty(run.Results);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"耗时 {watch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task CandidateEvaluationUsesConfiguredParallelism()
+    {
+        var weapons = Enumerable.Range(0, 8)
+            .Select(i => ItemAt($"parallel-weapon-{i}", EquipmentSlot.MainHand, 100 + i))
+            .ToArray();
+        var helmets = Enumerable.Range(0, 8)
+            .Select(i => ItemAt($"parallel-helmet-{i}", EquipmentSlot.Head, 10 + i))
+            .ToArray();
+        var character = new CharacterSnapshot
+        {
+            Name = "parallel-test",
+            SaveFilePath = "parallel-test.gdc",
+            Level = 100,
+            Physique = 1_000,
+            Cunning = 1_000,
+            Spirit = 1_000,
+            Items = weapons.Concat(helmets).ToArray(),
+            CurrentLoadout = new Dictionary<EquipmentSlot, string>
+            {
+                [EquipmentSlot.MainHand] = weapons[0].Id,
+                [EquipmentSlot.Head] = helmets[0].Id
+            },
+            BaselineStats = new StatBlock(new Dictionary<string, double>
+            {
+                ["health"] = 10_000,
+                ["offensiveAbility"] = 3_000,
+                ["defensiveAbility"] = 2_800
+            })
+        };
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1,
+            ResultCount = 1,
+            MonteCarloTrials = 500,
+            CurrentWeaponAttackDps = 100,
+            CurrentPanelDps = 100,
+            Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
+        };
+        var simulator = new ConcurrentCallTrackingSimulator();
+
+        var run = await new BeamSearchOptimizer(new CharacterStatEngine(), simulator, maxDegreeOfParallelism: 4)
+            .OptimizeAsync(character, character.Items, [], new GameDataCatalog(), profile);
+
+        Assert.NotEmpty(run.Results);
+        Assert.True(simulator.MaxConcurrentCalls > 1,
+            $"预期并行模拟，实际最大并发为 {simulator.MaxConcurrentCalls}");
     }
 
     [Theory]
@@ -679,4 +729,49 @@ public sealed class OptimizerTests
         Id = source.Id + qualifier, Name = source.Name, Slot = source.Slot, BaseRecord = source.BaseRecord,
         Seed = source.Seed, Stats = source.Stats, Source = source.Source, AttachmentQualifier = qualifier
     };
+
+    private sealed class ConcurrentCallTrackingSimulator : ICombatSimulator
+    {
+        private readonly CombatSimulator _inner = new();
+        private int _activeCalls;
+        private int _maxConcurrentCalls;
+
+        public int MaxConcurrentCalls => Volatile.Read(ref _maxConcurrentCalls);
+
+        public SimulationReport Simulate(
+            CharacterSnapshot character,
+            CalculatedLoadout loadout,
+            CombatScenario scenario,
+            SkillRotationDefinition rotation)
+        {
+            var active = Interlocked.Increment(ref _activeCalls);
+            var observed = Volatile.Read(ref _maxConcurrentCalls);
+            while (active > observed)
+            {
+                var prior = Interlocked.CompareExchange(ref _maxConcurrentCalls, active, observed);
+                if (prior == observed) break;
+                observed = prior;
+            }
+
+            try
+            {
+                Thread.Sleep(3);
+                return _inner.Simulate(character, loadout, scenario, rotation);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _activeCalls);
+            }
+        }
+
+        public Task<SimulationReport> RunMonteCarloAsync(
+            CharacterSnapshot character,
+            CalculatedLoadout loadout,
+            CombatScenario scenario,
+            SkillRotationDefinition rotation,
+            int trials,
+            int seed,
+            CancellationToken cancellationToken = default) =>
+            _inner.RunMonteCarloAsync(character, loadout, scenario, rotation, trials, seed, cancellationToken);
+    }
 }

@@ -84,6 +84,34 @@ public sealed class EquipmentStatCoverageTests
     }
 
     [Fact]
+    public void RetaliationFieldsAreTranslatedAndNoLongerReportedAsUnsupported()
+    {
+        var record = Record("retaliation", new Dictionary<string, double>
+        {
+            ["retaliationFireMin"] = 100,
+            ["retaliationFireMax"] = 200,
+            ["retaliationFireModifier"] = 50,
+            ["retaliationElementalMin"] = 90,
+            ["retaliationElementalMax"] = 90,
+            ["retaliationSlowPoisonMin"] = 10,
+            ["retaliationSlowPoisonDurationMin"] = 3,
+            ["retaliationTotalDamageModifier"] = 25,
+            ["retaliationDamageMultModifier"] = 10
+        });
+
+        var stats = GameStatTranslator.Translate([record]);
+
+        Assert.Equal(180, stats[StatKeys.RetaliationFlat("fire")]);
+        Assert.Equal(30, stats[StatKeys.RetaliationFlat("cold")]);
+        Assert.Equal(50, stats[StatKeys.RetaliationPercent("fire")]);
+        Assert.Equal(10, stats[StatKeys.RetaliationDot("acid")]);
+        Assert.Equal(30, stats[StatKeys.RetaliationDotTotal("acid")]);
+        Assert.Equal(25, stats["retaliation.total.percent"]);
+        Assert.Equal(10, stats["retaliation.total.multiplierPercent"]);
+        Assert.Empty(GameStatTranslator.FindUnsupportedCombatFields(record));
+    }
+
+    [Fact]
     public void UnknownCombatFieldIsNeverSilentlyAccepted()
     {
         var record = Record("future", new Dictionary<string, double>

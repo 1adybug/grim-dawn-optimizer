@@ -41,34 +41,40 @@ public sealed class CombatSimulator : ICombatSimulator
 
                 var attacks = SampleEventCount(rng, breakdown.AttacksPerSecond * duration);
                 var totalDamage = 0d;
+                var lifeStealEligibleDamage = 0d;
                 for (var attack = 0; attack < attacks; attack++)
                 {
                     if (rng.NextDouble() > breakdown.HitChance) continue;
                     var variance = 0.9 + rng.NextDouble() * 0.2;
                     var critical = rng.NextDouble() < breakdown.CritChance;
-                    totalDamage += breakdown.DamagePerLandedHit * variance * (critical ? breakdown.CritMultiplier : 1);
+                    var directDamage = breakdown.DamagePerLandedHit * variance * (critical ? breakdown.CritMultiplier : 1);
+                    totalDamage += directDamage;
+                    lifeStealEligibleDamage += directDamage;
 
                     foreach (var proc in breakdown.Procs)
                         if (rng.NextDouble() < proc.ChancePerAttack)
                             totalDamage += proc.Damage;
                 }
 
-                damageSamples[trial] = totalDamage / duration;
-
                 var incomingHits = SampleEventCount(rng, scenario.IncomingDamage.HitsPerSecond * duration);
                 var received = 0d;
+                var retaliationDamage = 0d;
                 for (var hit = 0; hit < incomingHits; hit++)
                 {
                     if (rng.NextDouble() > breakdown.EnemyHitChance) continue;
                     if (rng.NextDouble() < breakdown.AvoidanceChance) continue;
+                    retaliationDamage += breakdown.RetaliationDamagePerTrigger;
                     var damage = breakdown.DamageTakenPerLandedHit * (0.9 + rng.NextDouble() * 0.2);
                     if (rng.NextDouble() < breakdown.BlockChance)
                         damage = Math.Max(0, damage - breakdown.BlockAmount);
                     received += damage;
                 }
 
+                var activeDamagePerSecond = totalDamage / duration;
+                damageSamples[trial] = activeDamagePerSecond + retaliationDamage / duration;
                 var incomingPerSecond = received / duration;
-                var sustain = breakdown.HealthRegen + damageSamples[trial] * breakdown.EffectiveLifeSteal;
+                var sustain = breakdown.HealthRegen +
+                              lifeStealEligibleDamage / duration * breakdown.EffectiveLifeSteal;
                 survivalSamples[trial] = incomingPerSecond <= sustain + Epsilon
                     ? double.PositiveInfinity
                     : breakdown.Health / (incomingPerSecond - sustain);
@@ -80,11 +86,17 @@ public sealed class CombatSimulator : ICombatSimulator
             return new SimulationReport
             {
                 ExpectedDps = baseReport.ExpectedDps,
+                RetaliationDps = baseReport.RetaliationDps,
                 UnmitigatedDps = baseReport.UnmitigatedDps,
                 TimeToKillSeconds = baseReport.TimeToKillSeconds,
                 EffectiveHealth = baseReport.EffectiveHealth,
                 IncomingDps = baseReport.IncomingDps,
                 SustainPerSecond = baseReport.SustainPerSecond,
+                Health = baseReport.Health,
+                RawIncomingDps = baseReport.RawIncomingDps,
+                HealthRegenPerSecond = baseReport.HealthRegenPerSecond,
+                EffectiveLifeSteal = baseReport.EffectiveLifeSteal,
+                LifeStealEligibleDps = baseReport.LifeStealEligibleDps,
                 TimeToDeathSeconds = baseReport.TimeToDeathSeconds,
                 HitChance = baseReport.HitChance,
                 CritChance = baseReport.CritChance,
@@ -237,14 +249,12 @@ public sealed class CombatSimulator : ICombatSimulator
         }
 
         var targetCount = Math.Max(1, scenario.TargetCount);
-        var expectedDps = (weaponDps + procDps) * targetCount;
+        var activeExpectedDps = (weaponDps + procDps) * targetCount;
+        var lifeStealEligibleDps = rawDamagePerLandedHit * attacksPerSecond * hitAndCritFactor * targetCount;
         // Grim Dawn's target-free sheet value contains direct skill/weapon damage,
         // but no enemy DA exists to roll a crit against and random item procs are
-        // not treated as guaranteed DPS.  They remain in ExpectedDps above.
+        // not treated as guaranteed DPS. They remain in the active combat DPS.
         var unmitigatedDps = unmitigatedWeaponDps * targetCount;
-        var timeToKill = expectedDps <= Epsilon
-            ? double.PositiveInfinity
-            : Math.Max(1, scenario.EnemyHealth) * Math.Max(1, scenario.TargetCount) / expectedDps;
         var health = Math.Max(1, stats["health"]);
         var enemyHit = ResolveHitAndCrit(scenario.EnemyOffensiveAbility, stats["defensiveAbility"]).HitChance;
         var avoidance = Math.Clamp(stats["dodgeChance"] / 100d, 0, 0.8);
@@ -257,21 +267,32 @@ public sealed class CombatSimulator : ICombatSimulator
             ? Math.Clamp(stats["blockAbsorption"] / 100d, 0, 1)
             : 1d;
         var blockAmount = Math.Max(0, stats["blockAmount"]) * blockAbsorption;
+        var retaliationTriggerRate = Math.Max(0, scenario.IncomingDamage.HitsPerSecond) * enemyHit * (1 - avoidance);
+        var (retaliationDps, retaliationDamagePerTrigger) = ResolveRetaliation(
+            stats, scenario, retaliationTriggerRate);
+        var expectedDps = activeExpectedDps + retaliationDps;
+        var timeToKill = expectedDps <= Epsilon
+            ? double.PositiveInfinity
+            : Math.Max(1, scenario.EnemyHealth) * Math.Max(1, scenario.TargetCount) / expectedDps;
         var damageTakenPerHit = ResolveIncomingDamagePerHit(stats, scenario);
         var afterAvoidance = damageTakenPerHit * enemyHit * (1 - avoidance);
         var afterBlock = Math.Max(0, afterAvoidance - blockChance * Math.Min(blockAmount, afterAvoidance));
         var incomingDps = afterBlock * Math.Max(0, scenario.IncomingDamage.HitsPerSecond);
         var lifeSteal = Math.Clamp(stats["lifeSteal"] / 100d, 0, 1) * Math.Clamp(1 - scenario.EnemyLifeLeechResistance / 100d, 0, 1);
         var healthRegen = Math.Max(0, stats["healthRegen"]);
-        var sustain = healthRegen + expectedDps * lifeSteal;
+        // Passive retaliation is not attack damage and therefore cannot produce
+        // health through global attack-damage conversion.
+        var sustain = healthRegen + lifeStealEligibleDps * lifeSteal;
         var rawIncoming = RawIncomingPerHit(scenario) * Math.Max(0, scenario.IncomingDamage.HitsPerSecond);
-        var effectiveHealth = incomingDps <= Epsilon ? double.PositiveInfinity : health * rawIncoming / incomingDps;
-        var timeToDeath = incomingDps <= sustain + Epsilon ? double.PositiveInfinity : health / (incomingDps - sustain);
+        var netIncomingDps = incomingDps - sustain;
+        var effectiveHealth = netIncomingDps <= Epsilon ? double.PositiveInfinity : health * rawIncoming / netIncomingDps;
+        var timeToDeath = netIncomingDps <= Epsilon ? double.PositiveInfinity : health / netIncomingDps;
 
         return new CombatBreakdown(
-            expectedDps, unmitigatedDps, timeToKill, effectiveHealth, incomingDps, sustain, timeToDeath,
+            expectedDps, retaliationDps, unmitigatedDps, timeToKill, effectiveHealth, incomingDps, sustain, timeToDeath,
             attacksPerSecond, rawDamagePerLandedHit, hitChance, critChance, selectedSkillCritMultiplier,
-            enemyHit, avoidance, blockChance, blockAmount, damageTakenPerHit, health, healthRegen, lifeSteal, procModels);
+            enemyHit, avoidance, blockChance, blockAmount, damageTakenPerHit, retaliationDamagePerTrigger,
+            health, rawIncoming, healthRegen, lifeSteal, lifeStealEligibleDps, procModels);
     }
 
     private static IReadOnlyList<NormalizedWeaponPoolAttack> NormalizeWeaponPool(
@@ -363,6 +384,37 @@ public sealed class CombatSimulator : ICombatSimulator
         return total * Math.Max(0, 1 + totalDamage / 100d) * Math.Max(0, 1 + totalMultiplier / 100d);
     }
 
+    private static (double Dps, double DamagePerTrigger) ResolveRetaliation(
+        StatBlock stats,
+        CombatScenario scenario,
+        double triggerRate)
+    {
+        if (triggerRate <= Epsilon || stats["retaliation.flatProxy"] <= Epsilon) return (0, 0);
+
+        var directPerTrigger = 0d;
+        var sustainedDotDps = 0d;
+        var totalFactor = Math.Max(0, 1 + stats["retaliation.total.percent"] / 100d) *
+                          Math.Max(0, 1 + stats["retaliation.total.multiplierPercent"] / 100d);
+        foreach (var type in StatKeys.DamageTypes)
+        {
+            var typeFactor = Math.Max(0, 1 + stats[StatKeys.RetaliationPercent(type)] / 100d);
+            var direct = stats[StatKeys.RetaliationFlat(type)] * typeFactor * totalFactor;
+            directPerTrigger += ApplyEnemyMitigation(type, direct, scenario, stats);
+
+            var rawDot = stats[StatKeys.RetaliationDot(type)];
+            if (rawDot <= Epsilon) continue;
+            var dotFactor = Math.Max(0, 1 +
+                (stats[StatKeys.RetaliationPercent(type)] + stats[StatKeys.RetaliationDotPercent(type)]) / 100d);
+            var dot = ApplyEnemyMitigation(type, rawDot * dotFactor * totalFactor, scenario, stats);
+            var duration = Math.Max(1, stats[StatKeys.RetaliationDotTotal(type)] / rawDot);
+            var uptime = Math.Clamp(triggerRate * duration, 0, 1);
+            sustainedDotDps += dot * uptime;
+        }
+
+        var dps = directPerTrigger * triggerRate + sustainedDotDps;
+        return (dps, dps / triggerRate);
+    }
+
     private static double ResolveIncomingDamagePerHit(StatBlock stats, CombatScenario scenario)
     {
         var incoming = scenario.IncomingDamage;
@@ -406,11 +458,17 @@ public sealed class CombatSimulator : ICombatSimulator
     private static SimulationReport ToReport(CalculatedLoadout loadout, CombatBreakdown x) => new()
     {
         ExpectedDps = x.ExpectedDps,
+        RetaliationDps = x.RetaliationDps,
         UnmitigatedDps = x.UnmitigatedDps,
         TimeToKillSeconds = x.TimeToKillSeconds,
         EffectiveHealth = x.EffectiveHealth,
         IncomingDps = x.IncomingDps,
         SustainPerSecond = x.SustainPerSecond,
+        Health = x.Health,
+        RawIncomingDps = x.RawIncomingDps,
+        HealthRegenPerSecond = x.HealthRegen,
+        EffectiveLifeSteal = x.EffectiveLifeSteal,
+        LifeStealEligibleDps = x.LifeStealEligibleDps,
         TimeToDeathSeconds = x.TimeToDeathSeconds,
         HitChance = x.HitChance,
         CritChance = x.CritChance,
@@ -434,6 +492,7 @@ public sealed class CombatSimulator : ICombatSimulator
     private sealed record NormalizedWeaponPoolAttack(WeaponPoolAttackDefinition Attack, double ChanceFraction);
     private sealed record CombatBreakdown(
         double ExpectedDps,
+        double RetaliationDps,
         double UnmitigatedDps,
         double TimeToKillSeconds,
         double EffectiveHealth,
@@ -450,8 +509,11 @@ public sealed class CombatSimulator : ICombatSimulator
         double BlockChance,
         double BlockAmount,
         double DamageTakenPerLandedHit,
+        double RetaliationDamagePerTrigger,
         double Health,
+        double RawIncomingDps,
         double HealthRegen,
         double EffectiveLifeSteal,
+        double LifeStealEligibleDps,
         IReadOnlyList<ProcModel> Procs);
 }

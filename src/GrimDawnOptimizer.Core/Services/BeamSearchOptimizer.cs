@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using GrimDawnOptimizer.Core.Contracts;
@@ -27,11 +28,16 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
     private readonly ICharacterStatEngine _statEngine;
     private readonly ICombatSimulator _simulator;
+    private readonly int _maxDegreeOfParallelism;
 
-    public BeamSearchOptimizer(ICharacterStatEngine statEngine, ICombatSimulator simulator)
+    public BeamSearchOptimizer(
+        ICharacterStatEngine statEngine,
+        ICombatSimulator simulator,
+        int? maxDegreeOfParallelism = null)
     {
         _statEngine = statEngine;
         _simulator = simulator;
+        _maxDegreeOfParallelism = Math.Clamp(maxDegreeOfParallelism ?? Environment.ProcessorCount, 1, 16);
     }
 
     public async Task<OptimizationRun> OptimizeAsync(
@@ -98,7 +104,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             // budget before armor, rings and set interactions are ever visited.
             var slotDeadline = searchStart + TimeSpan.FromTicks(
                 (beamDeadline - searchStart).Ticks * iteration / TargetSlots.Length);
-            var next = new List<BeamState>(beam.Count * 8);
+            var next = new ConcurrentBag<BeamState>();
             var candidates = variantsBySlot.GetValueOrDefault(targetSlot, []);
             var expansionCandidates = DiversifiedLocalCandidates(candidates, 192);
 
@@ -116,38 +122,52 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
                 }
             }
 
-            foreach (var state in beam)
+            var slotEvaluated = 0;
+            Parallel.ForEach(beam, CreateParallelOptions(cancellationToken), (state, loopState) =>
             {
-                if (watch.Elapsed >= slotDeadline) break;
+                if (watch.Elapsed >= slotDeadline)
+                {
+                    loopState.Stop();
+                    return;
+                }
                 foreach (var variant in expansionCandidates)
                 {
-                    if (watch.Elapsed >= slotDeadline) break;
+                    if (watch.Elapsed >= slotDeadline)
+                    {
+                        loopState.Stop();
+                        break;
+                    }
                     if (state.Slots.Values.Any(x => x.Item.Id == variant.Item.Id)) continue;
                     if (targetSlot == EquipmentSlot.OffHand &&
                         state.Slots.TryGetValue(EquipmentSlot.MainHand, out var weapon) && weapon.Item.IsTwoHanded) continue;
 
                     var slots = new Dictionary<EquipmentSlot, LoadoutVariant>(state.Slots) { [targetSlot] = variant };
                     var result = Evaluate(character, slots, catalog, profile, scoring);
-                    evaluated++;
+                    Interlocked.Increment(ref slotEvaluated);
                     var heuristic = scoring.PartialHeuristic(result);
                     next.Add(new BeamState(slots, heuristic));
-                    if (heuristic > bestScore) bestScore = heuristic;
                 }
-            }
+            });
+            evaluated += slotEvaluated;
 
             if (next.Count == 0) break;
 
-            beam = SelectDiverseBeam(next, beamWidth);
+            var nextStates = next.ToArray();
+            bestScore = Math.Max(bestScore, nextStates.Max(x => x.Heuristic));
+            beam = SelectDiverseBeam(nextStates, beamWidth);
 
             progress?.Report(new SearchProgress(
                 "BeamSearch", evaluated, iteration, bestScore, watch.Elapsed,
-                $"已完成 {targetSlot}，保留 {beam.Count:N0} 个候选"));
+                $"已完成 {targetSlot}，保留 {beam.Count:N0} 个候选 · {_maxDegreeOfParallelism} 线程"));
         }
 
-        var complete = beam
+        var completedSlots = beam
             .Select(state => CompleteLoadout(state.Slots, variantsBySlot, currentSlots))
-            .Select(slots => Evaluate(character, slots, catalog, profile, scoring))
-            .ToList();
+            .ToArray();
+        var complete = ParallelMap(
+            completedSlots,
+            slots => Evaluate(character, slots, catalog, profile, scoring),
+            cancellationToken).ToList();
         evaluated += complete.Count;
 
         if (currentSlots.Count > 0)
@@ -213,7 +233,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         // target-free comparison that strips every component and augment. This lets
         // the player equip the physical items first and compare the game sheet before
         // committing attachments.
-        foreach (var result in results)
+        Parallel.ForEach(results, CreateParallelOptions(cancellationToken), result =>
         {
             var equipmentOnlySlots = result.Loadout.Slots.ToDictionary(
                 x => x.Key,
@@ -232,25 +252,34 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
                 equipmentOnlyWeaponRaw,
                 profile);
             result.EquipmentOnlyUnmitigatedDps = equipmentOnlySimulation.UnmitigatedDps;
-        }
+        });
 
         for (var i = 0; i < results.Count; i++)
-        {
             results[i].Rank = i + 1;
-            cancellationToken.ThrowIfCancellationRequested();
-            progress?.Report(new SearchProgress("MonteCarlo", evaluated, i + 1, bestScore, watch.Elapsed, $"复核候选 {i + 1}/{results.Count}"));
-            var seed = StableSeed(profile.Name, Signature(results[i].Loadout.Slots));
-            var finalRotation = ResolveRotation(character, catalog, profile, results[i].Loadout.Slots);
-            results[i].Simulation = await _simulator.RunMonteCarloAsync(
-                character, results[i].Loadout, profile.Scenario, finalRotation,
-                Math.Clamp(profile.MonteCarloTrials, 500, 10_000), seed, cancellationToken);
+
+        var reviewed = 0;
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, results.Count),
+            CreateParallelOptions(cancellationToken),
+            async (i, token) =>
+        {
+            var result = results[i];
+            var seed = StableSeed(profile.Name, Signature(result.Loadout.Slots));
+            var finalRotation = ResolveRotation(character, catalog, profile, result.Loadout.Slots);
+            result.Simulation = await _simulator.RunMonteCarloAsync(
+                character, result.Loadout, profile.Scenario, finalRotation,
+                Math.Clamp(profile.MonteCarloTrials, 500, 10_000), seed, token);
             var finalWeaponSimulation = _simulator.Simulate(
                 character,
-                results[i].Loadout,
+                result.Loadout,
                 profile.Scenario,
-                ResolveWeaponAttackRotation(character, catalog, results[i].Loadout.Slots));
-            results[i].Simulation = ApplyDpsCalibration(results[i].Simulation, finalWeaponSimulation, profile);
-        }
+                ResolveWeaponAttackRotation(character, catalog, result.Loadout.Slots));
+            result.Simulation = ApplyDpsCalibration(result.Simulation, finalWeaponSimulation, profile);
+            var completed = Interlocked.Increment(ref reviewed);
+            progress?.Report(new SearchProgress(
+                "MonteCarlo", evaluated, completed, bestScore, watch.Elapsed,
+                $"并行复核候选 {completed}/{results.Count} · {_maxDegreeOfParallelism} 线程"));
+        });
 
         watch.Stop();
         return new OptimizationRun
@@ -259,9 +288,10 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             EvaluatedCandidates = evaluated,
             Iterations = iteration,
             Elapsed = watch.Elapsed,
-            StopReason = searchReachedBudget
+            StopReason = (searchReachedBudget
                 ? "达到搜索时间预算；已完成过渡组合评分并返回当前最佳候选"
-                : "候选空间与过渡组合已完成近似搜索"
+                : "候选空间与过渡组合已完成近似搜索") +
+                $"；并行 {_maxDegreeOfParallelism} 线程"
         };
     }
 
@@ -333,45 +363,72 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             TransitionCombinationCount(currentSlots, parent.Loadout.Slots));
         if (totalCombinations == 0) return [];
 
-        var seenPlans = new HashSet<string>(StringComparer.Ordinal);
+        var seenPlans = new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
         var topByEquipment = new Dictionary<string, LoadoutResult>(StringComparer.Ordinal);
+        var topGate = new object();
+        var transitionBudget = TimeSpan.FromSeconds(Math.Clamp(profile.SearchBudgetSeconds * 0.25, 3, 45));
+        var transitionDeadline = watch.Elapsed + transitionBudget;
         long generated = 0;
+        var evaluatedInPhase = 0;
         var validUnique = 0;
+        var reachedTransitionDeadline = 0;
+        var evaluatedBeforePhase = evaluated;
+        var transitionCandidates = parents.SelectMany(parent =>
+            EnumerateTransitionLoadouts(currentSlots, parent.Loadout.Slots));
 
-        foreach (var parent in parents)
-        foreach (var slots in EnumerateTransitionLoadouts(currentSlots, parent.Loadout.Slots))
+        Parallel.ForEach(
+            transitionCandidates,
+            CreateParallelOptions(cancellationToken),
+            (slots, loopState) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            generated++;
-
-            var planSignature = Signature(slots);
-            if (seenPlans.Add(planSignature))
+            if (watch.Elapsed >= transitionDeadline)
             {
-                evaluated++;
+                Interlocked.Exchange(ref reachedTransitionDeadline, 1);
+                loopState.Stop();
+                return;
+            }
+
+            var generatedNow = Interlocked.Increment(ref generated);
+            var planSignature = Signature(slots);
+            if (seenPlans.TryAdd(planSignature, 0))
+            {
+                Interlocked.Increment(ref evaluatedInPhase);
                 var calculated = _statEngine.Calculate(character, slots, catalog);
                 if (calculated.IsValid)
                 {
                     var result = EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
-                    validUnique++;
-                    RetainTopResult(topByEquipment, result, resultCount);
+                    Interlocked.Increment(ref validUnique);
+                    lock (topGate)
+                    {
+                        RetainTopResult(topByEquipment, result, resultCount);
+                    }
                 }
             }
 
-            if (generated % 512 == 0)
-                progress?.Report(new SearchProgress(
-                    "TransitionExpansion", evaluated, parents.Count,
-                    topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()
-                        ?.TierScores.FirstOrDefault() ?? double.NegativeInfinity,
-                    watch.Elapsed,
-                    $"组合评分 {generated:N0}/{totalCombinations:N0} · {validUnique:N0} 套合法唯一方案"));
-        }
+            if (generatedNow % 512 == 0)
+            {
+                lock (topGate)
+                {
+                    progress?.Report(new SearchProgress(
+                        "TransitionExpansion", evaluatedBeforePhase + Volatile.Read(ref evaluatedInPhase), parents.Count,
+                        topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()
+                            ?.TierScores.FirstOrDefault() ?? double.NegativeInfinity,
+                        watch.Elapsed,
+                        $"并行组合评分 {generatedNow:N0}/{totalCombinations:N0} · {Volatile.Read(ref validUnique):N0} 套合法唯一方案 · {_maxDegreeOfParallelism} 线程"));
+                }
+            }
+        });
+        evaluated += evaluatedInPhase;
+        var deadlineReached = Volatile.Read(ref reachedTransitionDeadline) != 0;
 
         progress?.Report(new SearchProgress(
             "TransitionExpansion", evaluated, parents.Count,
             topByEquipment.Values.Order(LoadoutResultComparer.Instance).FirstOrDefault()?.TierScores.FirstOrDefault()
                 ?? double.NegativeInfinity,
             watch.Elapsed,
-            $"组合评分完成：{generated:N0} 次生成 · {validUnique:N0} 套合法唯一方案"));
+            deadlineReached
+                ? $"达到组合阶段时间上限：{generated:N0}/{totalCombinations:N0} 次生成 · {validUnique:N0} 套合法唯一方案"
+                : $"组合评分完成：{generated:N0} 次生成 · {validUnique:N0} 套合法唯一方案"));
 
         return topByEquipment.Values.Order(LoadoutResultComparer.Instance).ToList();
     }
@@ -815,6 +872,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             score += sign * rule.Weight * value / Math.Max(1e-9, benchmark);
         }
         score += StatKeys.DamageTypes.Sum(x => attachment.Stats[StatKeys.DamageFlat(x)] + attachment.Stats[StatKeys.WeaponDamage(x)]) * 10;
+        score += RetaliationProxyDamage(attachment.Stats, profile.Scenario) * 10;
         score += attachment.Stats["health"] + attachment.Stats["offensiveAbility"] * 3 + attachment.Stats["defensiveAbility"] * 2;
         return score;
     }
@@ -844,9 +902,15 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             score += sign * rule.Weight * value / Math.Max(1e-9, benchmark);
         }
         score += StatKeys.DamageTypes.Sum(x => stats[StatKeys.DamageFlat(x)] + stats[StatKeys.WeaponDamage(x)]) * 10;
+        score += RetaliationProxyDamage(stats, profile.Scenario) * 10;
         score += stats["health"] + stats["offensiveAbility"] * 3 + stats["defensiveAbility"] * 2;
         return score;
     }
+
+    private static double RetaliationProxyDamage(StatBlock stats, CombatScenario scenario) =>
+        StatKeys.DamageTypes.Sum(type =>
+            stats[StatKeys.RetaliationFlat(type)] + stats[StatKeys.RetaliationDotTotal(type)]) *
+        Math.Max(0, scenario.IncomingDamage.HitsPerSecond);
 
     private static string InteractionSignature(LoadoutVariant variant)
     {
@@ -854,7 +918,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         var interactions = string.Join(',', variant.CombinedStats.Values.Where(x =>
                 x.Key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
                 x.Key.StartsWith("skillLevel.", StringComparison.OrdinalIgnoreCase) ||
-                x.Key.StartsWith("skillModifier.", StringComparison.OrdinalIgnoreCase))
+                x.Key.StartsWith("skillModifier.", StringComparison.OrdinalIgnoreCase) ||
+                x.Key.Equals("retaliation.flatProxy", StringComparison.OrdinalIgnoreCase) ||
+                x.Key.Equals("retaliation.percentProxy", StringComparison.OrdinalIgnoreCase))
             .Select(x => $"{x.Key}:{x.Value.ToString("R", CultureInfo.InvariantCulture)}").Order(StringComparer.Ordinal));
         var itemMechanics = $"{variant.Item.BaseRecord}|{variant.Item.PrefixRecord}|{variant.Item.SuffixRecord}|{variant.Item.Seed}";
         return $"{itemMechanics}|{variant.Item.SetId}|{effects}|{interactions}|{variant.Item.IsTwoHanded}";
@@ -997,20 +1063,43 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     private static SimulationReport ScaleDps(SimulationReport report, double factor)
     {
         if (Math.Abs(factor - 1) < 1e-9) return report;
+        var activeDps = Math.Max(0, report.ExpectedDps - report.RetaliationDps);
+        var calibratedActiveDps = activeDps * factor;
+        var expectedDps = calibratedActiveDps + report.RetaliationDps;
+        var lifeStealEligibleDps = report.LifeStealEligibleDps * factor;
+        var sustain = report.HealthRegenPerSecond + lifeStealEligibleDps * report.EffectiveLifeSteal;
+        var netIncomingDps = report.IncomingDps - sustain;
+        var effectiveHealth = netIncomingDps <= 1e-9
+            ? double.PositiveInfinity
+            : report.Health * report.RawIncomingDps / netIncomingDps;
+        var timeToDeath = netIncomingDps <= 1e-9
+            ? double.PositiveInfinity
+            : report.Health / netIncomingDps;
+        var timeToKill = expectedDps <= 1e-9 || !double.IsFinite(report.TimeToKillSeconds)
+            ? report.TimeToKillSeconds
+            : report.TimeToKillSeconds * report.ExpectedDps / expectedDps;
+        static double CalibrateSample(double sample, double retaliationDps, double calibration) =>
+            Math.Max(0, sample - retaliationDps) * calibration + retaliationDps;
         return new SimulationReport
         {
-            ExpectedDps = report.ExpectedDps * factor,
+            ExpectedDps = expectedDps,
+            RetaliationDps = report.RetaliationDps,
             UnmitigatedDps = report.UnmitigatedDps * factor,
-            TimeToKillSeconds = double.IsFinite(report.TimeToKillSeconds) ? report.TimeToKillSeconds / factor : report.TimeToKillSeconds,
-            EffectiveHealth = report.EffectiveHealth,
+            TimeToKillSeconds = timeToKill,
+            EffectiveHealth = effectiveHealth,
             IncomingDps = report.IncomingDps,
-            SustainPerSecond = report.SustainPerSecond,
-            TimeToDeathSeconds = report.TimeToDeathSeconds,
+            SustainPerSecond = sustain,
+            Health = report.Health,
+            RawIncomingDps = report.RawIncomingDps,
+            HealthRegenPerSecond = report.HealthRegenPerSecond,
+            EffectiveLifeSteal = report.EffectiveLifeSteal,
+            LifeStealEligibleDps = lifeStealEligibleDps,
+            TimeToDeathSeconds = timeToDeath,
             HitChance = report.HitChance,
             CritChance = report.CritChance,
-            MonteCarloDpsMean = report.MonteCarloDpsMean * factor,
-            MonteCarloDpsLow95 = report.MonteCarloDpsLow95 * factor,
-            MonteCarloDpsHigh95 = report.MonteCarloDpsHigh95 * factor,
+            MonteCarloDpsMean = CalibrateSample(report.MonteCarloDpsMean, report.RetaliationDps, factor),
+            MonteCarloDpsLow95 = CalibrateSample(report.MonteCarloDpsLow95, report.RetaliationDps, factor),
+            MonteCarloDpsHigh95 = CalibrateSample(report.MonteCarloDpsHigh95, report.RetaliationDps, factor),
             MonteCarloSurvivalMean = report.MonteCarloSurvivalMean,
             UnsupportedEffects = report.UnsupportedEffects
         };
@@ -1018,6 +1107,23 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
     private static string Signature(IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
         string.Join(';', slots.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value.Item.Id}:{x.Value.Component?.Id}:{x.Value.Augment?.Id}"));
+
+    private ParallelOptions CreateParallelOptions(CancellationToken cancellationToken) => new()
+    {
+        MaxDegreeOfParallelism = _maxDegreeOfParallelism,
+        CancellationToken = cancellationToken
+    };
+
+    private TResult[] ParallelMap<TSource, TResult>(
+        IReadOnlyList<TSource> source,
+        Func<TSource, TResult> selector,
+        CancellationToken cancellationToken)
+    {
+        var result = new TResult[source.Count];
+        Parallel.For(0, source.Count, CreateParallelOptions(cancellationToken), index =>
+            result[index] = selector(source[index]));
+        return result;
+    }
 
     private static string EquipmentSignature(IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
         string.Join(';', slots.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value.Item.Id}"));

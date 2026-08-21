@@ -309,6 +309,7 @@
                                 <StackPanel Grid.Column="2">
                                     <TextBlock Text="计入护甲/抗性 DPS" Style="{StaticResource Label}" />
                                     <TextBlock Text="{Binding Dps}" Style="{StaticResource MetricValue}" />
+                                    <TextBlock Text="{Binding RetaliationDps, StringFormat=其中反伤 {0}}" Foreground="#E7A16A" FontSize="10" />
                                     <TextBlock Text="{Binding MonteCarloRange}" Foreground="{StaticResource Muted}" FontSize="10" />
                                     <TextBlock Text="{Binding TimeToKill, StringFormat=击杀约 {0}}" Foreground="{StaticResource Muted}" FontSize="10" />
                                 </StackPanel>

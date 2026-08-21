@@ -171,6 +171,26 @@ internal static class GameStatTranslator
             result.Add(StatKeys.DamageDotPercent(type),
                 record.NumericValues[$"offensiveSlow{gameType}Modifier"] *
                 ChanceFactor(record, $"offensiveSlow{gameType}ModifierChance"));
+
+            var retaliationChance = RetaliationChanceFactor(record, $"retaliation{gameType}");
+            var retaliation = Average(record, $"retaliation{gameType}") * retaliationChance;
+            var retaliationModifier = record.NumericValues[$"retaliation{gameType}Modifier"] *
+                                      RetaliationChanceFactor(record, $"retaliation{gameType}Modifier");
+            result.Add(StatKeys.RetaliationFlat(type), retaliation);
+            result.Add(StatKeys.RetaliationPercent(type), retaliationModifier);
+            result.Add("retaliation.flatProxy", retaliation);
+            result.Add("retaliation.percentProxy", retaliationModifier);
+
+            var retaliationDotChance = RetaliationChanceFactor(record, $"retaliationSlow{gameType}");
+            var retaliationDot = Average(record, $"retaliationSlow{gameType}") * retaliationDotChance;
+            var retaliationDotDuration = Math.Max(1, Average(record, $"retaliationSlow{gameType}Duration"));
+            result.Add(StatKeys.RetaliationDot(type), retaliationDot);
+            result.Add(StatKeys.RetaliationDotTotal(type), retaliationDot * retaliationDotDuration);
+            var retaliationDotModifier = record.NumericValues[$"retaliationSlow{gameType}Modifier"] *
+                                         RetaliationChanceFactor(record, $"retaliationSlow{gameType}Modifier");
+            result.Add(StatKeys.RetaliationDotPercent(type), retaliationDotModifier);
+            result.Add("retaliation.flatProxy", retaliationDot * retaliationDotDuration);
+            result.Add("retaliation.percentProxy", retaliationDotModifier);
         }
 
         var elementalMinimum = record.NumericValues["offensiveElementalMin"];
@@ -190,9 +210,28 @@ internal static class GameStatTranslator
             result.Add(StatKeys.Resistance(type), elementalResistance * elementalResistanceChance);
         }
 
+        var retaliationElemental = Average(record, "retaliationElemental") *
+                                   RetaliationChanceFactor(record, "retaliationElemental");
+        var retaliationElementalModifier = record.NumericValues["retaliationElementalModifier"] *
+                                           RetaliationChanceFactor(record, "retaliationElementalModifier");
+        foreach (var type in new[] { "fire", "cold", "lightning" })
+        {
+            result.Add(StatKeys.RetaliationFlat(type), retaliationElemental / 3d);
+            result.Add(StatKeys.RetaliationPercent(type), retaliationElementalModifier);
+        }
+        result.Add("retaliation.flatProxy", retaliationElemental);
+        result.Add("retaliation.percentProxy", retaliationElementalModifier);
+
         var totalDamage = record.NumericValues["offensiveTotalDamageModifier"] *
                           ChanceFactor(record, "offensiveTotalDamageModifierChance");
         result.Add("damage.total.percent", totalDamage);
+        var retaliationTotalModifier = record.NumericValues["retaliationTotalDamageModifier"] *
+                                       RetaliationChanceFactor(record, "retaliationTotalDamageModifier");
+        var retaliationDamageMultiplier = record.NumericValues["retaliationDamageMultModifier"] *
+                                          RetaliationChanceFactor(record, "retaliationDamageMultModifier");
+        result.Add("retaliation.total.percent", retaliationTotalModifier);
+        result.Add("retaliation.total.multiplierPercent", retaliationDamageMultiplier);
+        result.Add("retaliation.percentProxy", retaliationTotalModifier + retaliationDamageMultiplier);
 
         var totalSpeed = record.NumericValues["characterTotalSpeedModifier"] *
                          ChanceFactor(record, "characterTotalSpeedModifierChance");
@@ -242,6 +281,9 @@ internal static class GameStatTranslator
         var chance = record.NumericValues[key];
         return chance > 0 ? Math.Clamp(chance / 100d, 0, 1) : 1;
     }
+
+    private static double RetaliationChanceFactor(GameRecord record, string fieldPrefix) =>
+        ChanceFactor(record, fieldPrefix + "Chance") * ChanceFactor(record, "retaliationGlobalChance");
 
     private static string ChanceKeyFor(string key) =>
         key.EndsWith("Min", StringComparison.OrdinalIgnoreCase) ? key[..^3] + "Chance" : key + "Chance";
@@ -305,6 +347,11 @@ internal static class GameStatTranslator
         if (Simple.Keys.Any(simple => ChanceKeyFor(simple).Equals(key, StringComparison.OrdinalIgnoreCase))) return true;
         if (key is "characterTotalSpeedModifierChance" or "defensiveAllResistanceChance") return true;
         if (key.StartsWith("conversion", StringComparison.OrdinalIgnoreCase)) return true;
+        if (key.Equals("retaliationGlobalChance", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("retaliationTotalDamageModifier", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("retaliationTotalDamageModifierChance", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("retaliationDamageMultModifier", StringComparison.OrdinalIgnoreCase) ||
+            key.Equals("retaliationDamageMultModifierChance", StringComparison.OrdinalIgnoreCase)) return true;
         foreach (var gameType in new[] { "Total", "Physical", "Elemental" })
         foreach (var reductionType in new[] { "Absolute", "Percent" })
         {
@@ -335,6 +382,19 @@ internal static class GameStatTranslator
                 key.Equals($"defensive{gameType}Resistance", StringComparison.OrdinalIgnoreCase) ||
                 key.Equals($"defensive{gameType}ResistanceChance", StringComparison.OrdinalIgnoreCase) ||
                 key.Equals($"defensive{gameType}MaxResist", StringComparison.OrdinalIgnoreCase)) return true;
+
+            if (key.Equals($"retaliation{gameType}Min", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliation{gameType}Max", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliation{gameType}Chance", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliation{gameType}Modifier", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliation{gameType}ModifierChance", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}Min", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}Max", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}Chance", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}DurationMin", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}DurationMax", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}Modifier", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals($"retaliationSlow{gameType}ModifierChance", StringComparison.OrdinalIgnoreCase)) return true;
         }
         return false;
     }

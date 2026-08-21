@@ -45,6 +45,7 @@ public sealed class ResultViewModel
     public int Rank => Model.Rank;
     public string Title => $"候选 {Rank:00}";
     public string Dps => FormatNumber(Model.Simulation.ExpectedDps);
+    public string RetaliationDps => FormatNumber(Model.Simulation.RetaliationDps);
     public string UnmitigatedDps => FormatNumber(Model.Simulation.UnmitigatedDps);
     public string EquipmentOnlyUnmitigatedDps => FormatNumber(Model.EquipmentOnlyUnmitigatedDps);
     public string TimeToKill => double.IsPositiveInfinity(Model.Simulation.TimeToKillSeconds) ? "∞" : $"{Model.Simulation.TimeToKillSeconds:0.0}s";

@@ -19,6 +19,11 @@ public static class StatKeys
     public static string DamageDot(string damageType) => $"damage.{damageType}.dot";
     public static string DamageDotPercent(string damageType) => $"damage.{damageType}.dotPercent";
     public static string WeaponDamage(string damageType) => $"weaponDamage.{damageType}";
+    public static string RetaliationFlat(string damageType) => $"retaliation.{damageType}.flat";
+    public static string RetaliationPercent(string damageType) => $"retaliation.{damageType}.percent";
+    public static string RetaliationDot(string damageType) => $"retaliation.{damageType}.dot";
+    public static string RetaliationDotTotal(string damageType) => $"retaliation.{damageType}.dotTotal";
+    public static string RetaliationDotPercent(string damageType) => $"retaliation.{damageType}.dotPercent";
 }
 
 public sealed class CharacterStatEngine : ICharacterStatEngine

@@ -171,6 +171,52 @@ public sealed class CombatSimulatorTests
     }
 
     [Fact]
+    public void RetaliationContributesToBossDpsUsingBossHitRateAndResistance()
+    {
+        var stats = Stats(
+            ("health", 10_000), ("defensiveAbility", 2_800),
+            (StatKeys.RetaliationFlat("fire"), 100),
+            ("retaliation.flatProxy", 100),
+            ("retaliation.total.percent", 100),
+            ("lifeSteal", 100));
+        var scenario = Scenario();
+        scenario.IncomingDamage = scenario.IncomingDamage with { HitsPerSecond = 2 };
+        scenario.EnemyResistances["fire"] = 50;
+
+        var report = Simulate(stats, scenario);
+
+        // Equal OA/DA gives the boss 90% hit chance: 2 * 0.9 triggers/s,
+        // with 200 retaliation reduced to 100 by the boss's fire resistance.
+        Assert.Equal(180, report.RetaliationDps, 8);
+        Assert.Equal(report.RetaliationDps, report.ExpectedDps, 8);
+        Assert.Equal(0, report.UnmitigatedDps, 8);
+        Assert.Equal(0, report.SustainPerSecond, 8);
+    }
+
+    [Fact]
+    public void BossAdjustedLifeStealContributesToEffectiveHealthCompletion()
+    {
+        var baseline = Stats(
+            ("health", 10_000), ("defensiveAbility", 2_800), ("offensiveAbility", 3_000),
+            (StatKeys.WeaponDamage("physical"), 1_000));
+        var withLifeSteal = baseline.Clone();
+        withLifeSteal.Set("lifeSteal", 10);
+        var scenario = Scenario();
+        scenario.EnemyLifeLeechResistance = 50;
+
+        var without = Simulate(baseline, scenario);
+        var with = Simulate(withLifeSteal, scenario);
+
+        Assert.Equal(with.ExpectedDps * 0.05, with.SustainPerSecond, 8);
+        Assert.True(with.EffectiveHealth > without.EffectiveHealth);
+        Assert.True(with.TimeToDeathSeconds > without.TimeToDeathSeconds);
+
+        scenario.EnemyLifeLeechResistance = 100;
+        var immuneBoss = Simulate(withLifeSteal, scenario);
+        Assert.Equal(without.EffectiveHealth, immuneBoss.EffectiveHealth, 8);
+    }
+
+    [Fact]
     public async Task MonteCarloIsReproducibleForFixedSeed()
     {
         var character = Character(Stats(

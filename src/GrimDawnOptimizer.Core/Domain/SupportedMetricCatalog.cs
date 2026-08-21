@@ -17,9 +17,9 @@ public static class SupportedMetricCatalog
     private static readonly Definition[] Definitions =
     [
         new("dps", "对 BOSS 输出完成度",
-            "计入武器、技能、伤害词条、OA、命中、暴击、攻速/施法速度、触发，以及目标护甲和抗性后的最终持续输出。", 1),
+            "计入武器、技能、反伤、伤害词条、OA、命中、暴击、攻速/施法速度、触发，以及同级 BOSS 的攻击频率、护甲和抗性后的最终持续输出。", 1),
         new("effectiveHealth", "综合有效生命完成度",
-            "计入生命、十类抗性、护甲与吸收、DA、闪避和格挡后的最终承伤能力；使用十种伤害类型均衡的承伤靶子。", 1)
+            "计入生命、十类抗性、护甲与吸收、DA、闪避、格挡、回复，以及按同级 BOSS 吸血抗性折算后的有效吸血；使用十种伤害类型均衡的承伤靶子。", 1)
     ];
 
     public static IReadOnlyList<string> Keys => Definitions.Select(x => x.Key).ToArray();
