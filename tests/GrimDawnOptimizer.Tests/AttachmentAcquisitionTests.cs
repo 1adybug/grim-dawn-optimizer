@@ -147,9 +147,14 @@ public sealed class AttachmentAcquisitionTests
         Assert.DoesNotContain(available, x => x.Id == "unknown");
 
         var locked = new CharacterSnapshot { Name = "test", SaveFilePath = "test.gdc", Level = 100 };
-        Assert.Collection(
-            new GameDataSource().GetUnlockedAttachments(locked, catalog),
-            x => Assert.Equal("basic-component", x.Id));
+        var lockedAvailable = new GameDataSource().GetUnlockedAttachments(locked, catalog);
+        var availableBasicComponent = Assert.Single(lockedAvailable);
+        Assert.Equal("basic-component", availableBasicComponent.Id);
+        Assert.True(BeamSearchOptimizer.IsAttachmentCompatible(
+            availableBasicComponent,
+            Item("hands", EquipmentSlot.Hands),
+            locked,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)));
     }
 
     [Fact]
@@ -335,6 +340,9 @@ public sealed class AttachmentAcquisitionTests
         Kind = kind,
         LevelRequirement = 1,
         CompatibleSlots = new HashSet<EquipmentSlot> { EquipmentSlot.Hands },
+        RequiredFormula = sources.FirstOrDefault(x => x.Kind == AttachmentAcquisitionKind.Blacksmith)?.FormulaRecord ?? string.Empty,
+        RequiredFaction = sources.FirstOrDefault(x => x.Kind == AttachmentAcquisitionKind.FactionVendor)?.FactionReputationKey ?? string.Empty,
+        RequiredReputation = sources.FirstOrDefault(x => x.Kind == AttachmentAcquisitionKind.FactionVendor)?.RequiredReputation ?? 0,
         AcquisitionSources = sources
     };
 

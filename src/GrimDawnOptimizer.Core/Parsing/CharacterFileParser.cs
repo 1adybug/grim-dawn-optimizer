@@ -116,7 +116,17 @@ internal sealed class CharacterFileParser
         _ = reader.ReadBoolean();
         for (var index = 0; index < 2; index++)
         {
-            var item = ReadItem(reader, version);
+            RawItem item;
+            try
+            {
+                item = ReadItem(reader, version);
+            }
+            catch (Exception ex) when (ex is EndOfStreamException or InvalidDataException or OverflowException)
+            {
+                throw new InvalidDataException(
+                    $"武器套装读取失败（背包版本 {version}，套装 {setIndex + 1}，槽位 {index + 1}，偏移 {reader.Position}）",
+                    ex);
+            }
             _ = reader.ReadBoolean();
             item.SourceKind = isActive ? ItemSourceKind.Equipped : ItemSourceKind.AlternateWeaponSet;
             item.ContainerIndex = setIndex;
@@ -305,20 +315,20 @@ internal sealed class CharacterFileParser
             ComponentSeed = unchecked((uint)reader.ReadInt32()),
             AugmentRecord = reader.ReadString()
         };
-        if (containerVersion >= 11)
+
+        // Since item version 8, the ascendant affixes are stored after the
+        // augment level and seed, not immediately after the augment record.
+        item.Unknown = reader.ReadInt32();
+        item.AugmentSeed = unchecked((uint)reader.ReadInt32());
+        if (containerVersion >= 8)
         {
             item.AscendantPrefixRecord = reader.ReadString();
             item.AscendantSuffixRecord = reader.ReadString();
         }
-        item.Unknown = reader.ReadInt32();
-        item.AugmentSeed = unchecked((uint)reader.ReadInt32());
         item.Unknown2 = reader.ReadInt32();
         item.StackCount = reader.ReadInt32();
-        if (containerVersion >= 11)
-        {
-            item.AsterkarnUnknown = reader.ReadInt32();
-            item.AsterkarnUnknown2 = reader.ReadInt32();
-        }
+        if (containerVersion >= 8) item.AsterkarnUnknown = reader.ReadInt32();
+        if (containerVersion >= 11) item.AsterkarnUnknown2 = reader.ReadInt32();
         return item;
     }
 

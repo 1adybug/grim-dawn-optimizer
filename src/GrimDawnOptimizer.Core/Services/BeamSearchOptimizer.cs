@@ -619,7 +619,12 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         if (attachment.CompatibleItemQualifiers.Count > 0 &&
             (string.IsNullOrWhiteSpace(item.AttachmentQualifier) ||
              !attachment.CompatibleItemQualifiers.Contains(item.AttachmentQualifier))) return false;
-        if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFormula) && !character.KnownFormulas.Contains(attachment.RequiredFormula)) return false;
+        var hasAlwaysAvailableFormula = attachment.AcquisitionSources.Any(source =>
+            source.Kind == AttachmentAcquisitionKind.Blacksmith && source.IsAlwaysAvailable);
+        if (!isOwned &&
+            !hasAlwaysAvailableFormula &&
+            !string.IsNullOrWhiteSpace(attachment.RequiredFormula) &&
+            !character.KnownFormulas.Contains(attachment.RequiredFormula)) return false;
         if (!isOwned && !string.IsNullOrWhiteSpace(attachment.RequiredFaction) &&
             character.FactionReputation.GetValueOrDefault(attachment.RequiredFaction) < attachment.RequiredReputation) return false;
         return true;

@@ -47,6 +47,24 @@ public sealed class ParserGoldenTests
     }
 
     [Fact]
+    public void CharacterVersionElevenReadsItemsAndSkillsWithoutFieldMisalignment()
+    {
+        using var fixture = new TemporaryFixture();
+        var path = fixture.Write("player.gdc", BuildCharacter(inventoryVersion: 11));
+
+        var character = new CharacterFileParser().Parse(path);
+
+        Assert.Equal(100, character.Level);
+        var item = Assert.Single(character.Items, x => x.BaseRecord == "records/items/gearhands/test.dbr");
+        Assert.Equal(37, item.Unknown);
+        Assert.Equal(0x50607080u, item.AugmentSeed);
+        Assert.Equal("records/items/ascendant/prefix.dbr", item.AscendantPrefixRecord);
+        Assert.Equal("records/items/ascendant/suffix.dbr", item.AscendantSuffixRecord);
+        Assert.Contains(character.Skills, x => x.Record == "records/skills/playerclass/test.dbr" && x.Level == 12);
+        Assert.Equal("records/skills/playerclass/test.dbr", character.PrimarySkillRecord);
+    }
+
+    [Fact]
     public void TransferVersionNineReadsAsterkarnFieldsAndItemLocation()
     {
         using var fixture = new TemporaryFixture();
@@ -58,6 +76,9 @@ public sealed class ParserGoldenTests
         var item = Assert.Single(items);
         Assert.Equal("records/items/gearhead/test.dbr", item.BaseRecord);
         Assert.Equal(0xDEADBEEFu, item.Seed);
+        Assert.Equal(0x50607080u, item.AugmentSeed);
+        Assert.Equal("records/items/ascendant/prefix.dbr", item.AscendantPrefixRecord);
+        Assert.Equal("records/items/ascendant/suffix.dbr", item.AscendantSuffixRecord);
         Assert.Equal(2, item.StackCount);
         Assert.Equal(ItemSourceKind.SharedStash, item.SourceKind);
         Assert.Equal(0, item.ContainerIndex);
@@ -390,7 +411,7 @@ public sealed class ParserGoldenTests
         Assert.Equal(0, item.SpiritRequirement);
     }
 
-    private static byte[] BuildCharacter()
+    private static byte[] BuildCharacter(int inventoryVersion = 4)
     {
         var writer = new GdFixtureWriter(0x49D12A77);
         writer.WriteUInt32(0x58434447);
@@ -421,7 +442,7 @@ public sealed class ParserGoldenTests
         writer.EndBlock(bio);
 
         var inventory = writer.BeginBlock(3);
-        writer.WriteUInt32(4);
+        writer.WriteUInt32(checked((uint)inventoryVersion));
         writer.WriteBoolean(true);
         writer.WriteUInt32(1);
         writer.WriteUInt32(0);
@@ -429,17 +450,24 @@ public sealed class ParserGoldenTests
         var sack = writer.BeginBlock(0);
         writer.WriteByte(0);
         writer.WriteUInt32(2);
-        WriteCharacterItem(writer, "records/items/gearhands/test.dbr");
+        WriteCharacterItem(
+            writer,
+            "records/items/gearhands/test.dbr",
+            inventoryVersion,
+            augmentLevel: 37,
+            augmentSeed: 0x50607080,
+            ascendantPrefix: "records/items/ascendant/prefix.dbr",
+            ascendantSuffix: "records/items/ascendant/suffix.dbr");
         writer.WriteUInt32(2);
         writer.WriteUInt32(3);
-        WriteCharacterItem(writer, "records/items/gearrings/test.dbr");
+        WriteCharacterItem(writer, "records/items/gearrings/test.dbr", inventoryVersion);
         writer.WriteUInt32(6);
         writer.WriteUInt32(13);
         writer.EndBlock(sack);
         writer.WriteBoolean(false);
         for (var i = 0; i < 12; i++)
         {
-            WriteCharacterItem(writer, string.Empty);
+            WriteCharacterItem(writer, string.Empty, inventoryVersion);
             writer.WriteByte(0);
         }
         for (var weaponSet = 0; weaponSet < 2; weaponSet++)
@@ -447,7 +475,7 @@ public sealed class ParserGoldenTests
             writer.WriteBoolean(false);
             for (var i = 0; i < 2; i++)
             {
-                WriteCharacterItem(writer, string.Empty);
+                WriteCharacterItem(writer, string.Empty, inventoryVersion);
                 writer.WriteBoolean(false);
             }
         }
@@ -508,7 +536,14 @@ public sealed class ParserGoldenTests
         return writer.ToArray();
     }
 
-    private static void WriteCharacterItem(GdFixtureWriter writer, string baseRecord)
+    private static void WriteCharacterItem(
+        GdFixtureWriter writer,
+        string baseRecord,
+        int containerVersion = 4,
+        uint augmentLevel = 0,
+        uint augmentSeed = 0,
+        string ascendantPrefix = "",
+        string ascendantSuffix = "")
     {
         writer.WriteString(baseRecord);
         writer.WriteString(string.Empty);
@@ -520,10 +555,17 @@ public sealed class ParserGoldenTests
         writer.WriteString(string.Empty);
         writer.WriteUInt32(0);
         writer.WriteString(string.Empty);
-        writer.WriteUInt32(0);
-        writer.WriteUInt32(0);
+        writer.WriteUInt32(augmentLevel);
+        writer.WriteUInt32(augmentSeed);
+        if (containerVersion >= 8)
+        {
+            writer.WriteString(ascendantPrefix);
+            writer.WriteString(ascendantSuffix);
+        }
         writer.WriteUInt32(0);
         writer.WriteUInt32(1);
+        if (containerVersion >= 8) writer.WriteUInt32(0);
+        if (containerVersion >= 11) writer.WriteUInt32(0);
     }
 
     private static byte[] BuildTransferV9()
@@ -551,10 +593,10 @@ public sealed class ParserGoldenTests
         writer.WriteString("records/items/completion/test.dbr");
         writer.WriteUInt32(0x10203040);
         writer.WriteString("records/items/augments/test.dbr");
-        writer.WriteString("records/items/ascendant/prefix.dbr");
-        writer.WriteString("records/items/ascendant/suffix.dbr");
         writer.WriteUInt32(0);
         writer.WriteUInt32(0x50607080);
+        writer.WriteString("records/items/ascendant/prefix.dbr");
+        writer.WriteString("records/items/ascendant/suffix.dbr");
         writer.WriteUInt32(0);
         writer.WriteUInt32(2);
         writer.WriteUInt32(0);
@@ -595,10 +637,10 @@ public sealed class ParserGoldenTests
         writer.WriteString(string.Empty);
         writer.WriteUInt32(0);
         writer.WriteString(string.Empty);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
         writer.WriteString("records/items/ascendant/prefix.dbr");
         writer.WriteString("records/items/ascendant/suffix.dbr");
-        writer.WriteUInt32(0);
-        writer.WriteUInt32(0);
         writer.WriteUInt32(0);
         writer.WriteUInt32(1);
         writer.WriteUInt32(17);

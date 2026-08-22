@@ -50,30 +50,6 @@ internal sealed class TransferStashParser
 
     private static RawItem ReadItem(GdCryptoReader reader, uint version)
     {
-        var result = new RawItem
-        {
-            BaseRecord = reader.ReadString(),
-            PrefixRecord = reader.ReadString(),
-            SuffixRecord = reader.ReadString(),
-            ModifierRecord = reader.ReadString(),
-            TransmuteRecord = reader.ReadString(),
-            Seed = reader.ReadUInt32(),
-            ComponentRecord = reader.ReadString(),
-            CompletionBonusRecord = reader.ReadString(),
-            ComponentSeed = reader.ReadUInt32(),
-            AugmentRecord = reader.ReadString()
-        };
-        if (version >= 8)
-        {
-            result.AscendantPrefixRecord = reader.ReadString();
-            result.AscendantSuffixRecord = reader.ReadString();
-        }
-        result.Unknown = checked((int)reader.ReadUInt32());
-        result.AugmentSeed = reader.ReadUInt32();
-        result.Unknown2 = checked((int)reader.ReadUInt32());
-        result.StackCount = checked((int)reader.ReadUInt32());
-        if (version >= 8) result.AsterkarnUnknown = checked((int)reader.ReadUInt32());
-        if (version >= 11) result.AsterkarnUnknown2 = checked((int)reader.ReadUInt32());
-        return result;
+        return CharacterFileParser.ReadItem(reader, checked((int)version));
     }
 }
