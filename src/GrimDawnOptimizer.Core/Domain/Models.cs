@@ -26,6 +26,7 @@ public enum EquipmentSlot
 
 public enum ItemSourceKind { Equipped, AlternateWeaponSet, Backpack, PersonalStash, SharedStash }
 public enum AttachmentKind { Component, Augment }
+public enum AttachmentAcquisitionKind { Loose, Installed, Blacksmith, FactionVendor }
 public enum MetricDirection { Maximize, Minimize }
 public enum ConfidenceLevel { High, Medium, Low }
 public enum DpsCalibrationMode { None, SingleAnchor, DualAnchor, SingleAnchorFallback }
@@ -145,6 +146,7 @@ public sealed class AttachmentDefinition
     public string RequiredFormula { get; init; } = string.Empty;
     public string RequiredFaction { get; init; } = string.Empty;
     public double RequiredReputation { get; init; }
+    public IReadOnlyList<AttachmentAcquisitionSource> AcquisitionSources { get; init; } = [];
     public StatBlock Stats { get; init; } = new();
     public IReadOnlyList<TriggeredEffect> Effects { get; init; } = [];
     public IReadOnlyList<UnsupportedEffect> UnsupportedEffects { get; init; } = [];
@@ -162,7 +164,22 @@ public sealed record CharacterSkill(
 public sealed record OwnedAttachmentInstance(
     string RecordId,
     AttachmentKind Kind,
-    string CompletionBonusRecord = "");
+    string CompletionBonusRecord = "",
+    AttachmentAcquisitionSource? Source = null);
+
+public sealed record AttachmentAcquisitionSource(
+    AttachmentAcquisitionKind Kind,
+    ItemSourceLocation? Location = null,
+    string HostItemId = "",
+    string HostItemName = "",
+    EquipmentSlot? HostSlot = null,
+    string FormulaRecord = "",
+    string FactionRecord = "",
+    string FactionName = "",
+    string FactionReputationKey = "",
+    string ReputationName = "",
+    double RequiredReputation = 0,
+    bool IsAlwaysAvailable = false);
 
 public sealed class CharacterSnapshot
 {

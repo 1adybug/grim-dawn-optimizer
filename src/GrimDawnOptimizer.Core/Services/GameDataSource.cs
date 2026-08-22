@@ -115,69 +115,125 @@ public sealed class GameDataSource : IGameDataSource
 
     public IReadOnlyList<AttachmentDefinition> GetUnlockedAttachments(CharacterSnapshot character, GameDataCatalog catalog)
     {
-        var unlocked = catalog.Attachments.Where(x =>
-            x.LevelRequirement <= character.Level &&
-              (string.IsNullOrWhiteSpace(x.RequiredFormula) || character.KnownFormulas.Contains(x.RequiredFormula)) &&
-              (string.IsNullOrWhiteSpace(x.RequiredFaction) || character.FactionReputation.GetValueOrDefault(x.RequiredFaction) >= x.RequiredReputation));
-        return unlocked.Concat(BuildOwnedAttachmentVariants(character, catalog))
-            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(x => x.First())
+        var owned = CollectOwnedAttachments(character);
+        var result = new List<AttachmentDefinition>();
+        foreach (var definition in catalog.Attachments)
+        {
+            var recordId = AttachmentRecordId(definition);
+            var matchingOwned = owned.Where(x =>
+                x.Kind == definition.Kind &&
+                string.Equals(x.RecordId, recordId, StringComparison.OrdinalIgnoreCase) &&
+                x.Source is not null).ToArray();
+            var baseOwned = matchingOwned.Where(x =>
+                definition.Kind == AttachmentKind.Augment || string.IsNullOrWhiteSpace(x.CompletionBonusRecord)).ToArray();
+            var unlockedStatic = definition.LevelRequirement <= character.Level
+                ? definition.AcquisitionSources.Where(x => IsStaticSourceUnlocked(x, definition.Kind, character)).ToArray()
+                : [];
+            var baseSources = baseOwned.Select(x => x.Source!).Concat(unlockedStatic).Distinct().ToArray();
+            if (baseSources.Length > 0)
+                result.Add(CloneAvailableAttachment(definition, definition.Id, string.Empty, baseOwned.Length > 0, baseSources, catalog));
+
+            if (definition.Kind != AttachmentKind.Component) continue;
+            foreach (var completionGroup in matchingOwned
+                         .Where(x => !string.IsNullOrWhiteSpace(x.CompletionBonusRecord))
+                         .GroupBy(x => x.CompletionBonusRecord, StringComparer.OrdinalIgnoreCase))
+            {
+                var sources = completionGroup.Select(x => x.Source!).Distinct().ToArray();
+                result.Add(CloneAvailableAttachment(
+                    definition,
+                    $"{recordId}|owned:{completionGroup.Key}",
+                    completionGroup.Key,
+                    true,
+                    sources,
+                    catalog));
+            }
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<OwnedAttachmentInstance> CollectOwnedAttachments(CharacterSnapshot character)
+    {
+        var currentSlots = character.CurrentLoadout.ToDictionary(x => x.Value, x => x.Key, StringComparer.OrdinalIgnoreCase);
+        var fallback = character.Items.SelectMany(item =>
+        {
+            EquipmentSlot? equippedSlot = currentSlots.TryGetValue(item.Id, out var currentSlot) ? currentSlot : null;
+            var source = new AttachmentAcquisitionSource(
+                AttachmentAcquisitionKind.Installed,
+                item.Source,
+                item.Id,
+                item.Name,
+                equippedSlot);
+            return new[]
+            {
+                new OwnedAttachmentInstance(item.ComponentRecord, AttachmentKind.Component, item.CompletionBonusRecord, source),
+                new OwnedAttachmentInstance(item.AugmentRecord, AttachmentKind.Augment, Source: source)
+            };
+        }).Where(x => !string.IsNullOrWhiteSpace(x.RecordId) && !character.OwnedAttachments.Any(owned =>
+            owned.Kind == x.Kind &&
+            string.Equals(owned.RecordId, x.RecordId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(owned.CompletionBonusRecord, x.CompletionBonusRecord, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(owned.Source?.HostItemId, x.Source?.HostItemId, StringComparison.OrdinalIgnoreCase)));
+        return character.OwnedAttachments.Concat(fallback)
+            .Where(x => !string.IsNullOrWhiteSpace(x.RecordId))
+            .Distinct()
             .ToArray();
     }
 
-    private static IReadOnlyList<AttachmentDefinition> BuildOwnedAttachmentVariants(
-        CharacterSnapshot character,
+    private static bool IsStaticSourceUnlocked(
+        AttachmentAcquisitionSource source,
+        AttachmentKind kind,
+        CharacterSnapshot character) => source.Kind switch
+        {
+            AttachmentAcquisitionKind.Blacksmith =>
+                kind == AttachmentKind.Component &&
+                !string.IsNullOrWhiteSpace(source.FormulaRecord) &&
+                (source.IsAlwaysAvailable || character.KnownFormulas.Contains(source.FormulaRecord)),
+            AttachmentAcquisitionKind.FactionVendor =>
+                kind == AttachmentKind.Augment &&
+                !string.IsNullOrWhiteSpace(source.FactionReputationKey) &&
+                character.FactionReputation.GetValueOrDefault(source.FactionReputationKey) >= source.RequiredReputation,
+            _ => false
+        };
+
+    private static AttachmentDefinition CloneAvailableAttachment(
+        AttachmentDefinition source,
+        string id,
+        string completionBonusRecord,
+        bool isOwned,
+        IReadOnlyList<AttachmentAcquisitionSource> acquisitionSources,
         GameDataCatalog catalog)
     {
-        var result = new List<AttachmentDefinition>();
-        var owned = character.OwnedAttachments.Concat(character.Items.SelectMany(item => new[]
+        var stats = source.Stats.Clone();
+        var effects = source.Effects.ToList();
+        var unsupportedEffects = source.UnsupportedEffects.ToList();
+        if (!string.IsNullOrWhiteSpace(completionBonusRecord) &&
+            catalog.Records.TryGetValue(completionBonusRecord, out var completionBonus))
         {
-            new OwnedAttachmentInstance(item.ComponentRecord, AttachmentKind.Component, item.CompletionBonusRecord),
-            new OwnedAttachmentInstance(item.AugmentRecord, AttachmentKind.Augment)
-        })).Where(x => !string.IsNullOrWhiteSpace(x.RecordId)).Distinct();
-        foreach (var attachment in owned)
-            AddOwned(attachment.RecordId, attachment.CompletionBonusRecord, attachment.Kind);
-        return result;
-
-        void AddOwned(string recordId, string completionBonusRecord, AttachmentKind kind)
-        {
-            if (string.IsNullOrWhiteSpace(recordId)) return;
-            var source = catalog.Attachments.FirstOrDefault(x =>
-                x.Kind == kind && string.Equals(AttachmentRecordId(x), recordId, StringComparison.OrdinalIgnoreCase));
-            if (source is null) return;
-
-            var stats = source.Stats.Clone();
-            var effects = source.Effects.ToList();
-            var unsupportedEffects = source.UnsupportedEffects.ToList();
-            if (!string.IsNullOrWhiteSpace(completionBonusRecord) &&
-                catalog.Records.TryGetValue(completionBonusRecord, out var completionBonus))
-            {
-                stats.Add(GameStatTranslator.Translate([completionBonus]));
-                effects.AddRange(SaveReader.BuildTriggeredEffects([completionBonus], catalog));
-                unsupportedEffects.AddRange(BuildUnsupportedEffects(
-                    [completionBonus], catalog, "未建模完成奖励"));
-            }
-
-            var suffix = string.IsNullOrWhiteSpace(completionBonusRecord) ? "base" : completionBonusRecord;
-            result.Add(new AttachmentDefinition
-            {
-                Id = $"{recordId}|owned:{suffix}",
-                RecordId = recordId,
-                CompletionBonusRecord = completionBonusRecord,
-                IsOwned = true,
-                Name = source.Name,
-                Kind = source.Kind,
-                CompatibleSlots = source.CompatibleSlots,
-                CompatibleItemQualifiers = source.CompatibleItemQualifiers,
-                LevelRequirement = source.LevelRequirement,
-                RequiredFormula = source.RequiredFormula,
-                RequiredFaction = source.RequiredFaction,
-                RequiredReputation = source.RequiredReputation,
-                Stats = stats,
-                Effects = effects,
-                UnsupportedEffects = unsupportedEffects
-            });
+            stats.Add(GameStatTranslator.Translate([completionBonus]));
+            effects.AddRange(SaveReader.BuildTriggeredEffects([completionBonus], catalog));
+            unsupportedEffects.AddRange(BuildUnsupportedEffects(
+                [completionBonus], catalog, "未建模完成奖励"));
         }
+
+        return new AttachmentDefinition
+        {
+            Id = id,
+            RecordId = AttachmentRecordId(source),
+            CompletionBonusRecord = completionBonusRecord,
+            IsOwned = isOwned,
+            Name = source.Name,
+            Kind = source.Kind,
+            CompatibleSlots = source.CompatibleSlots,
+            CompatibleItemQualifiers = source.CompatibleItemQualifiers,
+            LevelRequirement = source.LevelRequirement,
+            RequiredFormula = source.RequiredFormula,
+            RequiredFaction = source.RequiredFaction,
+            RequiredReputation = source.RequiredReputation,
+            AcquisitionSources = acquisitionSources,
+            Stats = stats,
+            Effects = effects,
+            UnsupportedEffects = unsupportedEffects
+        };
     }
 
     internal static string AttachmentRecordId(AttachmentDefinition attachment) =>
@@ -278,6 +334,7 @@ public sealed class GameDataSource : IGameDataSource
     {
         var result = new List<AttachmentDefinition>();
         var catalogView = new GameDataCatalog { Records = records, Tags = tags };
+        var acquisitionSources = BuildStaticAttachmentSources(records, tags);
         foreach (var record in records.Values)
         {
             var @class = record.Text("Class");
@@ -297,6 +354,9 @@ public sealed class GameDataSource : IGameDataSource
                     ? Path.GetFileNameWithoutExtension(record.RecordName)
                     : cleanedNameTag);
             var qualifiers = ResolveAttachmentQualifiers(record);
+            var sources = acquisitionSources.GetValueOrDefault(record.RecordName, []);
+            var formula = sources.FirstOrDefault(x => x.Kind == AttachmentAcquisitionKind.Blacksmith)?.FormulaRecord ?? string.Empty;
+            var faction = sources.FirstOrDefault(x => x.Kind == AttachmentAcquisitionKind.FactionVendor);
             result.Add(new AttachmentDefinition
             {
                 Id = record.RecordName,
@@ -306,9 +366,10 @@ public sealed class GameDataSource : IGameDataSource
                 CompatibleSlots = ResolveAttachmentSlots(qualifiers),
                 CompatibleItemQualifiers = qualifiers,
                 LevelRequirement = (int)record.NumericValues["levelRequirement"],
-                RequiredFormula = record.Text("artifactFormula"),
-                RequiredFaction = record.Text("factionName"),
-                RequiredReputation = record.NumericValues["factionValue"],
+                RequiredFormula = formula,
+                RequiredFaction = faction?.FactionReputationKey ?? string.Empty,
+                RequiredReputation = faction?.RequiredReputation ?? 0,
+                AcquisitionSources = sources,
                 Stats = GameStatTranslator.Translate([record]),
                 Effects = SaveReader.BuildTriggeredEffects([record], catalogView),
                 UnsupportedEffects = BuildUnsupportedEffects([record], catalogView, "未建模附件")
@@ -316,6 +377,122 @@ public sealed class GameDataSource : IGameDataSource
         }
         return result;
     }
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<AttachmentAcquisitionSource>> BuildStaticAttachmentSources(
+        IReadOnlyDictionary<string, GameRecord> records,
+        IReadOnlyDictionary<string, string> tags)
+    {
+        var result = new Dictionary<string, List<AttachmentAcquisitionSource>>(StringComparer.OrdinalIgnoreCase);
+        void Add(string attachmentRecord, AttachmentAcquisitionSource source)
+        {
+            if (string.IsNullOrWhiteSpace(attachmentRecord)) return;
+            if (!result.TryGetValue(attachmentRecord, out var sources))
+                result[attachmentRecord] = sources = [];
+            if (!sources.Contains(source)) sources.Add(source);
+        }
+
+        foreach (var formula in records.Values)
+        foreach (var artifact in formula.TextValues.GetValueOrDefault("artifactName", []))
+            Add(artifact, new AttachmentAcquisitionSource(
+                AttachmentAcquisitionKind.Blacksmith,
+                FormulaRecord: formula.RecordName,
+                IsAlwaysAvailable: formula.RecordName.Contains(
+                    "/component/craft_component_base_", StringComparison.OrdinalIgnoreCase)));
+
+        var factionIndices = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (records.TryGetValue("records/game/gamefactions.dbr", out var gameFactions))
+        {
+            var factionRecords = gameFactions.TextValues.GetValueOrDefault("factions", []);
+            for (var index = 0; index < factionRecords.Count; index++)
+                if (!string.IsNullOrWhiteSpace(factionRecords[index])) factionIndices[factionRecords[index]] = index;
+        }
+
+        var tiers = new[]
+        {
+            new FactionMarketTier("friendlyNormalTable", 1_500, "tagFactionStateFriendly", "友好"),
+            new FactionMarketTier("respectedNormalTable", 5_000, "tagFactionStateTrusted", "尊敬"),
+            new FactionMarketTier("honoredNormalTable", 10_000, "tagFactionStateHonored", "崇敬"),
+            new FactionMarketTier("reveredNormalTable", 25_000, "tagFactionStateRevered", "崇拜")
+        };
+        foreach (var merchant in records.Values)
+        {
+            var factionRecord = FirstNonEmpty(merchant.Text("myFaction"), merchant.Text("factions"));
+            var marketRecord = merchant.Text("marketFileName");
+            if (string.IsNullOrWhiteSpace(factionRecord) || string.IsNullOrWhiteSpace(marketRecord) ||
+                !records.TryGetValue(marketRecord, out var market)) continue;
+
+            var factionName = ResolveFactionName(factionRecord, records, tags);
+            var reputationKey = factionIndices.TryGetValue(factionRecord, out var factionIndex)
+                ? $"faction:{factionIndex}"
+                : ResolveFactionReputationKey(factionRecord, records);
+            foreach (var tier in tiers)
+            foreach (var tableRecord in market.TextValues.GetValueOrDefault(tier.TableField, []))
+            {
+                if (!records.TryGetValue(tableRecord, out var table)) continue;
+                var reputationName = tags.GetValueOrDefault(tier.DisplayTag, tier.FallbackName);
+                foreach (var itemRecord in table.TextValues.GetValueOrDefault("marketStaticItems", []))
+                    Add(itemRecord, new AttachmentAcquisitionSource(
+                        AttachmentAcquisitionKind.FactionVendor,
+                        FactionRecord: factionRecord,
+                        FactionName: factionName,
+                        FactionReputationKey: reputationKey,
+                        ReputationName: reputationName,
+                        RequiredReputation: tier.RequiredReputation));
+            }
+        }
+
+        return result.ToDictionary(
+            x => x.Key,
+            x => (IReadOnlyList<AttachmentAcquisitionSource>)x.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveFactionName(
+        string factionRecord,
+        IReadOnlyDictionary<string, GameRecord> records,
+        IReadOnlyDictionary<string, string> tags)
+    {
+        if (!records.TryGetValue(factionRecord, out var faction))
+            return Path.GetFileNameWithoutExtension(factionRecord);
+        var factionTag = FirstNonEmpty(faction.Text("factionTag"), faction.Text("myFaction"));
+        foreach (var candidate in new[]
+                 {
+                     factionTag,
+                     factionTag.StartsWith("tag", StringComparison.OrdinalIgnoreCase) ? factionTag : $"tagFaction{factionTag}"
+                 }.Where(x => !string.IsNullOrWhiteSpace(x)))
+            if (tags.TryGetValue(candidate, out var name) && !string.IsNullOrWhiteSpace(name)) return name;
+        return string.IsNullOrWhiteSpace(factionTag)
+            ? Path.GetFileNameWithoutExtension(factionRecord)
+            : factionTag;
+    }
+
+    private static string ResolveFactionReputationKey(
+        string factionRecord,
+        IReadOnlyDictionary<string, GameRecord> records)
+    {
+        if (!records.TryGetValue(factionRecord, out var faction)) return string.Empty;
+        var factionId = FirstNonEmpty(faction.Text("myFaction"), faction.Text("factionTag"));
+        if (factionId.StartsWith("User", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(factionId[4..], out var userIndex))
+            return $"faction:{userIndex + 6}";
+        var builtInIndex = factionId.ToLowerInvariant() switch
+        {
+            "player" => 0,
+            "survivors" => 1,
+            "aetherials" => 2,
+            "cthonians" => 3,
+            "outlaws" => 4,
+            "beasts" => 5,
+            _ => -1
+        };
+        return builtInIndex < 0 ? string.Empty : $"faction:{builtInIndex}";
+    }
+
+    private sealed record FactionMarketTier(
+        string TableField,
+        double RequiredReputation,
+        string DisplayTag,
+        string FallbackName);
 
     private static IReadOnlyList<UnsupportedEffect> BuildUnsupportedEffects(
         IReadOnlyList<GameRecord> records,
@@ -430,9 +607,9 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC20 retains every combat-prefixed equipment/skill field and stores set
-        // bonus diagnostics. Older catalogs cannot provide complete coverage warnings.
-        private static readonly byte[] PayloadHeader = "GDOC20"u8.ToArray();
+        // GDOC23 additionally retains blueprint and faction-market relationships used
+        // to turn every recommended attachment into an actionable acquisition source.
+        private static readonly byte[] PayloadHeader = "GDOC23"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)
@@ -447,7 +624,7 @@ public sealed class GameDataSource : IGameDataSource
             {
                 null or DBNull => null,
                 byte[] compressed => DeserializeCompressed(compressed),
-                string legacyJson => JsonSerializer.Deserialize<GameDataCatalog>(legacyJson, JsonOptions),
+                string => throw new InvalidDataException("旧版目录缓存需要重建"),
                 _ => null
             };
         }

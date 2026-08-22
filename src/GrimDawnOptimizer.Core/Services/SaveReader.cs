@@ -49,7 +49,7 @@ public sealed class SaveReader : ISaveReader
                     warnings.Add($"已按存档 Seed 精确还原 {exactSeedCount} 件装备的实际浮动词条。");
                 if (expectedSeedCount > 0)
                     warnings.Add($"另有 {expectedSeedCount} 件装备包含尚未建模的 Seed 字段，已保守回退到期望值。");
-                var ownedAttachments = BuildOwnedAttachments(allItems.Select(x => x.Item), catalog);
+                var ownedAttachments = BuildOwnedAttachments(allItems, converted, catalog);
                 var current = converted.Where(x => x.Source.Kind == ItemSourceKind.Equipped)
                     .Select(x => (Item: x, Slot: raw.Items.FirstOrDefault(r => r.Seed == x.Seed && r.BaseRecord == x.BaseRecord)?.EquippedSlot))
                     .Where(x => x.Slot is not null)
@@ -238,6 +238,57 @@ public sealed class SaveReader : ISaveReader
         return result.Distinct().ToArray();
     }
 
+    internal static IReadOnlyList<OwnedAttachmentInstance> BuildOwnedAttachments(
+        IEnumerable<(RawItem Item, string FilePath)> rawItems,
+        IReadOnlyList<ItemInstance> convertedItems,
+        GameDataCatalog catalog)
+    {
+        var convertedById = convertedItems.ToDictionary(x => x.Id, StringComparer.OrdinalIgnoreCase);
+        var result = new List<OwnedAttachmentInstance>();
+        foreach (var (raw, filePath) in rawItems)
+        {
+            var location = CreateItemSource(raw, filePath);
+            var stableId = ItemInstance.CreateStableId(location, raw.BaseRecord, raw.Seed);
+            convertedById.TryGetValue(stableId, out var host);
+            var installedSource = host is null
+                ? null
+                : new AttachmentAcquisitionSource(
+                    AttachmentAcquisitionKind.Installed,
+                    host.Source,
+                    host.Id,
+                    host.Name,
+                    raw.EquippedSlot);
+
+            if (!string.IsNullOrWhiteSpace(raw.ComponentRecord))
+                result.Add(new OwnedAttachmentInstance(
+                    raw.ComponentRecord,
+                    AttachmentKind.Component,
+                    raw.CompletionBonusRecord,
+                    installedSource));
+            if (!string.IsNullOrWhiteSpace(raw.AugmentRecord))
+                result.Add(new OwnedAttachmentInstance(
+                    raw.AugmentRecord,
+                    AttachmentKind.Augment,
+                    Source: installedSource));
+
+            if (!catalog.Records.TryGetValue(raw.BaseRecord, out var baseRecord)) continue;
+            var recordType = string.IsNullOrWhiteSpace(baseRecord.Text("Class")) ? baseRecord.RecordType : baseRecord.Text("Class");
+            var looseSource = new AttachmentAcquisitionSource(AttachmentAcquisitionKind.Loose, location);
+            if (recordType.Equals("ItemRelic", StringComparison.OrdinalIgnoreCase))
+                result.Add(new OwnedAttachmentInstance(
+                    raw.BaseRecord,
+                    AttachmentKind.Component,
+                    raw.CompletionBonusRecord,
+                    looseSource));
+            else if (recordType.Equals("ItemEnchantment", StringComparison.OrdinalIgnoreCase))
+                result.Add(new OwnedAttachmentInstance(
+                    raw.BaseRecord,
+                    AttachmentKind.Augment,
+                    Source: looseSource));
+        }
+        return result.Distinct().ToArray();
+    }
+
     private static ItemInstance? ConvertItem(
         RawItem raw,
         string filePath,
@@ -288,10 +339,7 @@ public sealed class SaveReader : ISaveReader
             }
             ApplyExpectedItemScale(stats, baseRecord.NumericValues["attributeScalePercent"]);
         }
-        var source = new ItemSourceLocation(
-            raw.SourceKind, filePath,
-            raw.SourceKind == ItemSourceKind.Equipped && raw.EquippedSlot is not null ? (int)raw.EquippedSlot.Value : raw.ContainerIndex,
-            raw.X, raw.Y);
+        var source = CreateItemSource(raw, filePath);
         var itemName = ResolveItemName(baseRecord, raw, catalog);
         var effects = BuildTriggeredEffects(records, catalog);
         var requirements = ResolveEquipmentRequirements(baseRecord, catalog);
@@ -353,6 +401,15 @@ public sealed class SaveReader : ISaveReader
             Source = source
         };
     }
+
+    private static ItemSourceLocation CreateItemSource(RawItem raw, string filePath) => new(
+        raw.SourceKind,
+        filePath,
+        raw.SourceKind == ItemSourceKind.Equipped && raw.EquippedSlot is not null
+            ? (int)raw.EquippedSlot.Value
+            : raw.ContainerIndex,
+        raw.X,
+        raw.Y);
 
     internal static EquipmentRequirements ResolveEquipmentRequirements(
         GameRecord record,

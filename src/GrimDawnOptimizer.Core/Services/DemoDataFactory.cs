@@ -75,24 +75,48 @@ public static class DemoDataFactory
             new()
             {
                 Id = "demo/component/wardstone", Name = "守护之石", Kind = AttachmentKind.Component,
+                RequiredFormula = "demo/formula/wardstone",
+                AcquisitionSources = [new AttachmentAcquisitionSource(
+                    AttachmentAcquisitionKind.Blacksmith,
+                    FormulaRecord: "demo/formula/wardstone")],
                 CompatibleSlots = allArmor,
                 Stats = new StatBlock(new Dictionary<string, double> { ["fireResistance"] = 8, ["coldResistance"] = 8, ["lightningResistance"] = 8 })
             },
             new()
             {
                 Id = "demo/component/ember", Name = "灼热余烬", Kind = AttachmentKind.Component,
+                RequiredFormula = "demo/formula/ember",
+                AcquisitionSources = [new AttachmentAcquisitionSource(
+                    AttachmentAcquisitionKind.Blacksmith,
+                    FormulaRecord: "demo/formula/ember")],
                 CompatibleSlots = allArmor,
                 Stats = new StatBlock(new Dictionary<string, double> { [StatKeys.DamageFlat("fire")] = 12, [StatKeys.DamagePercent("fire")] = 22 })
             },
             new()
             {
                 Id = "demo/augment/survivor", Name = "幸存者的毅力", Kind = AttachmentKind.Augment,
+                RequiredFaction = "faction:demo",
+                RequiredReputation = 10_000,
+                AcquisitionSources = [new AttachmentAcquisitionSource(
+                    AttachmentAcquisitionKind.FactionVendor,
+                    FactionName: "恶魔十字",
+                    FactionReputationKey: "faction:demo",
+                    ReputationName: "崇敬",
+                    RequiredReputation: 10_000)],
                 CompatibleSlots = allArmor,
                 Stats = new StatBlock(new Dictionary<string, double> { ["health"] = 120, ["defensiveAbility"] = 12 })
             },
             new()
             {
                 Id = "demo/augment/malmouth", Name = "马尔茅斯烈焰", Kind = AttachmentKind.Augment,
+                RequiredFaction = "faction:demo",
+                RequiredReputation = 25_000,
+                AcquisitionSources = [new AttachmentAcquisitionSource(
+                    AttachmentAcquisitionKind.FactionVendor,
+                    FactionName: "马尔茅斯反抗军",
+                    FactionReputationKey: "faction:demo",
+                    ReputationName: "崇拜",
+                    RequiredReputation: 25_000)],
                 CompatibleSlots = allArmor,
                 Stats = new StatBlock(new Dictionary<string, double> { ["offensiveAbility"] = 16, [StatKeys.DamagePercent("fire")] = 18 })
             }
@@ -112,7 +136,7 @@ public static class DemoDataFactory
             PrimarySkillRecord = "demo/skill/fire-strike",
             Skills = [new CharacterSkill("demo/skill/fire-strike", "烈焰打击", 26, 0, true, string.Empty, string.Empty)],
             FactionReputation = new Dictionary<string, double> { ["faction:demo"] = 25_000 },
-            KnownFormulas = new HashSet<string>()
+            KnownFormulas = new HashSet<string> { "demo/formula/wardstone", "demo/formula/ember" }
         };
         var catalog = new GameDataCatalog
         {

@@ -289,6 +289,34 @@ public sealed class ParserGoldenTests
     }
 
     [Fact]
+    public async Task LegacyTextCacheIsIgnoredAndRebuilt()
+    {
+        using var fixture = new TemporaryFixture();
+        var arzPath = fixture.Write("database.arz", BuildArz(321));
+        var cacheRoot = Path.Combine(fixture.Root, "cache");
+        var source = new GameDataSource(cacheRoot);
+        var install = new GameInstallation(fixture.Root, "test", "1.3-test", [arzPath]);
+        await source.LoadCatalogAsync(install);
+
+        await using (var connection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            var command = connection.CreateCommand();
+            command.CommandText = "UPDATE catalog_cache SET payload='{}'";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var rebuilt = await source.LoadCatalogAsync(install);
+
+        Assert.Equal(321, rebuilt.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+        await using var verifyConnection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Mode=ReadOnly;Pooling=False");
+        await verifyConnection.OpenAsync();
+        var verify = verifyConnection.CreateCommand();
+        verify.CommandText = "SELECT typeof(payload) FROM catalog_cache";
+        Assert.Equal("blob", await verify.ExecuteScalarAsync());
+    }
+
+    [Fact]
     public async Task SaveReaderUsesGameEquipmentRequirementFields()
     {
         using var fixture = new TemporaryFixture();

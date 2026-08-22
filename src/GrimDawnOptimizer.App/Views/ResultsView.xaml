@@ -160,11 +160,30 @@
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="槽位" Binding="{Binding Slot}" Width="72" />
-                            <DataGridTextColumn Header="当前装备" Binding="{Binding CurrentItem}" Width="1.05*" />
-                            <DataGridTextColumn Header="推荐装备" Binding="{Binding CandidateItem}" Width="1.25*" />
-                            <DataGridTextColumn Header="组件 / 增幅" Binding="{Binding Attachments}" Width="1.1*" />
-                            <DataGridTextColumn Header="来源" Binding="{Binding Source}" Width="1.1*" />
+                            <DataGridTextColumn Header="槽位" Binding="{Binding Slot}" Width="64" />
+                            <DataGridTextColumn Header="当前装备" Binding="{Binding CurrentItem}" Width="0.8*" />
+                            <DataGridTextColumn Header="推荐装备" Binding="{Binding CandidateItem}" Width="1.0*" />
+                            <DataGridTemplateColumn Header="组件及获取方式" Width="1.45*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Component}"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"
+                                                   Margin="6,5" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="增幅及获取方式" Width="1.45*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Augment}"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"
+                                                   Margin="6,5" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="装备位置" Binding="{Binding Source}" Width="1.0*" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -176,7 +195,7 @@
                                 Title="兼容性与置信度提示"
                                 Message="{Binding WarningSummary}" />
                     <Expander Header="如何读取来源坐标" Margin="0,12,0,0">
-                        <TextBlock Text="页码和坐标均从 1 开始；(X,Y) 是装备左上角所在格，X 向右、Y 向下。推荐 DPS 要求对应行的装备、组件和增幅全部装齐。"
+                        <TextBlock Text="页码和坐标均从 1 开始；(X,Y) 是物品左上角所在格，X 向右、Y 向下。组件和增幅分别给出首选及不同类别的备选获取方式；推荐 DPS 要求对应行全部装齐。"
                                    Style="{StaticResource SecondaryText}"
                                    Margin="0,8,12,4" />
                     </Expander>
