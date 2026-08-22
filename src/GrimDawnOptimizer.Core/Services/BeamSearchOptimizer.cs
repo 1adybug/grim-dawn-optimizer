@@ -274,8 +274,67 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         ScoringEngine scoring)
     {
         var calculated = _statEngine.Calculate(character, slots, catalog);
+        calculated = ApplyAttachmentSourceValidation(calculated);
         return EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
     }
+
+    private static CalculatedLoadout ApplyAttachmentSourceValidation(CalculatedLoadout loadout)
+    {
+        var errors = AttachmentSourceErrors(loadout.Slots).ToArray();
+        if (errors.Length == 0) return loadout;
+        return new CalculatedLoadout
+        {
+            Slots = loadout.Slots,
+            Stats = loadout.Stats,
+            Effects = loadout.Effects,
+            UnsupportedEffects = loadout.UnsupportedEffects,
+            ValidationErrors = loadout.ValidationErrors.Concat(errors).Distinct().ToArray()
+        };
+    }
+
+    internal static bool HasActionableAttachmentSources(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots) =>
+        !AttachmentSourceErrors(slots).Any();
+
+    private static IEnumerable<string> AttachmentSourceErrors(
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
+    {
+        var planItemIds = slots.Values.Select(x => x.Item.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var variant in slots.Values)
+        {
+            if (!HasActionableAttachmentSource(variant.Component, variant.Item, planItemIds))
+                yield return $"{variant.Item.Name} 的组件没有方案外可用来源";
+            if (!HasActionableAttachmentSource(variant.Augment, variant.Item, planItemIds))
+                yield return $"{variant.Item.Name} 的增幅没有方案外可用来源";
+        }
+    }
+
+    private static bool HasActionableAttachmentSource(
+        AttachmentDefinition? attachment,
+        ItemInstance targetItem,
+        IReadOnlySet<string> planItemIds)
+    {
+        if (attachment is null || IsAlreadyInstalled(attachment, targetItem)) return true;
+        // Direct optimizer callers may provide synthetic/legacy definitions without
+        // acquisition metadata. Production definitions have already been filtered by
+        // GameDataSource, so only explicit installed sources need plan-aware exclusion.
+        if (attachment.AcquisitionSources.Count == 0) return true;
+        return attachment.AcquisitionSources.Any(source =>
+            source.Kind != AttachmentAcquisitionKind.Installed ||
+            string.IsNullOrWhiteSpace(source.HostItemId) ||
+            !planItemIds.Contains(source.HostItemId));
+    }
+
+    private static bool IsAlreadyInstalled(AttachmentDefinition attachment, ItemInstance item) =>
+        attachment.Kind switch
+        {
+            AttachmentKind.Component => MatchesCurrentAttachment(
+                attachment, item.ComponentRecord, item.CompletionBonusRecord),
+            AttachmentKind.Augment => MatchesCurrentAttachment(
+                attachment, item.AugmentRecord, string.Empty),
+            _ => false
+        };
 
     private LoadoutResult EvaluateCalculated(
         CharacterSnapshot character,

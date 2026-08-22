@@ -19,14 +19,16 @@ public sealed class ResultViewModel
             x => x.Key,
             x => character.Items.FirstOrDefault(i => i.Id == x.Value)?.Name ?? "—");
         var usesTwoHands = result.Loadout.Slots.TryGetValue(EquipmentSlot.MainHand, out var mainHand) && mainHand.Item.IsTwoHanded;
+        var planItemIds = result.Loadout.Slots.Values.Select(x => x.Item.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         SlotRows = DisplaySlots.Select(slot =>
         {
             var currentItem = currentItems.GetValueOrDefault(slot, "—");
             if (result.Loadout.Slots.TryGetValue(slot, out var variant))
                 return new SlotResultViewModel(
                     SlotName(slot), currentItem, variant.Item.Name,
-                    FormatAttachment(variant.Component),
-                    FormatAttachment(variant.Augment),
+                    FormatAttachment(variant.Component, variant.Item, planItemIds),
+                    FormatAttachment(variant.Augment, variant.Item, planItemIds),
                     variant.Item.Source.DisplayName, currentItem != variant.Item.Name);
 
             var candidate = slot == EquipmentSlot.OffHand && usesTwoHands ? "由双手武器占用" : "—（无可用装备）";
@@ -71,25 +73,41 @@ public sealed class ResultViewModel
         _ => $"{value:0}"
     };
 
-    public static string FormatAttachment(AttachmentDefinition? attachment)
+    public static string FormatAttachment(
+        AttachmentDefinition? attachment,
+        ItemInstance? targetItem = null,
+        IReadOnlySet<string>? planItemIds = null)
     {
         if (attachment is null) return "—";
-        var selected = attachment.AcquisitionSources
+        if (targetItem is not null && IsAlreadyInstalled(attachment, targetItem))
+            return $"{attachment.Name}{Environment.NewLine}已镶嵌";
+        var candidates = attachment.AcquisitionSources
             .Where(x => SourceCategory(x) < int.MaxValue)
-            .GroupBy(SourceCategory)
-            .OrderBy(x => x.Key)
-            .Select(x => x.OrderBy(InstalledLocationRank)
-                .ThenBy(source => source.Location?.ContainerIndex ?? int.MaxValue)
-                .ThenBy(source => source.Location?.Y ?? int.MaxValue)
-                .ThenBy(source => source.Location?.X ?? int.MaxValue)
-                .ThenBy(source => source.HostItemName, StringComparer.CurrentCultureIgnoreCase)
-                .First())
-            .Take(2)
-            .Select(FormatAcquisitionSource)
+            .Where(x => x.Kind != AttachmentAcquisitionKind.Installed ||
+                        string.IsNullOrWhiteSpace(x.HostItemId) ||
+                        planItemIds is null ||
+                        !planItemIds.Contains(x.HostItemId))
+            .OrderBy(SourceCategory)
+            .ThenBy(source => source.Location?.ContainerIndex ?? int.MaxValue)
+            .ThenBy(source => source.Location?.Y ?? int.MaxValue)
+            .ThenBy(source => source.Location?.X ?? int.MaxValue)
+            .ThenBy(source => source.HostItemName, StringComparer.CurrentCultureIgnoreCase)
+            .GroupBy(FormatAcquisitionSource, StringComparer.CurrentCultureIgnoreCase)
+            .Select(group => group.First())
             .ToArray();
-        if (selected.Length == 0) return $"{attachment.Name}{Environment.NewLine}来源未解析";
-        var lines = new List<string> { attachment.Name, $"首选：{selected[0]}" };
-        if (selected.Length > 1) lines.Add($"备选：{selected[1]}");
+        if (candidates.Length == 0) return $"{attachment.Name}{Environment.NewLine}来源未解析";
+
+        var primary = candidates[0];
+        var lines = new List<string> { attachment.Name, $"首选：{FormatAcquisitionSource(primary)}" };
+        if (primary.Kind != AttachmentAcquisitionKind.Installed)
+        {
+            var primaryCategory = SourceCategory(primary);
+            var backup = candidates.Skip(1)
+                .OrderBy(source => SourceCategory(source) == primaryCategory ? 1 : 0)
+                .ThenBy(SourceCategory)
+                .FirstOrDefault();
+            if (backup is not null) lines.Add($"备选：{FormatAcquisitionSource(backup)}");
+        }
         return string.Join(Environment.NewLine, lines);
     }
 
@@ -104,22 +122,10 @@ public sealed class ResultViewModel
         _ => int.MaxValue
     };
 
-    private static int InstalledLocationRank(AttachmentAcquisitionSource source) => source.Kind != AttachmentAcquisitionKind.Installed
-        ? 0
-        : source.Location?.Kind switch
-        {
-            ItemSourceKind.Equipped => 0,
-            ItemSourceKind.AlternateWeaponSet => 1,
-            ItemSourceKind.Backpack => 2,
-            ItemSourceKind.PersonalStash => 3,
-            ItemSourceKind.SharedStash => 4,
-            _ => 5
-        };
-
     private static string FormatAcquisitionSource(AttachmentAcquisitionSource source) => source.Kind switch
     {
         AttachmentAcquisitionKind.Loose => source.Location?.DisplayName ?? "散装附件（位置未知）",
-        AttachmentAcquisitionKind.Installed => FormatInstalledSource(source),
+        AttachmentAcquisitionKind.Installed => "已镶嵌",
         AttachmentAcquisitionKind.Blacksmith => source.IsAlwaysAvailable
             ? "铁匠制作（基础配方）"
             : "铁匠制作（配方已学会）",
@@ -129,24 +135,18 @@ public sealed class ResultViewModel
         _ => "来源未解析"
     };
 
-    private static string FormatInstalledSource(AttachmentAcquisitionSource source)
+    private static bool IsAlreadyInstalled(AttachmentDefinition attachment, ItemInstance item)
     {
-        var itemName = Fallback(source.HostItemName, "未命名装备");
-        if (source.Location?.Kind == ItemSourceKind.Equipped)
+        var recordId = string.IsNullOrWhiteSpace(attachment.RecordId) ? attachment.Id : attachment.RecordId;
+        return attachment.Kind switch
         {
-            var slot = source.HostSlot ??
-                       (Enum.IsDefined(typeof(EquipmentSlot), source.Location.ContainerIndex)
-                           ? (EquipmentSlot)source.Location.ContainerIndex
-                           : (EquipmentSlot?)null);
-            return slot is null
-                ? $"已镶在当前穿戴：「{itemName}」"
-                : $"已镶在当前穿戴：{SlotName(slot.Value)}「{itemName}」";
-        }
-        if (source.Location?.Kind == ItemSourceKind.AlternateWeaponSet)
-            return $"已镶在「{itemName}」—{source.Location.DisplayName}";
-        return source.Location is null
-            ? $"已镶在「{itemName}」（位置未知）"
-            : $"已镶在「{itemName}」—{source.Location.DisplayName}";
+            AttachmentKind.Component =>
+                string.Equals(recordId, item.ComponentRecord, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(attachment.CompletionBonusRecord, item.CompletionBonusRecord, StringComparison.OrdinalIgnoreCase),
+            AttachmentKind.Augment =>
+                string.Equals(recordId, item.AugmentRecord, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
     }
 
     private static string Fallback(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;

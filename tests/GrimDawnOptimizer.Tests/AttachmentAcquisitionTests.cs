@@ -218,7 +218,25 @@ public sealed class AttachmentAcquisitionTests
     }
 
     [Fact]
-    public void FormatterExplainsInstalledAndFactionVendorSources()
+    public void FormatterUsesSecondLocationWhenOnlyOneSourceCategoryExists()
+    {
+        var attachment = Attachment(
+            "component", AttachmentKind.Component,
+            new AttachmentAcquisitionSource(
+                AttachmentAcquisitionKind.Loose,
+                new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc", 0, 5, 5)),
+            new AttachmentAcquisitionSource(
+                AttachmentAcquisitionKind.Loose,
+                new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc", 0, 1, 2)));
+
+        var display = ResultViewModel.FormatAttachment(attachment);
+
+        Assert.Contains("首选：背包第 1 页 · 左上格 (2,3)", display);
+        Assert.Contains("备选：背包第 1 页 · 左上格 (6,6)", display);
+    }
+
+    [Fact]
+    public void FormatterSimplifiesInstalledAndExplainsFactionVendorSources()
     {
         var installed = Attachment(
             "component", AttachmentKind.Component,
@@ -237,8 +255,73 @@ public sealed class AttachmentAcquisitionTests
                 ReputationName: "崇敬",
                 RequiredReputation: 10_000));
 
-        Assert.Contains("已镶在当前穿戴：头盔「守望者头盔」", ResultViewModel.FormatAttachment(installed));
+        Assert.Contains("首选：已镶嵌", ResultViewModel.FormatAttachment(installed));
+        Assert.DoesNotContain("守望者头盔", ResultViewModel.FormatAttachment(installed));
+        Assert.DoesNotContain("备选：", ResultViewModel.FormatAttachment(installed));
+        Assert.DoesNotContain("铁匠制作", ResultViewModel.FormatAttachment(installed));
         Assert.Contains("阵营军需官：拜死教（崇敬）", ResultViewModel.FormatAttachment(augment));
+    }
+
+    [Fact]
+    public void PlanEquipmentCannotBeUsedAsAnotherItemsAttachmentSource()
+    {
+        const string donorId = "donor-item";
+        var installedSource = new AttachmentAcquisitionSource(
+            AttachmentAcquisitionKind.Installed,
+            HostItemId: donorId,
+            HostItemName: "来源装备");
+        var component = Attachment(
+            "component", AttachmentKind.Component,
+            installedSource,
+            new AttachmentAcquisitionSource(AttachmentAcquisitionKind.Blacksmith, FormulaRecord: "formula"));
+        var target = Item("target-item", EquipmentSlot.Hands);
+        var donor = Item(donorId, EquipmentSlot.Head, componentRecord: "component");
+        var plan = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Hands] = new(target, component, null),
+            [EquipmentSlot.Head] = new(donor, component, null)
+        };
+
+        var display = ResultViewModel.FormatAttachment(
+            component,
+            target,
+            plan.Values.Select(x => x.Item.Id).ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+        Assert.DoesNotContain("已镶嵌", display);
+        Assert.Contains("首选：铁匠制作（配方已学会）", display);
+        Assert.True(BeamSearchOptimizer.HasActionableAttachmentSources(plan));
+
+        var installedOnly = Attachment("installed-only", AttachmentKind.Component, installedSource);
+        var invalidPlan = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.Hands] = new(target, installedOnly, null),
+            [EquipmentSlot.Head] = new(donor, component, null)
+        };
+        Assert.False(BeamSearchOptimizer.HasActionableAttachmentSources(invalidPlan));
+    }
+
+    [Fact]
+    public void AttachmentAlreadyOnRecommendedItemOnlySaysInstalled()
+    {
+        var component = Attachment(
+            "component", AttachmentKind.Component,
+            new AttachmentAcquisitionSource(
+                AttachmentAcquisitionKind.Installed,
+                HostItemId: "target-item",
+                HostItemName: "目标装备"));
+        var target = Item("target-item", EquipmentSlot.Hands, componentRecord: "component");
+
+        var display = ResultViewModel.FormatAttachment(
+            component,
+            target,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { target.Id });
+
+        Assert.Equal($"component{Environment.NewLine}已镶嵌", display);
+        Assert.True(BeamSearchOptimizer.HasActionableAttachmentSources(
+            new Dictionary<EquipmentSlot, LoadoutVariant>
+            {
+                [EquipmentSlot.Hands] = new(target, component, null)
+            }));
     }
 
     private static AttachmentDefinition Attachment(
@@ -253,6 +336,19 @@ public sealed class AttachmentAcquisitionTests
         LevelRequirement = 1,
         CompatibleSlots = new HashSet<EquipmentSlot> { EquipmentSlot.Hands },
         AcquisitionSources = sources
+    };
+
+    private static ItemInstance Item(
+        string id,
+        EquipmentSlot slot,
+        string componentRecord = "") => new()
+    {
+        Id = id,
+        BaseRecord = $"records/{id}.dbr",
+        Name = id,
+        Slot = slot,
+        ComponentRecord = componentRecord,
+        Source = new ItemSourceLocation(ItemSourceKind.Backpack, "test.gdc", 0, 0, 0)
     };
 
     private static GameRecord Record(string name, string @class) => new()
