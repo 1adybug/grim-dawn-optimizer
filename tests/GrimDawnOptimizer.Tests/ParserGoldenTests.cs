@@ -23,6 +23,7 @@ public sealed class ParserGoldenTests
         Assert.Equal("黄金角色", character.Name);
         Assert.Equal(100, character.Level);
         Assert.True(character.IsHardcore);
+        Assert.True(character.IsFemale);
         Assert.Equal(1050, character.Physique);
         var skill = Assert.Single(character.Skills);
         Assert.Equal("records/skills/playerclass/test.dbr", skill.Record);
@@ -310,6 +311,91 @@ public sealed class ParserGoldenTests
     }
 
     [Fact]
+    public async Task CatalogLookupsKeepTheSameCaseInsensitivityAfterRestart()
+    {
+        using var fixture = new TemporaryFixture();
+        var arzPath = fixture.Write("database.arz", BuildArz(123));
+        var tagPath = fixture.Write("Text_EN.arc", BuildArc("tagItemName=Test Item\r\n"));
+        var cacheRoot = Path.Combine(fixture.Root, "cache");
+        var installation = new GameInstallation(fixture.Root, "test", "test", [arzPath, tagPath]);
+
+        var first = await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+        var restarted = await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+        foreach (var catalog in new[] { first, restarted })
+        {
+            Assert.True(catalog.Records.TryGetValue("RECORDS/ITEMS/TEST.DBR", out var record));
+            Assert.Equal("WeaponArmor_Offhand", record.Text("class"));
+            Assert.Equal(512, Assert.Single(record.NumericSeries["STRENGTHREQUIREMENT"]));
+            Assert.Equal("Test Item", catalog.Tags["TAGITEMNAME"]);
+        }
+    }
+
+    [Fact]
+    public async Task CacheIdentityIncludesArchivePrecedence()
+    {
+        using var fixture = new TemporaryFixture();
+        var firstPath = fixture.Write("first.arz", BuildArz(123));
+        var secondPath = fixture.Write("second.arz", BuildArz(456));
+        var source = new GameDataSource(Path.Combine(fixture.Root, "cache"));
+        var installation = new GameInstallation(fixture.Root, "test", "test", [firstPath, secondPath]);
+
+        var first = await source.LoadCatalogAsync(installation);
+        var reversed = await source.LoadCatalogAsync(installation with { DataFiles = [secondPath, firstPath] });
+
+        Assert.Equal(456, first.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+        Assert.Equal(123, reversed.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+    }
+
+    [Fact]
+    public async Task CachedCatalogReloadsChangedAnimationResourcesAfterRestart()
+    {
+        using var fixture = new TemporaryFixture();
+        const string tableName = "records/creatures/pc/anm_test.dbr";
+        var arzPath = fixture.Write("database.arz", BuildArz(123,
+            recordName: tableName, animationPath: "creatures/pc/test.anm"));
+        Directory.CreateDirectory(Path.Combine(fixture.Root, "resources"));
+        var animationPath = Path.Combine(fixture.Root, "resources", "creatures.arc");
+        byte[] Animation(uint frames)
+        {
+            var header = new byte[16];
+            "ANM\u0002"u8.CopyTo(header);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(8), frames);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(12), 30);
+            return BuildArc("pc/test.anm", header);
+        }
+        await File.WriteAllBytesAsync(animationPath, Animation(19));
+        var cacheRoot = Path.Combine(fixture.Root, "cache");
+        // Animation archives deliberately are not part of the database-cache hash.
+        var installation = new GameInstallation(fixture.Root, "test", "test", [arzPath]);
+        var first = await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+
+        await File.WriteAllBytesAsync(animationPath, Animation(30));
+        var restarted = await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+
+        Assert.Equal((double)(19f / 30), first.AnimationProfiles[tableName].UnarmedAttackSeconds);
+        Assert.Equal(1, restarted.AnimationProfiles[tableName].UnarmedAttackSeconds);
+    }
+
+    [Fact]
+    public async Task ExpansionRecordReplacesDeletedBaseFieldsIncludingThroughCache()
+    {
+        using var fixture = new TemporaryFixture();
+        var basePath = fixture.Write("database.arz", BuildArz(123));
+        var expansionPath = fixture.Write("GDX2.arz", BuildArz(456, includeLegacyFields: false));
+        var source = new GameDataSource(Path.Combine(fixture.Root, "cache"));
+        var installation = new GameInstallation(fixture.Root, "test", "test", [basePath, expansionPath]);
+
+        foreach (var catalog in new[] { await source.LoadCatalogAsync(installation), await source.LoadCatalogAsync(installation) })
+        {
+            var record = catalog.Records["records/items/test.dbr"];
+            Assert.Equal(456, record.NumericValues["characterLife"]);
+            Assert.Equal(0, record.NumericValues["strengthRequirement"]);
+            Assert.False(record.NumericSeries.ContainsKey("strengthRequirement"));
+            Assert.Equal(string.Empty, record.Text("itemCostName"));
+        }
+    }
+
+    [Fact]
     public async Task LegacyTextCacheIsIgnoredAndRebuilt()
     {
         using var fixture = new TemporaryFixture();
@@ -335,6 +421,40 @@ public sealed class ParserGoldenTests
         var verify = verifyConnection.CreateCommand();
         verify.CommandText = "SELECT typeof(payload) FROM catalog_cache";
         Assert.Equal("blob", await verify.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task EarlierBinaryCacheVersionIsRebuiltAfterRestart()
+    {
+        using var fixture = new TemporaryFixture();
+        var arzPath = fixture.Write("database.arz", BuildArz(321));
+        var cacheRoot = Path.Combine(fixture.Root, "cache");
+        var installation = new GameInstallation(fixture.Root, "test", "test", [arzPath]);
+        await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+
+        var connectionString = $"Data Source={Path.Combine(cacheRoot, "catalog.db")};Pooling=False";
+        await using (var connection = new SqliteConnection(connectionString))
+        {
+            await connection.OpenAsync();
+            var read = connection.CreateCommand();
+            read.CommandText = "SELECT payload FROM catalog_cache";
+            var payload = Assert.IsType<byte[]>(await read.ExecuteScalarAsync());
+            "GDOC25"u8.CopyTo(payload);
+            var write = connection.CreateCommand();
+            write.CommandText = "UPDATE catalog_cache SET payload=$payload";
+            write.Parameters.Add("$payload", SqliteType.Blob).Value = payload;
+            await write.ExecuteNonQueryAsync();
+        }
+
+        var restarted = await new GameDataSource(cacheRoot).LoadCatalogAsync(installation);
+
+        Assert.Equal(321, restarted.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+        await using var verifyConnection = new SqliteConnection(connectionString);
+        await verifyConnection.OpenAsync();
+        var verify = verifyConnection.CreateCommand();
+        verify.CommandText = "SELECT payload FROM catalog_cache";
+        var rewritten = Assert.IsType<byte[]>(await verify.ExecuteScalarAsync());
+        Assert.Equal("GDOC26", Encoding.ASCII.GetString(rewritten, 0, 6));
     }
 
     [Fact]
@@ -691,17 +811,18 @@ public sealed class ParserGoldenTests
         writer.Write(bytes);
     }
 
-    private static byte[] BuildArc(string text)
+    private static byte[] BuildArc(string text) => BuildArc("tags.txt", Encoding.UTF8.GetBytes(text));
+
+    private static byte[] BuildArc(string name, byte[] content)
     {
-        var content = Encoding.UTF8.GetBytes(text);
-        var names = Encoding.ASCII.GetBytes("tags.txt\0");
+        var names = Encoding.ASCII.GetBytes(name + '\0');
         const int headerSize = 28;
         const int partTableSize = 12;
         const int tocSize = 44;
         var dataOffset = headerSize + partTableSize + names.Length + tocSize;
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-        writer.Write(0);
+        writer.Write(0x435241);
         writer.Write(3);
         writer.Write(1);
         writer.Write(1);
@@ -726,14 +847,16 @@ public sealed class ParserGoldenTests
         return stream.ToArray();
     }
 
-    private static byte[] BuildArz(uint value)
+    private static byte[] BuildArz(uint value, bool includeLegacyFields = true,
+        string recordName = "records/items/test.dbr", string? animationPath = null)
     {
         var strings = new[]
         {
-            "records/items/test.dbr", "characterLife", "Class", "WeaponArmor_Offhand",
+            recordName, "characterLife", "Class", "WeaponArmor_Offhand",
             "strengthRequirement", "dexterityRequirement", "intelligenceRequirement",
             "itemCostName", "records/game/itemcostformulas_heavy.dbr",
-            "handsStrengthEquation", "itemLevel * 10 + 84"
+            "handsStrengthEquation", "itemLevel * 10 + 84",
+            "unarmedAttackAnim1", animationPath ?? string.Empty
         };
         using var stringStream = new MemoryStream();
         using (var stringsWriter = new BinaryWriter(stringStream, Encoding.ASCII, leaveOpen: true))
@@ -747,7 +870,8 @@ public sealed class ParserGoldenTests
             }
         }
 
-        var record = new byte[84];
+        var ordinarySize = includeLegacyFields ? 84 : 24;
+        var record = new byte[ordinarySize + (animationPath is null ? 0 : 12)];
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(0, 2), 0);
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(2, 2), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(4, 4), 1);
@@ -756,11 +880,15 @@ public sealed class ParserGoldenTests
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(14, 2), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(16, 4), 2);
         BinaryPrimitives.WriteUInt32LittleEndian(record.AsSpan(20, 4), 3);
-        WriteNumericField(record, 24, 4, 512);
-        WriteNumericField(record, 36, 5, 410);
-        WriteNumericField(record, 48, 6, 320);
-        WriteTextField(record, 60, 7, 8);
-        WriteTextField(record, 72, 9, 10);
+        if (includeLegacyFields)
+        {
+            WriteNumericField(record, 24, 4, 512);
+            WriteNumericField(record, 36, 5, 410);
+            WriteNumericField(record, 48, 6, 320);
+            WriteTextField(record, 60, 7, 8);
+            WriteTextField(record, 72, 9, 10);
+        }
+        if (animationPath is not null) WriteTextField(record, ordinarySize, 11, 12);
         var compressed = new byte[LZ4Codec.MaximumOutputSize(record.Length)];
         var compressedLength = LZ4Codec.Encode(record, 0, record.Length, compressed, 0, compressed.Length);
 

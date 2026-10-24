@@ -20,7 +20,7 @@ public sealed class JsonProfileStore : IProfileStore
             await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
             var profiles = await JsonSerializer.DeserializeAsync<List<OptimizationProfile>>(stream, _options, cancellationToken);
             if (profiles is not { Count: > 0 }) return [new OptimizationProfile()];
-            var supported = profiles.Where(x => x.SchemaVersion is >= 1 and <= 6).Select(Migrate).ToArray();
+            var supported = profiles.Where(x => x.SchemaVersion is >= 1 and <= 7).Select(Migrate).ToArray();
             return supported.Length > 0 ? supported : [new OptimizationProfile()];
         }
         catch (JsonException)
@@ -52,7 +52,7 @@ public sealed class JsonProfileStore : IProfileStore
                 ? new IncomingDamageProfile()
                 : profile.Scenario.IncomingDamage with { BleedingPerHit = 0 };
         profile.Metrics = SupportedMetricCatalog.Merge(profile.Metrics);
-        profile.SchemaVersion = 6;
+        profile.SchemaVersion = 7;
         return profile;
     }
 

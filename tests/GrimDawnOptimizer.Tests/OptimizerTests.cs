@@ -13,6 +13,7 @@ public sealed class OptimizerTests
         var (character, catalog) = DemoDataFactory.Create();
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 3,
             MonteCarloTrials = 500,
@@ -64,6 +65,7 @@ public sealed class OptimizerTests
         };
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1, ResultCount = 3, MonteCarloTrials = 500,
             CurrentWeaponAttackDps = 100,
             CurrentPanelDps = 100,
@@ -110,6 +112,7 @@ public sealed class OptimizerTests
         };
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1, ResultCount = 3, MonteCarloTrials = 500,
             CurrentWeaponAttackDps = 100, CurrentPanelDps = 100,
             Metrics = [new MetricRule { Key = "dps", DisplayName = "DPS", Weight = 1 }]
@@ -140,6 +143,7 @@ public sealed class OptimizerTests
         };
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
             // The raw model is intentionally far above this input. Calibration
             // must still use the user's exact current sheet value rather than
@@ -212,6 +216,7 @@ public sealed class OptimizerTests
         var panelSkillDps = panelWeaponDps + (rawSkillDps - rawWeaponDps) * 1.2;
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -248,6 +253,7 @@ public sealed class OptimizerTests
         };
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
             CurrentWeaponAttackDps = 100,
             CurrentPanelDps = 100,
@@ -284,6 +290,7 @@ public sealed class OptimizerTests
         })).ToArray();
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -333,6 +340,7 @@ public sealed class OptimizerTests
         };
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -356,6 +364,7 @@ public sealed class OptimizerTests
         var (character, catalog) = DemoDataFactory.Create();
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -372,11 +381,12 @@ public sealed class OptimizerTests
     }
 
     [Fact]
-    public async Task ActiveSearchStillRequiresMainSkillPanelDps()
+    public async Task ExplicitCalibrationRequiresMainSkillPanelDps()
     {
         var (character, catalog) = DemoDataFactory.Create();
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -390,6 +400,42 @@ public sealed class OptimizerTests
         Assert.Contains("主攻技能", exception.Message);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(30)]
+    [InlineData(double.NaN)]
+    public async Task DirectCalculationIgnoresMissingOrStalePanelDpsByDefault(double stalePanelDps)
+    {
+        var (character, catalog, skill) = SkillCalibrationFixture(
+            "direct-weapon-skill", "Skill_WeaponPool_BasicAttack", weaponDamagePercent: 200);
+        var profile = new OptimizationProfile
+        {
+            SearchBudgetSeconds = 1, ResultCount = 1, MonteCarloTrials = 500,
+            CurrentPanelDps = stalePanelDps, CurrentWeaponAttackDps = 0,
+            RuntimeDpsCalibrationFactor = 7, RuntimeWeaponDpsCalibrationFactor = 8,
+            RuntimeSkillAddedDpsCalibrationFactor = 9, RuntimeDpsCalibrationMode = DpsCalibrationMode.DualAnchor,
+            Rotation = new SkillRotationDefinition { MainSkillRecord = skill.Record }
+        };
+        var engine = new CharacterStatEngine();
+        var simulator = new CombatSimulator();
+        var slots = new Dictionary<EquipmentSlot, LoadoutVariant>
+        {
+            [EquipmentSlot.MainHand] = new(character.Items[0], null, null)
+        };
+        var expected = simulator.Simulate(character, engine.Calculate(character, slots, catalog),
+            profile.Scenario, SkillRotationFactory.Build(character, catalog, skill, slots)).UnmitigatedDps;
+
+        var run = await new BeamSearchOptimizer(engine, simulator)
+            .OptimizeAsync(character, character.Items, [], catalog, profile);
+
+        Assert.False(profile.UsePanelDpsCalibration);
+        Assert.Equal(expected, Assert.Single(run.Results).Simulation.UnmitigatedDps, 8);
+        Assert.Equal(DpsCalibrationMode.None, profile.RuntimeDpsCalibrationMode);
+        Assert.Equal(1, profile.RuntimeDpsCalibrationFactor);
+        Assert.Equal(1, profile.RuntimeWeaponDpsCalibrationFactor);
+        Assert.Equal(1, profile.RuntimeSkillAddedDpsCalibrationFactor);
+    }
+
     [Fact]
     public async Task PureSpellUsesOnlyMainSkillPanelDps()
     {
@@ -397,6 +443,7 @@ public sealed class OptimizerTests
             "pure-spell", "Skill_AttackProjectile", weaponDamagePercent: 0, flatFireDamage: 50);
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -420,6 +467,7 @@ public sealed class OptimizerTests
             "weapon-skill", "Skill_WeaponPool_BasicAttack", weaponDamagePercent: 200);
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,
@@ -442,6 +490,7 @@ public sealed class OptimizerTests
             "near-weapon-skill", "Skill_WeaponPool_BasicAttack", weaponDamagePercent: 101);
         var profile = new OptimizationProfile
         {
+            UsePanelDpsCalibration = true,
             SearchBudgetSeconds = 1,
             ResultCount = 1,
             MonteCarloTrials = 500,

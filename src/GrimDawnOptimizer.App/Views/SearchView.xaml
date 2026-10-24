@@ -2,6 +2,19 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <UserControl.Resources>
+        <DataTemplate x:Key="PanelStatInputTemplate">
+            <StackPanel Margin="0,0,12,12">
+                <TextBlock Text="{Binding Label}" Style="{StaticResource FieldLabel}" ToolTip="{Binding Hint}" />
+                <ui:TextBox Text="{Binding Input, UpdateSourceTrigger=PropertyChanged}"
+                            PlaceholderText="可选，留空自动计算" ClearButtonEnabled="True"
+                            ToolTip="{Binding Hint}" AutomationProperties.Name="{Binding Label}" />
+                <TextBlock Text="{Binding Error}" FontSize="12" TextWrapping="Wrap"
+                           Visibility="{Binding IsInvalid, Converter={StaticResource BoolVisibility}}"
+                           Foreground="{DynamicResource SystemFillColorCriticalBrush}" />
+            </StackPanel>
+        </DataTemplate>
+    </UserControl.Resources>
     <ScrollViewer Style="{StaticResource PageScrollViewer}">
         <Grid>
             <Grid.ColumnDefinitions>
@@ -11,11 +24,17 @@
             </Grid.ColumnDefinitions>
 
             <StackPanel Grid.Column="0" Margin="0,0,28,20">
-                <TextBlock Text="面板校准" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="计算与校准" Style="{StaticResource SectionTitle}" />
                 <TextBlock Text="{Binding DpsCalibrationInstructions}"
                            Style="{StaticResource SecondaryText}"
                            Margin="0,5,0,20" />
 
+                <StackPanel IsEnabled="{Binding IsIdle}">
+                <CheckBox Content="使用 DPS 校准（可选）"
+                          IsChecked="{Binding UsePanelDpsCalibration, Mode=TwoWay}"
+                          AutomationProperties.Name="使用 DPS 校准（可选）"
+                          Margin="0,0,0,16" />
+                <StackPanel Visibility="{Binding UsePanelDpsCalibration, Converter={StaticResource BoolVisibility}}">
                 <TextBlock Text="{Binding CurrentPanelDpsLabel}" Style="{StaticResource FieldLabel}" />
                 <ui:TextBox Text="{Binding CurrentPanelDpsInput, UpdateSourceTrigger=PropertyChanged}"
                             PlaceholderText="例如 42,000"
@@ -38,6 +57,33 @@
                                Foreground="{DynamicResource SystemFillColorCriticalBrush}"
                                FontSize="12"
                                Margin="0,6,0,0" />
+                </StackPanel>
+                </StackPanel>
+
+                <Expander Header="角色属性校准（可选）" Margin="0,20,0,0">
+                    <StackPanel Margin="0,12,0,0">
+                        <TextBlock Text="在所选难度下，保持当前装备、武器组和常驻光环一致，等临时 Buff、药水和降抗效果消失后读取面板。优先填写生命、OA、DA 和攻速；已封顶的速度如不清楚未封顶值，请留空。"
+                                   Style="{StaticResource SecondaryText}" Margin="0,0,0,12" />
+                        <ItemsControl ItemsSource="{Binding CorePanelStats}" ItemTemplate="{StaticResource PanelStatInputTemplate}">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                        <TextBlock Text="校准保留换装产生的增减及百分比加成；仍依赖装备技能模型，不能修复未建模的特效。"
+                                   Style="{StaticResource SecondaryText}" FontSize="12" />
+                    </StackPanel>
+                </Expander>
+                <Expander Header="抗性、超抗与上限（可选）" Margin="0,10,0,0">
+                    <StackPanel Margin="0,12,0,0">
+                        <TextBlock Text="含超抗值 = 当前难度面板抗性 + 超出上限的部分。例如面板 80%、超抗 32%，填 112。上限单独填 80；不要再次减去难度惩罚。"
+                                   Style="{StaticResource SecondaryText}" Margin="0,0,0,12" />
+                        <ItemsControl ItemsSource="{Binding ResistancePanelStats}" ItemTemplate="{StaticResource PanelStatInputTemplate}">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                    </StackPanel>
+                </Expander>
+                <TextBlock Text="{Binding PanelStatsSummary}" Style="{StaticResource SecondaryText}" Margin="0,12,0,0" />
+                <TextBlock Text="属性校准仅用于本次角色会话；切换角色或难度会清空。重新配装后请重新载入存档并填写。"
+                           Style="{StaticResource SecondaryText}" FontSize="12" Margin="0,5,0,8" />
+                <ui:Button Content="清空可选属性" Command="{Binding ClearPanelStatsCommand}" HorizontalAlignment="Left" />
                 </StackPanel>
 
                 <Border Style="{StaticResource Divider}" />

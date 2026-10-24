@@ -48,6 +48,25 @@ public sealed class SeededItemStatResolverTests
     }
 
     [Fact]
+    public void AllDamageUsesTheSameItemScalingAsTypeDamage()
+    {
+        var allDamage = ItemRecord(new Dictionary<string, double>
+        {
+            ["attributeScalePercent"] = 30, ["offensiveTotalDamageModifier"] = 100
+        });
+        var fireDamage = ItemRecord(new Dictionary<string, double>
+        {
+            ["attributeScalePercent"] = 30, ["offensiveFireModifier"] = 100
+        });
+
+        var all = SeededItemStatResolver.Resolve(allDamage, null, null, seed: 1);
+        var fire = SeededItemStatResolver.Resolve(fireDamage, null, null, seed: 1);
+
+        Assert.True(all.IsExact);
+        Assert.Equal(fire.Stats[StatKeys.DamagePercent("fire")], all.Stats["damage.total.percent"]);
+    }
+
+    [Fact]
     public void ResolverFallsBackWhenASeedControlledFieldIsNotModeled()
     {
         var record = ItemRecord(new Dictionary<string, double>

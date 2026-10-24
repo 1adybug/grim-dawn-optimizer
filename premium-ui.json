@@ -1,0 +1,12 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["src/GrimDawnOptimizer.App"],
+  "locale": "zh-CN",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": ["Form", "Select/Listbox", "Scrollbar"],
+  "ownership": { "Select/Listbox": "native" },
+  "requiredCommands": ["unit"],
+  "commands": {
+    "unit": "dotnet test tests/GrimDawnOptimizer.Tests/GrimDawnOptimizer.Tests.csproj"
+  }
+}

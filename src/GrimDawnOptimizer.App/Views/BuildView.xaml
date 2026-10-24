@@ -5,6 +5,9 @@
              xmlns:vm="clr-namespace:GrimDawnOptimizer.App.ViewModels">
     <ScrollViewer Style="{StaticResource PageScrollViewer}">
         <Grid>
+            <Grid.Style><Style TargetType="Grid"><Style.Triggers>
+                <DataTrigger Binding="{Binding IsBusy}" Value="True"><Setter Property="IsEnabled" Value="False" /></DataTrigger>
+            </Style.Triggers></Style></Grid.Style>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="1.08*" MinWidth="390" />
                 <ColumnDefinition Width="1" />
@@ -79,6 +82,10 @@
 
             <StackPanel Grid.Column="2" Margin="28,0,0,20">
                 <TextBlock Text="战斗目标" Style="{StaticResource SectionTitle}" />
+                <TextBlock Text="目标难度（单人战役）" Style="{StaticResource FieldLabel}" Margin="0,16,0,6" />
+                <ComboBox ItemsSource="{Binding DifficultyOptions}" SelectedIndex="{Binding SelectedDifficulty, Mode=TwoWay}"
+                          AutomationProperties.Name="目标难度" />
+                <TextBlock Text="{Binding Profile.Scenario.DifficultySummary}" Style="{StaticResource SecondaryText}" Margin="0,8,0,12" />
                 <TextBlock Text="基于当前角色等级，从游戏数据库汇总同级 BOSS。"
                            Style="{StaticResource SecondaryText}"
                            Margin="0,5,0,16" />
@@ -137,6 +144,34 @@
                            Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
                            TextWrapping="Wrap"
                            Margin="0,10,0,0" />
+
+                <Expander Header="战斗 Debuff 与怪物增伤" Margin="0,18,0,0">
+                    <StackPanel Margin="0,8,0,0">
+                        <TextBlock Text="难度增伤、生命和抗性惩罚已自动应用，不要在此重复填写。额外增伤作用于难度修正后的伤害，默认 0；降抗直接扣除百分点。这里的额外效果按整场持续生效计算。"
+                                   Style="{StaticResource SecondaryText}" />
+                        <TextBlock Text="怪物额外伤害加成（%）" Style="{StaticResource FieldLabel}" Margin="0,12,0,6" />
+                        <ui:NumberBox Value="{Binding EnemyDamageIncreasePercent, Mode=TwoWay}" Minimum="0" Maximum="1000"
+                                      MaxDecimalPlaces="1" SpinButtonPlacementMode="Compact" AutomationProperties.Name="怪物额外伤害加成" />
+                        <Grid Margin="0,14,0,6"><Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                            <TextBlock Text="玩家抗性"/><TextBlock Grid.Column="1" Text="难度惩罚"/>
+                            <TextBlock Grid.Column="2" Text="额外降抗"/>
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding ResistanceDebuffs}">
+                            <ItemsControl.ItemTemplate><DataTemplate>
+                                <Grid Margin="0,3"><Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Penalty}" VerticalAlignment="Center"/>
+                                    <ui:NumberBox Grid.Column="2" Value="{Binding Reduction, Mode=TwoWay}" Minimum="0" Maximum="100"
+                                                  MaxDecimalPlaces="1" SpinButtonPlacementMode="Compact" AutomationProperties.Name="{Binding Label}"/>
+                                </Grid>
+                            </DataTemplate></ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Expander>
 
                 <ui:Button Content="继续设置搜索"
                            Icon="{ui:SymbolIcon ArrowRight16}"

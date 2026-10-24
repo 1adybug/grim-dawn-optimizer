@@ -110,18 +110,25 @@
                     <TextBlock Text="{Binding ScoreSummary}" FontWeight="SemiBold" />
                     <TextBlock Grid.Column="1"
                                Text="{Binding UnmitigatedDps, StringFormat=含附件未减伤 {0}}"
+                               ToolTip="{Binding UnmitigatedDpsFull, StringFormat=面板 DPS：{0}}"
+                               AutomationProperties.HelpText="{Binding UnmitigatedDpsFull, StringFormat=面板 DPS：{0}}"
                                Margin="24,0,0,0"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                     <TextBlock Grid.Column="2"
                                Text="{Binding EquipmentOnlyUnmitigatedDps, StringFormat=仅装备本体 {0}}"
+                               ToolTip="{Binding EquipmentOnlyUnmitigatedDpsFull, StringFormat=仅装备本体面板 DPS：{0}}"
+                               AutomationProperties.HelpText="{Binding EquipmentOnlyUnmitigatedDpsFull, StringFormat=仅装备本体面板 DPS：{0}}"
                                Margin="24,0,0,0"
                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                 </Grid>
-                <TextBlock Grid.Row="2"
+                <StackPanel Grid.Row="2">
+                <TextBlock Text="{Binding CombatResistances}" Style="{StaticResource SecondaryText}" FontSize="12" Margin="0,8,0,0" />
+                <TextBlock
                            Text="{Binding ScoreBreakdown}"
                            Style="{StaticResource SecondaryText}"
                            FontSize="12"
                            Margin="0,6,0,18" />
+                </StackPanel>
 
                 <Grid Grid.Row="3">
                     <Grid.RowDefinitions>
@@ -198,6 +205,39 @@
                         <TextBlock Text="页码和坐标均从 1 开始；(X,Y) 是物品左上角所在格，X 向右、Y 向下。组件和增幅分别给出首选及不同类别的备选获取方式；推荐 DPS 要求对应行全部装齐。"
                                    Style="{StaticResource SecondaryText}"
                                    Margin="0,8,12,4" />
+                    </Expander>
+                    <Expander Header="单件换装对照 · 其他装备保持当前穿戴" Margin="0,12,0,0"
+                              IsExpanded="True" Visibility="{Binding HasSingleSwaps, Converter={StaticResource BoolVisibility}}">
+                        <StackPanel Margin="0,12,0,0">
+                            <TextBlock Text="整套排名不保证每件装备单换都提升。这里使用物品现有组件和增幅；比较无临时 Buff、无临时降抗时的游戏面板，不是减伤后战斗 DPS。"
+                                       Style="{StaticResource SecondaryText}" Margin="0,0,0,10" />
+                            <ComboBox ItemsSource="{Binding SingleSwaps}" SelectedItem="{Binding SelectedSwap}"
+                                      DisplayMemberPath="Title" HorizontalAlignment="Stretch" />
+                            <StackPanel DataContext="{Binding SelectedSwap}" Margin="0,10,0,0">
+                                <TextBlock Text="{Binding Explanation}" TextWrapping="Wrap" Margin="0,0,0,10" />
+                                <DataGrid ItemsSource="{Binding Rows}" AutoGenerateColumns="False"
+                                          CanUserAddRows="False" CanUserDeleteRows="False" CanUserReorderColumns="False"
+                                          HeadersVisibility="Column" RowHeaderWidth="0" MaxHeight="520">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="属性" Binding="{Binding Label}" Width="1.4*" IsReadOnly="True" />
+                                        <DataGridTextColumn Header="当前基准" Binding="{Binding Before}" Width="*" IsReadOnly="True" />
+                                        <DataGridTextColumn Header="单换预测" Binding="{Binding Predicted}" Width="*" IsReadOnly="True" />
+                                        <DataGridTextColumn Header="增减" Binding="{Binding Change}" Width="*" IsReadOnly="True" />
+                                        <DataGridTemplateColumn Header="游戏实测（选填）" Width="1.2*">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBox Text="{Binding ActualInput, UpdateSourceTrigger=PropertyChanged}"
+                                                             AutomationProperties.Name="{Binding Label}" Margin="2" />
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="实测 − 预测" Binding="{Binding Deviation}" Width="1.5*" IsReadOnly="True" />
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                            <TextBlock Text="抗性行显示封顶后的面板数值。未填写校准的基准值来自模型。实测值仅用于本次对照，不会自动修改评分或校准系数。"
+                                       Style="{StaticResource SecondaryText}" FontSize="12" Margin="0,10,0,0" />
+                        </StackPanel>
                     </Expander>
                 </StackPanel>
             </Grid>

@@ -52,8 +52,8 @@ public sealed class BossScenarioFactoryTests
         Assert.Equal(2, scenario.EnemyLevel);
         Assert.Equal(300, scenario.EnemyHealth);
         Assert.Equal(240, scenario.EnemyArmor);
-        Assert.Equal(2410, scenario.EnemyOffensiveAbility);
-        Assert.Equal(2410, scenario.EnemyDefensiveAbility);
+        Assert.Equal(120, scenario.EnemyOffensiveAbility);
+        Assert.Equal(124, scenario.EnemyDefensiveAbility);
         Assert.Equal(15, scenario.EnemyResistances["fire"]);
         Assert.Equal(25, scenario.EnemyResistances["cold"]);
         Assert.Equal(40, scenario.EnemyLifeLeechResistance);

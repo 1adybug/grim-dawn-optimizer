@@ -103,7 +103,7 @@ public sealed class CharacterStatEngineTests
     }
 
     [Fact]
-    public void DualRangedWeaponsUseInternalAndAverageWeaponSpeedModifiers()
+    public void DualRangedWeaponsSumBaseSpeedModifiers()
     {
         var main = Item("main-gun", EquipmentSlot.MainHand, qualifier: "ranged1h", weaponBaseSpeed: -0.09);
         var off = Item("off-gun", EquipmentSlot.MainHand, qualifier: "ranged1h", weaponBaseSpeed: -0.06);
@@ -117,8 +117,8 @@ public sealed class CharacterStatEngineTests
             [EquipmentSlot.OffHand] = new(off, null, null)
         }, new GameDataCatalog());
 
-        Assert.Equal(-0.075, result.Stats["weaponBaseAttackSpeed"], 8);
-        Assert.Equal(0.795, result.Stats["weaponAttackSpeedFactor"], 8);
+        Assert.Equal(-0.15, result.Stats["weaponBaseAttackSpeed"], 8);
+        Assert.Equal(0.85, result.Stats["weaponAttackSpeedFactor"], 8);
         Assert.Equal(1.5, result.Stats["averageWeaponStrikesPerAction"], 8);
     }
 

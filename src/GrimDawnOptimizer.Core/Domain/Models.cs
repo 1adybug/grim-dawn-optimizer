@@ -30,6 +30,7 @@ public enum AttachmentAcquisitionKind { Loose, Installed, Blacksmith, FactionVen
 public enum MetricDirection { Maximize, Minimize }
 public enum ConfidenceLevel { High, Medium, Low }
 public enum DpsCalibrationMode { None, SingleAnchor, DualAnchor, SingleAnchorFallback }
+public enum GameDifficulty { Normal, Veteran, Elite, Ultimate }
 
 public sealed record ItemSourceLocation(
     ItemSourceKind Kind,
@@ -187,6 +188,7 @@ public sealed class CharacterSnapshot
     public required string SaveFilePath { get; init; }
     public int Level { get; init; }
     public bool IsHardcore { get; init; }
+    public bool IsFemale { get; init; }
     public int Physique { get; init; }
     public int Cunning { get; init; }
     public int Spirit { get; init; }
@@ -218,6 +220,12 @@ public sealed record IncomingDamageProfile(
 
 public sealed class CombatScenario
 {
+    public GameDifficulty Difficulty { get; set; } = GameDifficulty.Normal;
+    public double EnemyDamageIncreasePercent { get; set; }
+    public Dictionary<string, double> PlayerResistanceReduction { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    [JsonIgnore] public StatBlock DifficultyEnemyModifiers { get; set; } = new();
+    [JsonIgnore] public StatBlock? DifficultyPlayerModifiers { get; set; }
+    [JsonIgnore] public string DifficultySummary { get; set; } = "请选择目标难度；承伤使用可比较的混合伤害模板。";
     public string Name { get; set; } = "同级 BOSS 平均值 · 10 秒";
     public int EnemyLevel { get; set; } = 100;
     public double EnemyHealth { get; set; } = 300_000;
@@ -254,7 +262,26 @@ public sealed class SkillRotationDefinition
     public StatBlock FlatDamage { get; set; } = new();
     public StatBlock WeaponPoolFlatDamage { get; set; } = new();
     public List<WeaponPoolAttackDefinition> WeaponPoolAttacks { get; set; } = [];
+    public List<SkillSecondaryAttackDefinition> SecondaryAttacks { get; set; } = [];
     public List<string> EnabledCooldownSkills { get; set; } = [];
+}
+
+public sealed class SkillSecondaryAttackDefinition
+{
+    public string Record { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public int Level { get; set; }
+    public double WeaponDamagePercent { get; set; }
+    public StatBlock FlatDamage { get; set; } = new();
+    public List<SkillDamageSourceDefinition> SourceRecords { get; set; } = [];
+}
+
+public sealed class SkillDamageSourceDefinition
+{
+    public string Record { get; set; } = string.Empty;
+    public int Level { get; set; }
+    public double WeaponDamagePercent { get; set; }
+    public StatBlock TranslatedStats { get; set; } = new();
 }
 
 public sealed class WeaponPoolAttackDefinition
@@ -278,7 +305,7 @@ public sealed class MetricRule
 
 public sealed class OptimizationProfile
 {
-    public int SchemaVersion { get; set; } = 6;
+    public int SchemaVersion { get; set; } = 7;
     public string Name { get; set; } = "默认构筑";
     public CombatScenario Scenario { get; set; } = new();
     public SkillRotationDefinition Rotation { get; set; } = new();
@@ -288,9 +315,13 @@ public sealed class OptimizationProfile
     public int MonteCarloTrials { get; set; } = 4000;
     public bool UseUnlockedAttachments { get; set; } = true;
     [JsonIgnore]
+    public bool UsePanelDpsCalibration { get; set; }
+    [JsonIgnore]
     public double CurrentWeaponAttackDps { get; set; }
     [JsonIgnore]
     public double CurrentPanelDps { get; set; }
+    [JsonIgnore] public Dictionary<string, double> CurrentPanelStats { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    [JsonIgnore] public IReadOnlyDictionary<string, double> RuntimePanelCorrections { get; set; } = new Dictionary<string, double>();
     [JsonIgnore]
     public double RuntimeDpsCalibrationFactor { get; set; } = 1;
     [JsonIgnore]
@@ -364,6 +395,7 @@ public sealed class SimulationReport
 
 public sealed class LoadoutResult
 {
+    public IReadOnlyList<ItemSwapComparison> SingleItemComparisons { get; set; } = [];
     public required int Rank { get; set; }
     public required CalculatedLoadout Loadout { get; init; }
     public required SimulationReport Simulation { get; set; }
@@ -374,6 +406,10 @@ public sealed class LoadoutResult
         new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
     public required ConfidenceLevel Confidence { get; init; }
 }
+
+public sealed record ItemSwapComparison(
+    EquipmentSlot Slot, string ItemName, bool IsValid, string Explanation,
+    IReadOnlyDictionary<string, double> Before, IReadOnlyDictionary<string, double> After);
 
 public sealed record SearchProgress(
     string Phase,
@@ -397,6 +433,11 @@ public sealed class GameDataCatalog
     public string Version { get; init; } = "unknown";
     public IReadOnlyDictionary<string, GameRecord> Records { get; init; } = new Dictionary<string, GameRecord>();
     public IReadOnlyDictionary<string, string> Tags { get; init; } = new Dictionary<string, string>();
+    // Resolve against the current installation on every load. Animation archives
+    // can change independently of the cached database and localization files.
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, AnimationSpeedProfile> AnimationProfiles { get; set; } =
+        new Dictionary<string, AnimationSpeedProfile>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyList<AttachmentDefinition> Attachments { get; init; } = [];
     public IReadOnlyDictionary<string, IReadOnlyDictionary<int, StatBlock>> SetBonuses { get; init; } =
         new Dictionary<string, IReadOnlyDictionary<int, StatBlock>>();
@@ -428,4 +469,8 @@ public sealed record SaveLocation(string RootPath, string Source, IReadOnlyList<
 {
     public override string ToString() => RootPath;
 }
-public sealed record DiscoveryResult(IReadOnlyList<GameInstallation> Installations, IReadOnlyList<SaveLocation> SaveLocations);
+public sealed record DiscoveryResult(IReadOnlyList<GameInstallation> Installations, IReadOnlyList<SaveLocation> SaveLocations)
+{
+    public string? RunningGameRoot { get; init; }
+    public string? PreferredSaveRoot { get; init; }
+}

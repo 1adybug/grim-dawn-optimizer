@@ -43,7 +43,7 @@ public static class BossMetricBenchmarkResolver
         if (normalizedKey == "armor")
             return Math.Max(1, scenario.EnemyArmor);
         if (normalizedKey == "blockamount")
-            return Math.Max(1, rawIncomingDps / Math.Max(0.1, scenario.IncomingDamage.HitsPerSecond));
+            return Math.Max(1, rawIncomingDps / Math.Max(0.1, DifficultyRules.Incoming(scenario).HitsPerSecond));
         if (normalizedKey == "resistancecoverage")
             return 1;
         if (IsResistance(normalizedKey))
@@ -88,7 +88,7 @@ public static class BossMetricBenchmarkResolver
 
     public static double RawIncomingDps(CombatScenario scenario)
     {
-        var incoming = scenario.IncomingDamage;
+        var incoming = DifficultyRules.Incoming(scenario);
         var perHit = incoming.PhysicalPerHit + incoming.PiercePerHit + incoming.FirePerHit +
                      incoming.ColdPerHit + incoming.LightningPerHit + incoming.AcidPerHit +
                      incoming.VitalityPerHit + incoming.AetherPerHit + incoming.ChaosPerHit +

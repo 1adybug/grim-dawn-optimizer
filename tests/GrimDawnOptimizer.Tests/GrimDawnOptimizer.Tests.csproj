@@ -21,4 +21,7 @@
     <ProjectReference Include="..\..\src\GrimDawnOptimizer.Core\GrimDawnOptimizer.Core.csproj" />
     <ProjectReference Include="..\..\src\GrimDawnOptimizer.App\GrimDawnOptimizer.App.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\panel-dps-game-observations.json" />
+  </ItemGroup>
 </Project>

@@ -19,6 +19,8 @@ public sealed class MainViewModel : ObservableObject
     private readonly UiPreferencesStore _uiPreferencesStore;
     private SourceHistorySettings _sourceHistory = new();
     private bool _restoringSources;
+    private bool _gameSourceChosenByUser;
+    private bool _saveSourceChosenByUser;
     private readonly SemaphoreSlim _sourceHistorySaveLock = new(1, 1);
     private GameDataCatalog? _catalog;
     private OptimizationProfile _profile = new();
@@ -56,7 +58,8 @@ public sealed class MainViewModel : ObservableObject
             SelectedCharacter is not null &&
             SelectedCharacter.Items.Count > 0 &&
             IsCurrentWeaponAttackDpsValid &&
-            IsCurrentPanelDpsValid);
+            IsCurrentPanelDpsValid && IsPanelStatsValid);
+        ClearPanelStatsCommand = new RelayCommand(_ => ResetPanelStats(), _ => !IsBusy);
         DemoCommand = new RelayCommand(_ => LoadDemo(), _ => !IsBusy);
         CancelCommand = new RelayCommand(_ => _cancellation?.Cancel(), _ => IsBusy);
         DeleteGameDirectoryCommand = new RelayCommand(DeleteGameDirectory, x => x is GameInstallation);
@@ -91,6 +94,38 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand DeleteSaveDirectoryCommand { get; }
     public AsyncRelayCommand SaveProfileCommand { get; }
     public RelayCommand NavigateCommand { get; }
+    public RelayCommand ClearPanelStatsCommand { get; }
+
+    private IReadOnlyList<PanelStatInputViewModel>? _panelStats;
+    public IReadOnlyList<PanelStatInputViewModel> PanelStats => _panelStats ??=
+        PanelStatCalibration.Fields.Select(x => new PanelStatInputViewModel(x, PanelStatsChanged)).ToArray();
+    public IEnumerable<PanelStatInputViewModel> CorePanelStats => PanelStats.Where(x => !x.Key.EndsWith("Resistance", StringComparison.Ordinal));
+    public IEnumerable<PanelStatInputViewModel> ResistancePanelStats => PanelStats.Where(x => x.Key.EndsWith("Resistance", StringComparison.Ordinal));
+    public bool IsPanelStatsValid => _panelStats?.All(x => !x.IsInvalid) ?? true;
+    public string PanelStatsSummary => IsPanelStatsValid
+        ? $"已填写 {Profile.CurrentPanelStats.Count} 项；留空的属性继续使用自动计算。"
+        : "有无效的属性输入，请修正或清空后运行。";
+
+    private void PanelStatsChanged()
+    {
+        Profile.CurrentPanelStats = PanelStats.Where(x => !x.IsInvalid && x.Value.HasValue)
+            .ToDictionary(x => x.Key, x => x.Value!.Value, StringComparer.OrdinalIgnoreCase);
+        ClearStaleResults();
+        OnPropertyChanged(nameof(PanelStatsSummary));
+        OnPropertyChanged(nameof(IsPanelStatsValid));
+        OptimizeCommand.RaiseCanExecuteChanged();
+    }
+
+    private void ResetPanelStats()
+    {
+        Profile.CurrentPanelStats.Clear();
+        Profile.RuntimePanelCorrections = new Dictionary<string, double>();
+        if (_panelStats is not null)
+            foreach (var row in _panelStats) row.Input = string.Empty;
+        OnPropertyChanged(nameof(PanelStatsSummary));
+        ClearStaleResults();
+        OptimizeCommand.RaiseCanExecuteChanged();
+    }
 
     public IReadOnlyList<ThemePreferenceOption> ThemeOptions { get; } =
     [
@@ -136,7 +171,7 @@ public sealed class MainViewModel : ObservableObject
     {
         WorkspaceSection.Sources => "连接游戏与存档，选择要分析的角色。",
         WorkspaceSection.Build => "确认评分偏好、战斗目标与主攻技能。",
-        WorkspaceSection.Search => "校准面板 DPS，并控制搜索范围。",
+        WorkspaceSection.Search => "从游戏数据计算 DPS，按需校准并设置搜索范围。",
         WorkspaceSection.Results => "比较候选方案、装备替换与来源位置。",
         _ => string.Empty
     };
@@ -159,6 +194,7 @@ public sealed class MainViewModel : ObservableObject
             if (!SetProperty(ref _selectedInstallation, value)) return;
             if (!_restoringSources && value is not null)
             {
+                _gameSourceChosenByUser = true;
                 RememberGameDirectory(value.RootPath);
                 ScheduleSourceHistorySave();
             }
@@ -174,6 +210,7 @@ public sealed class MainViewModel : ObservableObject
             if (!SetProperty(ref _selectedSaveLocation, value)) return;
             if (!_restoringSources && value is not null)
             {
+                _saveSourceChosenByUser = true;
                 RememberSaveDirectory(value.RootPath);
                 ScheduleSourceHistorySave();
             }
@@ -190,6 +227,7 @@ public sealed class MainViewModel : ObservableObject
             Results.Clear();
             SelectedResult = null;
             ResetCurrentPanelDps();
+            ResetPanelStats();
             ActiveSkills.Clear();
             if (value is not null && _catalog is not null)
             {
@@ -248,9 +286,56 @@ public sealed class MainViewModel : ObservableObject
         {
             if (!SetProperty(ref _profile, value)) return;
             ResetCurrentPanelDps();
+            ResetPanelStats();
             Metrics.Clear();
             foreach (var metric in value.Metrics) Metrics.Add(metric);
+            OnPropertyChanged(nameof(SelectedDifficulty));
+            OnPropertyChanged(nameof(EnemyDamageIncreasePercent));
+            foreach (var row in ResistanceDebuffs) row.Refresh();
         }
+    }
+
+    public IReadOnlyList<string> DifficultyOptions { get; } = ["普通（新手）", "老兵", "精英", "终极"];
+    public int SelectedDifficulty
+    {
+        get => (int)Profile.Scenario.Difficulty;
+        set
+        {
+            var selected = (GameDifficulty)Math.Clamp(value, 0, 3);
+            if (selected == Profile.Scenario.Difficulty) return;
+            Profile.Scenario.Difficulty = selected;
+            ResetPanelStats();
+            ApplyAverageBossScenario();
+            foreach (var row in ResistanceDebuffs) row.Refresh();
+            ClearStaleResults();
+            OnPropertyChanged();
+        }
+    }
+    public double EnemyDamageIncreasePercent
+    {
+        get => Profile.Scenario.EnemyDamageIncreasePercent;
+        set
+        {
+            Profile.Scenario.EnemyDamageIncreasePercent = Math.Clamp(value, 0, 1000);
+            ClearStaleResults();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(EnemyProfileSummary));
+            OnPropertyChanged(nameof(ScoreBenchmarkSummary));
+        }
+    }
+    private IReadOnlyList<ResistanceDebuffViewModel>? _resistanceDebuffs;
+    public IReadOnlyList<ResistanceDebuffViewModel> ResistanceDebuffs => _resistanceDebuffs ??=
+        new[] { ("physical", "物理"), ("pierce", "穿刺"), ("fire", "火焰"), ("cold", "冰冷"),
+            ("lightning", "闪电"), ("acid", "酸毒"), ("vitality", "活力"), ("aether", "虚化"),
+            ("chaos", "混乱"), ("bleeding", "流血") }
+        .Select(x => new ResistanceDebuffViewModel(x.Item1, x.Item2,
+            () => Profile.Scenario.PlayerResistanceReduction.GetValueOrDefault(x.Item1),
+            v => { Profile.Scenario.PlayerResistanceReduction[x.Item1] = v; ClearStaleResults(); },
+            () => DifficultyRules.PlayerPenalty(Profile.Scenario, x.Item1))).ToArray();
+    private void ClearStaleResults()
+    {
+        Results.Clear();
+        SelectedResult = null;
     }
 
     public string Status { get => _status; private set => SetProperty(ref _status, value); }
@@ -261,6 +346,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _currentWeaponAttackDpsInput, value)) return;
+            ClearStaleResults();
             Profile.CurrentWeaponAttackDps = TryParseRequiredDps(value, out var dps) ? dps : 0;
             OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsValid));
             OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsInvalid));
@@ -268,9 +354,23 @@ public sealed class MainViewModel : ObservableObject
             RefreshCommands();
         }
     }
+    public bool UsePanelDpsCalibration
+    {
+        get => Profile.UsePanelDpsCalibration;
+        set
+        {
+            if (Profile.UsePanelDpsCalibration == value) return;
+            Profile.UsePanelDpsCalibration = value;
+            ClearStaleResults();
+            NotifyDpsCalibrationProperties();
+            RefreshCommands();
+        }
+    }
     public bool UsesSeparateWeaponDpsCalibration =>
-        BeamSearchOptimizer.RequiresWeaponDpsCalibration(Profile.Rotation);
-    public string DpsCalibrationInstructions => UsesSeparateWeaponDpsCalibration
+        UsePanelDpsCalibration && BeamSearchOptimizer.RequiresWeaponDpsCalibration(Profile.Rotation);
+    public string DpsCalibrationInstructions => !UsePanelDpsCalibration
+        ? "默认从本机游戏数据、存档装备和所选技能直接计算 DPS。需要手动校准时，再开启下方选项。"
+        : UsesSeparateWeaponDpsCalibration
         ? "当前技能包含可可靠拆分的武器伤害：先输入主攻技能 DPS，再输入默认武器攻击 DPS，用两个锚点校准。"
         : "当前技能使用单点校准，只需输入游戏技能栏显示的 DPS；切换角色或主攻技能后需要重新填写。";
     public string CurrentPanelDpsLabel => SelectedSkill is null
@@ -280,7 +380,7 @@ public sealed class MainViewModel : ObservableObject
         !UsesSeparateWeaponDpsCalibration || TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
     public bool IsCurrentWeaponAttackDpsInvalid =>
         UsesSeparateWeaponDpsCalibration && !TryParseRequiredDps(CurrentWeaponAttackDpsInput, out _);
-    public string CurrentWeaponAttackDpsValidationMessage => RequiredDpsValidationMessage(
+    public string CurrentWeaponAttackDpsValidationMessage => !UsesSeparateWeaponDpsCalibration ? string.Empty : RequiredDpsValidationMessage(
         CurrentWeaponAttackDpsInput,
         "该技能需要输入游戏面板中的默认武器攻击 DPS。");
     public string CurrentPanelDpsInput
@@ -289,6 +389,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (!SetProperty(ref _currentPanelDpsInput, value)) return;
+            ClearStaleResults();
             Profile.CurrentPanelDps = TryParseRequiredDps(value, out var dps) ? dps : 0;
             OnPropertyChanged(nameof(IsCurrentPanelDpsValid));
             OnPropertyChanged(nameof(IsCurrentPanelDpsInvalid));
@@ -296,9 +397,9 @@ public sealed class MainViewModel : ObservableObject
             RefreshCommands();
         }
     }
-    public bool IsCurrentPanelDpsValid => TryParseRequiredDps(CurrentPanelDpsInput, out _);
+    public bool IsCurrentPanelDpsValid => !UsePanelDpsCalibration || TryParseRequiredDps(CurrentPanelDpsInput, out _);
     public bool IsCurrentPanelDpsInvalid => !IsCurrentPanelDpsValid;
-    public string CurrentPanelDpsValidationMessage => RequiredDpsValidationMessage(
+    public string CurrentPanelDpsValidationMessage => !UsePanelDpsCalibration ? string.Empty : RequiredDpsValidationMessage(
         CurrentPanelDpsInput,
         "必须输入当前所选主攻技能的游戏面板 DPS。");
     public bool IsBusy
@@ -308,6 +409,7 @@ public sealed class MainViewModel : ObservableObject
         {
             if (!SetProperty(ref _isBusy, value)) return;
             OnPropertyChanged(nameof(IsIdle));
+            ClearPanelStatsCommand.RaiseCanExecuteChanged();
             RefreshCommands();
         }
     }
@@ -315,7 +417,7 @@ public sealed class MainViewModel : ObservableObject
     public double ProgressValue { get => _progressValue; private set => SetProperty(ref _progressValue, value); }
     public string CharacterSummary => SelectedCharacter is null
         ? "选择角色后读取装备池"
-        : $"Lv.{SelectedCharacter.Level} · {(SelectedCharacter.IsHardcore ? "专家" : "普通")} · {SelectedCharacter.Items.Count:N0} 件装备 · {SelectedCharacter.OwnedAttachments.Count:N0} 件附件";
+        : $"Lv.{SelectedCharacter.Level} · {(SelectedCharacter.IsHardcore ? "专家角色（永久死亡）" : "非专家角色")} · {SelectedCharacter.Items.Count:N0} 件装备 · {SelectedCharacter.OwnedAttachments.Count:N0} 件附件";
     public string BuildFoundationSummary => SelectedCharacter is null
         ? "尚未读取技能与信仰"
         : $"左键：{(SelectedSkill?.Name ?? "默认武器攻击")} · {(SelectedCharacter.CanDualWield ? "可双持" : "常规副手规则")} · {Profile.Rotation.CalculationSummary}";
@@ -325,7 +427,7 @@ public sealed class MainViewModel : ObservableObject
         {
             var scenario = Profile.Scenario;
             var source = scenario.BossSampleCount > 0 ? $"{scenario.BossSampleCount} 类 BOSS" : "内置估算";
-            return $"{source} · 生命 {scenario.EnemyHealth:N0} · 护甲 {scenario.EnemyArmor:N0} · OA/DA {scenario.EnemyOffensiveAbility:N0}/{scenario.EnemyDefensiveAbility:N0} · 来袭 {scenario.IncomingDamage.HitsPerSecond:0.##}/s · 吸血抗 {scenario.EnemyLifeLeechResistance:0.#}%";
+            return $"{DifficultyRules.Name(scenario.Difficulty)} · {source} · 生命 {scenario.EnemyHealth:N0} · 护甲 {scenario.EnemyArmor:N0} · OA/DA {scenario.EnemyOffensiveAbility:N0}/{scenario.EnemyDefensiveAbility:N0} · 来袭 {DifficultyRules.Incoming(scenario).HitsPerSecond:0.##}/s · 吸血抗 {scenario.EnemyLifeLeechResistance:0.#}%";
         }
     }
     public string EnemyResistanceSummary => string.Join("  ", new[]
@@ -382,6 +484,7 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task UseGameFolderAsync(string path)
     {
+        _gameSourceChosenByUser = true;
         path = JsonSourceHistoryStore.NormalizePath(path);
         RemovePath(_sourceHistory.RemovedGameDirectories, path);
         var installation = FindInstallation(path) ?? GameDataSource.CreateInstallation(path);
@@ -393,6 +496,7 @@ public sealed class MainViewModel : ObservableObject
 
     public async Task UseSaveFolderAsync(string path)
     {
+        _saveSourceChosenByUser = true;
         path = JsonSourceHistoryStore.NormalizePath(path);
         RemovePath(_sourceHistory.RemovedSaveDirectories, path);
         var save = FindSaveLocation(path) ?? CreateSaveLocation(path, "手动目录");
@@ -402,7 +506,7 @@ public sealed class MainViewModel : ObservableObject
         await PersistSourceHistoryAsync();
     }
 
-    private async Task DiscoverAsync()
+    private async Task<bool> DiscoverAsync()
     {
         IsBusy = true;
         Status = "正在发现 Steam、GOG 与存档目录…";
@@ -437,8 +541,12 @@ public sealed class MainViewModel : ObservableObject
                          .Distinct(StringComparer.OrdinalIgnoreCase))
                 SaveLocations.Add(discoveredSaves.GetValueOrDefault(path) ?? CreateSaveLocation(path, "历史目录"));
 
-            var preferredGame = FirstNonEmpty(_sourceHistory.LastGameDirectory, previousGame);
-            var preferredSave = FirstNonEmpty(_sourceHistory.LastSaveDirectory, previousSave);
+            var preferredGame = GameSourceSelection.ChooseRoot(
+                Installations.Select(x => x.RootPath), _gameSourceChosenByUser ? previousGame : null,
+                discovery.RunningGameRoot, _sourceHistory.LastGameDirectory);
+            var preferredSave = GameSourceSelection.ChooseRoot(
+                SaveLocations.Select(x => x.RootPath), _saveSourceChosenByUser ? previousSave : null,
+                discovery.PreferredSaveRoot, _sourceHistory.LastSaveDirectory);
             _restoringSources = true;
             try
             {
@@ -455,8 +563,9 @@ public sealed class MainViewModel : ObservableObject
             Status = Installations.Count == 0
                 ? "未发现游戏安装；可手动选择目录或加载演示数据"
                 : $"发现 {Installations.Count} 个游戏目录、{SaveLocations.Count} 个存档目录";
+            return true;
         }
-        catch (Exception ex) { Status = $"路径发现失败：{ex.Message}"; }
+        catch (Exception ex) { Status = $"路径发现失败：{ex.Message}"; return false; }
         finally { IsBusy = false; }
     }
 
@@ -471,6 +580,7 @@ public sealed class MainViewModel : ObservableObject
         if (PathEquals(_sourceHistory.LastGameDirectory, path)) _sourceHistory.LastGameDirectory = string.Empty;
         if (wasSelected)
         {
+            _gameSourceChosenByUser = false;
             _restoringSources = true;
             try { SelectedInstallation = Installations.FirstOrDefault(); }
             finally { _restoringSources = false; }
@@ -491,6 +601,7 @@ public sealed class MainViewModel : ObservableObject
         if (PathEquals(_sourceHistory.LastSaveDirectory, path)) _sourceHistory.LastSaveDirectory = string.Empty;
         if (wasSelected)
         {
+            _saveSourceChosenByUser = false;
             _restoringSources = true;
             try { SelectedSaveLocation = SaveLocations.FirstOrDefault(); }
             finally { _restoringSources = false; }
@@ -599,11 +710,11 @@ public sealed class MainViewModel : ObservableObject
         JsonSourceHistoryStore.NormalizePath(left)
             .Equals(JsonSourceHistoryStore.NormalizePath(right), StringComparison.OrdinalIgnoreCase);
 
-    private static string FirstNonEmpty(params string?[] values) =>
-        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
-
     private async Task LoadSelectedAsync()
     {
+        // The game may have been restarted from a different installation, or a new
+        // character may have been saved since this app opened. Refresh before import.
+        if (!await DiscoverAsync()) return;
         if (SelectedInstallation is null || SelectedSaveLocation is null) return;
         IsBusy = true;
         ProgressValue = 0;
@@ -612,7 +723,12 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             var progress = new Progress<double>(x => ProgressValue = x * 100);
-            _catalog = await _gameDataSource.LoadCatalogAsync(SelectedInstallation, progress, _cancellation.Token);
+            var installation = SelectedInstallation;
+            var token = _cancellation.Token;
+            // Cache JSON, ARZ records, and animation resources all perform CPU work
+            // after I/O awaits. Keep that continuation off the UI dispatcher.
+            _catalog = await Task.Run(
+                () => _gameDataSource.LoadCatalogAsync(installation, progress, token), token);
             Status = "正在只读导入角色与仓库…";
             var characters = await _saveReader.ReadCharactersAsync(SelectedSaveLocation, _catalog, _cancellation.Token);
             Characters.Clear();
@@ -635,14 +751,16 @@ public sealed class MainViewModel : ObservableObject
         Characters.Clear();
         Characters.Add(character);
         SelectedCharacter = character;
-        Status = "已载入脱敏演示装备池；按当前技能提示输入面板 DPS 后可运行优化";
+        Status = "已载入脱敏演示装备池；可直接运行优化，DPS 校准为可选项";
         CurrentWorkspace = WorkspaceSection.Build;
     }
 
     private async Task OptimizeAsync()
     {
         if (SelectedCharacter is null || _catalog is null) return;
-        if (!TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps))
+        if (!IsPanelStatsValid) { Status = "请修正角色属性校准中的无效输入"; return; }
+        var panelDps = 0d;
+        if (UsePanelDpsCalibration && !TryParseRequiredDps(CurrentPanelDpsInput, out panelDps))
         {
             Status = "请先输入当前主攻技能的游戏面板 DPS";
             return;
@@ -710,7 +828,7 @@ public sealed class MainViewModel : ObservableObject
     private void SyncProfile()
     {
         Profile.Metrics = Metrics.ToList();
-        Profile.SchemaVersion = 6;
+        Profile.SchemaVersion = 7;
         ApplySelectedSkillRotation();
         Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 300);
         Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);
@@ -719,7 +837,7 @@ public sealed class MainViewModel : ObservableObject
                                          TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps)
             ? weaponAttackDps
             : 0;
-        Profile.CurrentPanelDps = TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps) ? panelDps : 0;
+        Profile.CurrentPanelDps = UsePanelDpsCalibration && TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps) ? panelDps : 0;
     }
 
     private void ApplySelectedSkillRotation()
@@ -733,6 +851,7 @@ public sealed class MainViewModel : ObservableObject
 
     private void ResetCurrentPanelDps()
     {
+        Profile.UsePanelDpsCalibration = false;
         Profile.CurrentWeaponAttackDps = 0;
         Profile.CurrentPanelDps = 0;
         _currentWeaponAttackDpsInput = string.Empty;
@@ -751,12 +870,16 @@ public sealed class MainViewModel : ObservableObject
 
     private void NotifyDpsCalibrationProperties()
     {
+        OnPropertyChanged(nameof(UsePanelDpsCalibration));
         OnPropertyChanged(nameof(UsesSeparateWeaponDpsCalibration));
         OnPropertyChanged(nameof(DpsCalibrationInstructions));
         OnPropertyChanged(nameof(CurrentPanelDpsLabel));
         OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsValid));
         OnPropertyChanged(nameof(IsCurrentWeaponAttackDpsInvalid));
         OnPropertyChanged(nameof(CurrentWeaponAttackDpsValidationMessage));
+        OnPropertyChanged(nameof(IsCurrentPanelDpsValid));
+        OnPropertyChanged(nameof(IsCurrentPanelDpsInvalid));
+        OnPropertyChanged(nameof(CurrentPanelDpsValidationMessage));
     }
 
     private static bool TryParseRequiredDps(string? input, out double dps) =>

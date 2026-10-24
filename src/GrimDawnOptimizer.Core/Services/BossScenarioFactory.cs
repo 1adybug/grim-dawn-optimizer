@@ -25,29 +25,29 @@ public static class BossScenarioFactory
         GameDataCatalog catalog,
         CombatScenario scenario)
     {
+        DifficultyRules.Apply(catalog, scenario);
         var level = Math.Clamp(character.Level, 1, 250);
         var samples = catalog.Records.Values
             .Where(IsBossMonster)
             .Where(x => IsAvailableAtLevel(x, level))
             .GroupBy(BossSignature, StringComparer.OrdinalIgnoreCase)
-            .Select(x => BuildSample(x.First(), level, catalog))
+            .Select(x => BuildSample(x.First(), level, catalog, scenario.DifficultyEnemyModifiers))
             .Where(x => x.Health > 0)
             .ToArray();
 
         if (samples.Length == 0)
-            samples = [BuildFallback(level)];
+            samples = [BuildFallback(level, scenario.DifficultyEnemyModifiers)];
 
         scenario.EnemyLevel = level;
         scenario.EnemyHealth = samples.Average(x => x.Health);
         scenario.EnemyArmor = samples.Average(x => x.Armor);
-        var combatAbilityFloor = 2400 + level * 5;
-        scenario.EnemyOffensiveAbility = Math.Max(combatAbilityFloor, samples.Average(x => x.OffensiveAbility));
-        scenario.EnemyDefensiveAbility = Math.Max(combatAbilityFloor, samples.Average(x => x.DefensiveAbility));
+        scenario.EnemyOffensiveAbility = samples.Average(x => x.OffensiveAbility);
+        scenario.EnemyDefensiveAbility = samples.Average(x => x.DefensiveAbility);
         scenario.EnemyLifeLeechResistance = samples.Average(x => x.LifeLeechResistance);
         scenario.BossSampleCount = samples.Length == 1 && samples[0].IsFallback ? 0 : samples.Length;
         scenario.Name = scenario.BossSampleCount > 0
-            ? $"Lv.{level} BOSS 平均值（{scenario.BossSampleCount} 类）"
-            : $"Lv.{level} BOSS 估算基准";
+            ? $"{DifficultyRules.Name(scenario.Difficulty)} · Lv.{level} BOSS 平均值（{scenario.BossSampleCount} 类）"
+            : $"{DifficultyRules.Name(scenario.Difficulty)} · Lv.{level} BOSS 估算基准";
         foreach (var type in StatKeys.DamageTypes)
             scenario.EnemyResistances[type] = samples.Average(x => x.Resistances.GetValueOrDefault(type));
         return scenario;
@@ -80,7 +80,7 @@ public static class BossScenarioFactory
                string.Join('|', ResistanceFields.Values.Select(x => record.NumericValues[x].ToString("0.###", CultureInfo.InvariantCulture)));
     }
 
-    private static BossSample BuildSample(GameRecord monster, int level, GameDataCatalog catalog)
+    private static BossSample BuildSample(GameRecord monster, int level, GameDataCatalog catalog, StatBlock difficulty)
     {
         catalog.Records.TryGetValue(monster.Text("characterAttributeEquations"), out var equations);
         var health = ResolveEquationOrValue(equations, monster, "characterLife", level);
@@ -114,11 +114,16 @@ public static class BossScenarioFactory
             resistances["lightning"] += elemental;
         }
 
-        health = Math.Max(1, health * Math.Max(0, 1 + healthModifier / 100d));
-        oa = Math.Max(1, oa * Math.Max(0, 1 + oaModifier / 100d));
-        da = Math.Max(1, da * Math.Max(0, 1 + daModifier / 100d));
+        // First construct the normal reference with this monster's own bonuses,
+        // then apply the screenshot preset once as an independent multiplier.
+        health = Math.Max(1, health * Math.Max(0, 1 + healthModifier / 100d)) *
+                 Math.Max(0, 1 + difficulty["health.percent"] / 100d);
+        oa = Math.Max(1, (oa + difficulty["offensiveAbility"]) * Math.Max(0, 1 + (oaModifier + difficulty["offensiveAbility.percent"]) / 100d));
+        da = Math.Max(1, (da + difficulty["defensiveAbility"]) * Math.Max(0, 1 + (daModifier + difficulty["defensiveAbility.percent"]) / 100d));
+        armor = (armor + difficulty["armor"]) * Math.Max(0, 1 + difficulty["armor.percent"] / 100d);
+        lifeLeechResistance += difficulty["lifeLeechResistance"];
         foreach (var type in StatKeys.DamageTypes)
-            resistances[type] = Math.Clamp(resistances[type], -100, 100);
+            resistances[type] = Math.Clamp(resistances[type] + difficulty[StatKeys.Resistance(type)], -100, 100);
 
         return new BossSample(health, Math.Max(0, armor), oa, da,
             Math.Clamp(lifeLeechResistance, 0, 100), resistances, false);
@@ -147,7 +152,7 @@ public static class BossScenarioFactory
         return record.NumericValues[field];
     }
 
-    private static BossSample BuildFallback(int level)
+    private static BossSample BuildFallback(int level, StatBlock difficulty)
     {
         var health = Math.Pow(level * 30d, 1.53);
         var resistances = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -156,8 +161,13 @@ public static class BossScenarioFactory
             ["lightning"] = 25, ["acid"] = 25, ["vitality"] = 25,
             ["aether"] = 25, ["chaos"] = 25, ["bleeding"] = 18
         };
-        return new BossSample(health, Math.Max(50, level * 22), 2400 + level * 5,
-            2400 + level * 5, 60, resistances, true);
+        foreach (var type in StatKeys.DamageTypes)
+            resistances[type] = Math.Clamp(resistances[type] + difficulty[StatKeys.Resistance(type)], -100, 100);
+        return new BossSample(health * Math.Max(0, 1 + difficulty["health.percent"] / 100d),
+            Math.Max(50, level * 22),
+            (2400 + level * 5 + difficulty["offensiveAbility"]) * Math.Max(0, 1 + difficulty["offensiveAbility.percent"] / 100d),
+            (2400 + level * 5 + difficulty["defensiveAbility"]) * Math.Max(0, 1 + difficulty["defensiveAbility.percent"] / 100d),
+            Math.Clamp(60 + difficulty["lifeLeechResistance"], 0, 100), resistances, true);
     }
 
     private sealed record BossSample(

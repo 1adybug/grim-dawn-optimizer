@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using GrimDawnOptimizer.Core.Contracts;
 using GrimDawnOptimizer.Core.Domain;
@@ -24,9 +25,19 @@ public sealed class GameDataSource : IGameDataSource
 
     public Task<DiscoveryResult> DiscoverAsync(CancellationToken cancellationToken = default) => Task.Run(() =>
     {
-        var installations = DiscoverInstallations();
+        var runningRoots = GameSourceSelection.GetRunningInstallationRoots();
+        var installations = DiscoverInstallations(runningRoots);
         var saves = DiscoverSaveLocations();
-        return new DiscoveryResult(installations, saves);
+        var currentGameRoot = runningRoots.Count == 1 ? runningRoots[0] : null;
+        var userGameRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "My Games", "Grim Dawn");
+        return new DiscoveryResult(installations, saves)
+        {
+            RunningGameRoot = currentGameRoot,
+            PreferredSaveRoot = currentGameRoot is null ? null : GameSourceSelection.FindPreferredSaveRoot(
+                saves,
+                GameSourceSelection.ReadCloudSavingSetting(Path.Combine(userGameRoot, "Settings", "options.txt")),
+                Path.Combine(userGameRoot, "save"))
+        };
     }, cancellationToken);
 
     public async Task<GameDataCatalog> LoadCatalogAsync(
@@ -47,7 +58,11 @@ public sealed class GameDataSource : IGameDataSource
             // The catalog cache is disposable. A stale schema, corrupt payload, locked file or
             // failed deserialization must never prevent the read-only game import itself.
         }
-        if (cached is not null) return cached;
+        if (cached is not null)
+        {
+            cached.AnimationProfiles = ResolvePlayerAnimations(installation, cached.Records, cancellationToken);
+            return cached;
+        }
 
         var records = new Dictionary<string, GameRecord>(StringComparer.OrdinalIgnoreCase);
         var tags = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -57,9 +72,10 @@ public sealed class GameDataSource : IGameDataSource
             var file = files[i];
             if (file.EndsWith(".arz", StringComparison.OrdinalIgnoreCase))
                 foreach (var (key, value) in _arz.Read(file, cancellationToken))
-                    records[key] = records.TryGetValue(key, out var inherited)
-                        ? MergeRecord(inherited, value)
-                        : value;
+                    // Expansion archives replace a named DBR record in full. Merging
+                    // individual fields would revive stats removed by a later version
+                    // and can even shift every subsequent seeded item roll.
+                    records[key] = value;
             else if (file.EndsWith(".arc", StringComparison.OrdinalIgnoreCase))
                 foreach (var (key, value) in _arc.ReadTags(file, cancellationToken)) tags[key] = value;
             progress?.Report((i + 1d) / Math.Max(1, files.Length));
@@ -71,6 +87,7 @@ public sealed class GameDataSource : IGameDataSource
             Version = installation.Version,
             Records = records,
             Tags = tags,
+            AnimationProfiles = ResolvePlayerAnimations(installation, records, cancellationToken),
             Attachments = BuildAttachments(records, tags),
             SetBonuses = setBonuses.Stats,
             SetBonusEffects = setBonuses.Effects,
@@ -87,28 +104,11 @@ public sealed class GameDataSource : IGameDataSource
         return catalog;
     }
 
-    private static GameRecord MergeRecord(GameRecord inherited, GameRecord overlay)
-    {
-        var numeric = inherited.NumericValues.Clone();
-        foreach (var (key, value) in overlay.NumericValues.Values) numeric.Set(key, value);
-
-        var series = new Dictionary<string, IReadOnlyList<double>>(
-            inherited.NumericSeries, StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, values) in overlay.NumericSeries) series[key] = values;
-
-        var text = new Dictionary<string, IReadOnlyList<string>>(
-            inherited.TextValues, StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, values) in overlay.TextValues) text[key] = values;
-
-        return new GameRecord
-        {
-            RecordName = overlay.RecordName,
-            RecordType = string.IsNullOrWhiteSpace(overlay.RecordType) ? inherited.RecordType : overlay.RecordType,
-            NumericValues = numeric,
-            NumericSeries = series,
-            TextValues = text
-        };
-    }
+    private static IReadOnlyDictionary<string, AnimationSpeedProfile> ResolvePlayerAnimations(
+        GameInstallation installation, IReadOnlyDictionary<string, GameRecord> records, CancellationToken cancellationToken) =>
+        new AnimationSpeedResolver().ResolveAll(installation,
+            records.Values.Where(record => record.RecordName.StartsWith("records/creatures/pc/", StringComparison.OrdinalIgnoreCase)),
+            cancellationToken);
 
     private static bool IsRecoverableCacheFailure(Exception ex) => ex is
         SqliteException or JsonException or InvalidDataException or IOException or UnauthorizedAccessException or NotSupportedException;
@@ -239,9 +239,9 @@ public sealed class GameDataSource : IGameDataSource
     internal static string AttachmentRecordId(AttachmentDefinition attachment) =>
         string.IsNullOrWhiteSpace(attachment.RecordId) ? attachment.Id : attachment.RecordId;
 
-    private static IReadOnlyList<GameInstallation> DiscoverInstallations()
+    private static IReadOnlyList<GameInstallation> DiscoverInstallations(IReadOnlyList<string> runningRoots)
     {
-        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new HashSet<string>(runningRoots, StringComparer.OrdinalIgnoreCase);
         var steamPath = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Valve\Steam", "SteamPath", null)?.ToString();
         if (!string.IsNullOrWhiteSpace(steamPath))
         {
@@ -264,7 +264,13 @@ public sealed class GameDataSource : IGameDataSource
             if (!string.IsNullOrWhiteSpace(gog)) candidates.Add(gog);
         }
 
-        return candidates.Where(Directory.Exists).Select(CreateInstallation).ToArray();
+        return candidates.Where(Directory.Exists).Select(root =>
+        {
+            var installation = CreateInstallation(root);
+            return runningRoots.Contains(root, StringComparer.OrdinalIgnoreCase)
+                ? installation with { Source = "正在运行" }
+                : installation;
+        }).ToArray();
     }
 
     public static GameInstallation CreateInstallation(string root)
@@ -594,7 +600,9 @@ public sealed class GameDataSource : IGameDataSource
     private static async Task<string> HashFilesAsync(IEnumerable<string> files, CancellationToken cancellationToken)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        foreach (var file in files.Order(StringComparer.OrdinalIgnoreCase))
+        // Archive order determines which full record or localized tag wins.
+        // The same files in a different order are a different catalog.
+        foreach (var file in files)
         {
             hash.AppendData(Encoding.UTF8.GetBytes(Path.GetFullPath(file)));
             await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1024 * 1024, useAsync: true);
@@ -607,10 +615,59 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC23 additionally retains blueprint and faction-market relationships used
-        // to turn every recommended attachment into an actionable acquisition source.
-        private static readonly byte[] PayloadHeader = "GDOC23"u8.ToArray();
-        private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+        // GDOC26 uses complete expansion-record replacement. Older caches can
+        // contain removed base-game fields and invalid downstream seeded rolls.
+        private static readonly byte[] PayloadHeader = "GDOC26"u8.ToArray();
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new CaseInsensitiveDictionaryConverterFactory(), new CaseInsensitiveSetConverter() }
+        };
+
+        // JSON preserves dictionary keys but not their comparer. All string-keyed
+        // catalog lookups must keep the same semantics after a cache load as after
+        // parsing ARZ/ARC files, including nested record fields and attachment sets.
+        private sealed class CaseInsensitiveDictionaryConverterFactory : JsonConverterFactory
+        {
+            public override bool CanConvert(Type type) => type.IsGenericType &&
+                type.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>) &&
+                type.GetGenericArguments()[0] == typeof(string);
+
+            public override JsonConverter CreateConverter(Type type, JsonSerializerOptions options) =>
+                (JsonConverter)Activator.CreateInstance(typeof(CaseInsensitiveDictionaryConverter<>)
+                    .MakeGenericType(type.GetGenericArguments()[1]))!;
+        }
+
+        private sealed class CaseInsensitiveDictionaryConverter<T> : JsonConverter<IReadOnlyDictionary<string, T>>
+        {
+            public override IReadOnlyDictionary<string, T> Read(
+                ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
+                new Dictionary<string, T>(JsonSerializer.Deserialize<Dictionary<string, T>>(ref reader, options)
+                    ?? throw new JsonException("Missing catalog dictionary."), StringComparer.OrdinalIgnoreCase);
+
+            public override void Write(Utf8JsonWriter writer, IReadOnlyDictionary<string, T> value,
+                JsonSerializerOptions options)
+            {
+                writer.WriteStartObject();
+                foreach (var (key, item) in value)
+                {
+                    writer.WritePropertyName(key);
+                    JsonSerializer.Serialize(writer, item, options);
+                }
+                writer.WriteEndObject();
+            }
+        }
+
+        private sealed class CaseInsensitiveSetConverter : JsonConverter<IReadOnlySet<string>>
+        {
+            public override IReadOnlySet<string> Read(
+                ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
+                new HashSet<string>(JsonSerializer.Deserialize<string[]>(ref reader, options)
+                    ?? throw new JsonException("Missing catalog set."), StringComparer.OrdinalIgnoreCase);
+
+            public override void Write(Utf8JsonWriter writer, IReadOnlySet<string> value,
+                JsonSerializerOptions options) => JsonSerializer.Serialize(writer, value.ToArray(), options);
+        }
 
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)
         {

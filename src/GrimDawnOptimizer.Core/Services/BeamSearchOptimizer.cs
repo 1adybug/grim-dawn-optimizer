@@ -53,12 +53,15 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         var resultCount = Math.Clamp(profile.ResultCount, 1, 50);
         var evaluated = 0;
         var iteration = 0;
+        DifficultyRules.Apply(catalog, profile.Scenario);
 
         var variantsBySlot = GenerateVariants(character, itemPool, attachments, profile, cancellationToken)
             .ToDictionary(x => x.Key, x => ParetoPrune(x.Value, profile, character.CurrentLoadout));
 
         var currentSlots = BuildCurrentLoadout(character, variantsBySlot);
         var currentCalculated = _statEngine.Calculate(character, currentSlots, catalog);
+        profile.RuntimePanelCorrections = PanelStatCalibration.Create(currentCalculated.Stats, profile);
+        currentCalculated = PanelStatCalibration.Apply(currentCalculated, profile);
         var currentRotation = ResolveRotation(character, catalog, profile, currentSlots);
         var currentSimulation = _simulator.Simulate(character, currentCalculated, profile.Scenario, currentRotation);
         var currentWeaponSimulation = _simulator.Simulate(
@@ -72,7 +75,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             currentSimulation.UnmitigatedDps,
             currentWeaponSimulation.UnmitigatedDps);
         currentSimulation = ApplyDpsCalibration(currentSimulation, currentWeaponSimulation, profile);
-        var currentMetrics = ExtractMetrics(currentCalculated, currentSimulation);
+        var currentMetrics = ExtractMetrics(currentCalculated, currentSimulation, profile.Scenario);
         var benchmarks = BossMetricBenchmarkResolver.Resolve(profile.Metrics, profile.Scenario, currentMetrics);
         var scoring = new ScoringEngine(profile.Metrics, benchmarks);
         var searchStart = watch.Elapsed;
@@ -210,6 +213,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
                 x => x.Key,
                 x => new LoadoutVariant(x.Value.Item, null, null));
             var equipmentOnlyLoadout = _statEngine.Calculate(character, equipmentOnlySlots, catalog);
+            equipmentOnlyLoadout = PanelStatCalibration.Apply(equipmentOnlyLoadout, profile);
             var equipmentOnlyRotation = ResolveRotation(character, catalog, profile, equipmentOnlySlots);
             var equipmentOnlyRaw = _simulator.Simulate(
                 character, equipmentOnlyLoadout, profile.Scenario, equipmentOnlyRotation);
@@ -223,6 +227,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
                 equipmentOnlyWeaponRaw,
                 profile);
             result.EquipmentOnlyUnmitigatedDps = equipmentOnlySimulation.UnmitigatedDps;
+            result.SingleItemComparisons = BuildSingleItemComparisons(
+                character, currentSlots, currentCalculated, currentSimulation,
+                result, attachments, catalog, profile, scoring, cancellationToken);
         });
 
         for (var i = 0; i < results.Count; i++)
@@ -274,8 +281,50 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         ScoringEngine scoring)
     {
         var calculated = _statEngine.Calculate(character, slots, catalog);
+        calculated = PanelStatCalibration.Apply(calculated, profile);
         calculated = ApplyAttachmentSourceValidation(calculated);
         return EvaluateCalculated(character, slots, calculated, catalog, profile, scoring);
+    }
+
+    private IReadOnlyList<ItemSwapComparison> BuildSingleItemComparisons(
+        CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> currentSlots,
+        CalculatedLoadout currentCalculated,
+        SimulationReport currentSimulation,
+        LoadoutResult candidate,
+        IReadOnlyList<AttachmentDefinition> attachments,
+        GameDataCatalog catalog, OptimizationProfile profile, ScoringEngine scoring,
+        CancellationToken cancellationToken)
+    {
+        var before = PanelStatCalibration.SheetValues(currentCalculated, profile.Scenario, currentSimulation.UnmitigatedDps);
+        var comparisons = new List<ItemSwapComparison>();
+        foreach (var (slot, variant) in candidate.Loadout.Slots.OrderBy(x => x.Key))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (currentSlots.TryGetValue(slot, out var equipped) && equipped.Item.Id == variant.Item.Id) continue;
+            var item = variant.Item;
+            var component = attachments.FirstOrDefault(x => x.Kind == AttachmentKind.Component &&
+                MatchesCurrentAttachment(x, item.ComponentRecord, item.CompletionBonusRecord));
+            var augment = attachments.FirstOrDefault(x => x.Kind == AttachmentKind.Augment &&
+                MatchesCurrentAttachment(x, item.AugmentRecord, string.Empty));
+            var missingAttachment = (!string.IsNullOrWhiteSpace(item.ComponentRecord) && component is null) ||
+                                    (!string.IsNullOrWhiteSpace(item.AugmentRecord) && augment is null);
+            var slots = new Dictionary<EquipmentSlot, LoadoutVariant>(currentSlots)
+            { [slot] = new LoadoutVariant(item, component, augment) };
+            var swap = Evaluate(character, slots, catalog, profile, scoring);
+            var errors = swap.Loadout.ValidationErrors.ToList();
+            if (missingAttachment) errors.Add("当前镶嵌附件未解析，无法可靠对照");
+            if (slots.Values.GroupBy(x => x.Item.Id).Any(x => x.Count() > 1))
+                errors.Add("该物品已在其他槽位穿戴，不能只替换此槽位");
+            if (slots.TryGetValue(EquipmentSlot.MainHand, out var main) && main.Item.IsTwoHanded && slots.ContainsKey(EquipmentSlot.OffHand))
+                errors.Add("双手武器需要同时卸下副手");
+            var valid = errors.Count == 0;
+            comparisons.Add(new ItemSwapComparison(slot, item.Name, valid,
+                valid ? "只换此件，其余维持当前穿戴；使用物品现有组件和增幅。" : string.Join("；", errors.Distinct()),
+                before, valid ? PanelStatCalibration.SheetValues(swap.Loadout, profile.Scenario, swap.Simulation.UnmitigatedDps)
+                    : new Dictionary<string, double>()));
+        }
+        return comparisons;
     }
 
     private static CalculatedLoadout ApplyAttachmentSourceValidation(CalculatedLoadout loadout)
@@ -355,7 +404,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             rawSimulation,
             rawWeaponSimulation,
             profile);
-        var metrics = ExtractMetrics(calculated, simulation);
+        var metrics = ExtractMetrics(calculated, simulation, profile.Scenario);
         var (tiers, contributions) = scoring.Score(metrics);
         var confidence = calculated.UnsupportedEffects.Count switch
         {
@@ -874,7 +923,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         return result;
     }
 
-    public static IReadOnlyDictionary<string, double> ExtractMetrics(CalculatedLoadout loadout, SimulationReport simulation)
+    public static IReadOnlyDictionary<string, double> ExtractMetrics(CalculatedLoadout loadout, SimulationReport simulation, CombatScenario? scenario = null)
     {
         var result = new Dictionary<string, double>(loadout.Stats.Values, StringComparer.OrdinalIgnoreCase)
         {
@@ -888,6 +937,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             ["hitChance"] = simulation.HitChance * 100,
             ["critChance"] = simulation.CritChance * 100
         };
+        if (scenario is not null)
+            foreach (var type in StatKeys.DamageTypes)
+                result[StatKeys.Resistance(type)] = DifficultyRules.EffectiveResistance(loadout.Stats, scenario, type);
         return result;
     }
 
@@ -904,6 +956,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         profile.RuntimeWeaponDpsCalibrationFactor = 1;
         profile.RuntimeSkillAddedDpsCalibrationFactor = 1;
         profile.RuntimeDpsCalibrationMode = DpsCalibrationMode.None;
+
+        if (!profile.UsePanelDpsCalibration) return;
 
         // A retaliation-only or otherwise non-active setup has no sheet-DPS
         // anchor. Leave it uncalibrated instead of blocking the optimizer.

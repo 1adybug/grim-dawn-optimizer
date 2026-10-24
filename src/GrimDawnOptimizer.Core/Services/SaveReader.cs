@@ -70,6 +70,7 @@ public sealed class SaveReader : ISaveReader
                     SaveFilePath = file,
                     Level = raw.Level,
                     IsHardcore = raw.IsHardcore,
+                    IsFemale = raw.IsFemale,
                     Physique = (int)Math.Round(raw.Physique),
                     Cunning = (int)Math.Round(raw.Cunning),
                     Spirit = (int)Math.Round(raw.Spirit),
@@ -174,6 +175,10 @@ public sealed class SaveReader : ISaveReader
         baseline.Set("physique", raw.Physique);
         baseline.Set("cunning", raw.Cunning);
         baseline.Set("spirit", raw.Spirit);
+        baseline.Set("usePlayerAttributeFormula", 1);
+        baseline.Set("savedPhysique", raw.Physique);
+        baseline.Set("savedCunning", raw.Cunning);
+        baseline.Set("savedSpirit", raw.Spirit);
         var playerRecord = catalog.Records.GetValueOrDefault("records/creatures/pc/malepc01.dbr")
                            ?? catalog.Records.GetValueOrDefault("records/creatures/pc/femalepc01.dbr");
         baseline.Set("offensiveAbility", playerRecord?.NumericValues["characterOffensiveAbility"] ?? 65);
@@ -186,16 +191,19 @@ public sealed class SaveReader : ISaveReader
         // they are not allocated passive constellation nodes and must not affect stats.
         foreach (var skill in raw.Skills.Where(x => x.Level > 0))
         {
-            if (!catalog.Records.TryGetValue(skill.Record, out var record) ||
-                !SkillRotationFactory.ContributesPersistentStats(record)) continue;
+            if (!catalog.Records.TryGetValue(skill.Record, out var record)) continue;
+            var owner = SkillRotationFactory.ResolvePersistentSkillOwner(record,
+                raw.Skills.Where(x => x.Level > 0).Select(x => x.Record), catalog);
+            if (owner is null) continue;
 
-            var translated = GameStatTranslator.TranslateAtLevel(record, Math.Max(skill.Level, skill.DevotionLevel));
+            var translated = SkillRotationFactory.TranslatePersistentStats(record, Math.Max(skill.Level, skill.DevotionLevel), owner);
             var @class = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
             if (@class.Contains("Mastery", StringComparison.OrdinalIgnoreCase))
             {
-                // The save contains the live health/energy values, but its three
-                // attributes exclude mastery-bar grants. Add only those grants.
-                foreach (var key in new[] { "physique", "cunning", "spirit" })
+                // Saved health/energy contain base values and purchased attribute
+                // points. Mastery grants and the resource contribution of mastery
+                // attributes are separate, just like equipment attributes.
+                foreach (var key in new[] { "physique", "cunning", "spirit", "health", "energy" })
                     baseline.Add(key, translated[key]);
             }
             else
@@ -210,7 +218,7 @@ public sealed class SaveReader : ISaveReader
                              record.Text("buffSelf2SkillName")
                          }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
                     if (catalog.Records.TryGetValue(childName, out var child))
-                        baseline.Add(GameStatTranslator.TranslateAtLevel(child, Math.Max(skill.Level, skill.DevotionLevel)));
+                        baseline.Add(SkillRotationFactory.TranslatePersistentStats(child, Math.Max(skill.Level, skill.DevotionLevel), owner));
             }
         }
         return baseline;
@@ -289,7 +297,7 @@ public sealed class SaveReader : ISaveReader
         return result.Distinct().ToArray();
     }
 
-    private static ItemInstance? ConvertItem(
+    internal static ItemInstance? ConvertItem(
         RawItem raw,
         string filePath,
         GameDataCatalog catalog,
@@ -326,11 +334,10 @@ public sealed class SaveReader : ISaveReader
             stats = GameStatTranslator.Translate(records);
             if (slot == EquipmentSlot.MainHand)
             {
-                var baseWeaponStats = GameStatTranslator.Translate([baseRecord]);
                 // Older physical weapons store their base roll as offensivePhysical,
                 // while current elemental weapons use offensiveBase<Type>. Only the
                 // legacy physical field needs moving out of global flat damage.
-                var legacyPhysical = baseWeaponStats[StatKeys.DamageFlat("physical")];
+                var legacyPhysical = GameStatTranslator.LegacyPhysicalWeaponDamage(baseRecord);
                 if (Math.Abs(legacyPhysical) > 1e-9)
                 {
                     stats.Add(StatKeys.DamageFlat("physical"), -legacyPhysical);
@@ -528,8 +535,9 @@ public sealed class SaveReader : ISaveReader
         if (attributeScalePercent <= 0) return;
         var factor = 1 + attributeScalePercent / 100d;
         foreach (var (key, value) in stats.Values.ToArray())
-            if (key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) ||
-                key.StartsWith("weaponDamage.", StringComparison.OrdinalIgnoreCase))
+            // Weapon base ranges are fixed; only added damage/modifiers receive
+            // the item's attribute scale, even when seed replay is unavailable.
+            if (key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase))
                 stats.Set(key, value * factor);
         stats.Set("itemRollRangePercent", 20);
     }

@@ -29,7 +29,14 @@ public static class SkillRotationFactory
         var childRecords = ResolveAllocatedChildRecords(character, catalog, selectedSkill.Record)
             .Select(x => (x.Record, Level: x.Level + ResolveCurrentSkillBonus(character, catalog, x.Record.RecordName, equippedVariants)))
             .ToArray();
-        records.AddRange(childRecords);
+        // Secondary attacks are distinct hit payloads. Adding their weapon
+        // percentage to the primary hit would also apply its dual-wield strike
+        // count to the secondary, and leak secondary conversions/bonuses back
+        // into the primary attack.
+        records.AddRange(childRecords.Where(x => !IsSecondaryAttack(x.Record)));
+        var secondaryAttacks = childRecords.Where(x => IsSecondaryAttack(x.Record))
+            .Select(x => BuildSecondaryAttack(character, catalog, x.Record, x.Level, equippedVariants))
+            .ToList();
         var itemModifierRecords = ResolveCurrentSkillModifiers(character, catalog, selectedSkill.Record, equippedVariants);
         records.AddRange(itemModifierRecords.Select(x => (x, Level: 1)));
         var flatDamage = new StatBlock();
@@ -37,8 +44,6 @@ public static class SkillRotationFactory
             flatDamage.Add(GameStatTranslator.TranslateAtLevel(entry.Record, entry.Level));
 
         var weaponDamage = FirstPositive(records.Select(x => x.Record), "weaponDamagePct", level);
-        foreach (var child in childRecords.Where(x => RecordClass(x.Record).Contains("Secondary", StringComparison.OrdinalIgnoreCase)))
-            weaponDamage += Math.Max(0, GameStatTranslator.NumericAtLevel(child.Record, "weaponDamagePct", child.Level));
         var energy = FirstPositive(records.Select(x => x.Record), "skillManaCost", level);
         if (energy <= 0) energy = FirstPositive(records.Select(x => x.Record), "skillActiveManaCost", level);
         foreach (var child in childRecords)
@@ -46,7 +51,7 @@ public static class SkillRotationFactory
         var cooldown = FirstPositive(records.Select(x => x.Record), "skillCooldownTime", level);
         var usesAttackSpeed = UsesWeaponAttackSpeed(mainRecord);
         var activationRate = ResolveActivationRate(mainRecord, level);
-        var hasDamage = weaponDamage > 0 || StatKeys.DamageTypes.Any(x =>
+        var hasDamage = weaponDamage > 0 || secondaryAttacks.Count > 0 || StatKeys.DamageTypes.Any(x =>
             Math.Abs(flatDamage[StatKeys.DamageFlat(x)]) > 1e-9);
 
         // A weapon-pool/default attack record with no explicit percentage inherits
@@ -73,7 +78,9 @@ public static class SkillRotationFactory
             MainSkillRecord = selectedSkill.Record,
             MainSkillName = selectedSkill.Name,
             WeaponDamagePercent = hasDamage || weaponDamage > 0 ? weaponDamage : 100,
-            BaseAttacksPerSecond = 1.5,
+            BaseAttacksPerSecond = usesAttackSpeed
+                ? CharacterStatEngine.ResolveAnimationProfile(character, catalog)?.UnarmedPanelAttacksPerSecond ?? 1.5
+                : 1.5,
             EnergyPerUse = energy,
             CooldownSeconds = cooldown,
             ActivationRate = activationRate,
@@ -84,7 +91,44 @@ public static class SkillRotationFactory
             CalculationSummary = summary,
             FlatDamage = flatDamage,
             WeaponPoolFlatDamage = weaponPoolFlat,
-            WeaponPoolAttacks = weaponPoolAttacks
+            WeaponPoolAttacks = weaponPoolAttacks,
+            SecondaryAttacks = secondaryAttacks
+        };
+    }
+
+    private static bool IsSecondaryAttack(GameRecord record) =>
+        RecordClass(record).Contains("Secondary", StringComparison.OrdinalIgnoreCase);
+
+    private static SkillSecondaryAttackDefinition BuildSecondaryAttack(
+        CharacterSnapshot character,
+        GameDataCatalog catalog,
+        GameRecord secondary,
+        int level,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>? equippedVariants)
+    {
+        var records = ResolveDamageRecords(secondary, catalog)
+            .Select(x => (Record: x, Level: level))
+            .Concat(ResolveCurrentSkillModifiers(character, catalog, secondary.RecordName, equippedVariants)
+                .Select(x => (Record: x, Level: 1)))
+            .ToArray();
+        var sources = records.Select(x => new SkillDamageSourceDefinition
+        {
+            Record = x.Record.RecordName,
+            Level = x.Level,
+            WeaponDamagePercent = Math.Max(0, GameStatTranslator.NumericAtLevel(x.Record, "weaponDamagePct", x.Level)),
+            TranslatedStats = GameStatTranslator.TranslateAtLevel(x.Record, x.Level)
+        }).ToList();
+        var flatDamage = new StatBlock();
+        foreach (var source in sources) flatDamage.Add(source.TranslatedStats);
+        return new SkillSecondaryAttackDefinition
+        {
+            Record = secondary.RecordName,
+            Name = character.Skills.FirstOrDefault(x => x.Record.Equals(secondary.RecordName, StringComparison.OrdinalIgnoreCase))?.Name
+                ?? secondary.RecordName,
+            Level = level,
+            WeaponDamagePercent = sources.Select(x => x.WeaponDamagePercent).FirstOrDefault(x => x > 0),
+            FlatDamage = flatDamage,
+            SourceRecords = sources
         };
     }
 
@@ -105,11 +149,67 @@ public static class SkillRotationFactory
     internal static bool ContributesPersistentStats(GameRecord record)
     {
         var @class = RecordClass(record);
+        // A learned/enabled conditional passive is eligible to trigger; it is
+        // not evidence that its temporary buff is currently active. A runtime
+        // buff state would need to be supplied separately from the save.
+        if (@class.Contains("PassiveOn", StringComparison.OrdinalIgnoreCase)) return false;
         return @class.Contains("Passive", StringComparison.OrdinalIgnoreCase) ||
                @class.Contains("Mastery", StringComparison.OrdinalIgnoreCase) ||
                @class.Contains("BuffSelf", StringComparison.OrdinalIgnoreCase) ||
-               @class.Contains("BuffRadius", StringComparison.OrdinalIgnoreCase);
+               @class.Contains("BuffRadius", StringComparison.OrdinalIgnoreCase) ||
+               IsReactiveAura(record);
     }
+
+    internal static GameRecord? ResolvePersistentSkillOwner(
+        GameRecord record,
+        IEnumerable<string> allocatedSkillRecords,
+        GameDataCatalog catalog)
+    {
+        if (ContributesPersistentStats(record)) return record;
+        var @class = RecordClass(record);
+        if (!@class.Contains("Modifier", StringComparison.OrdinalIgnoreCase) &&
+            !@class.Contains("Transmuter", StringComparison.OrdinalIgnoreCase)) return null;
+
+        // Numbered mastery skills form a family (for example blastshield1 is
+        // Flame Touched, blastshield2 is Temper). A learned modifier inherits
+        // persistence only from a learned, persistent root in that family.
+        // Attack modifiers and modifiers of conditional buffs remain excluded.
+        var directory = Path.GetDirectoryName(record.RecordName)?.Replace('\\', '/');
+        var stem = Path.GetFileNameWithoutExtension(record.RecordName).TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9');
+        return allocatedSkillRecords.Where(x => !x.Equals(record.RecordName, StringComparison.OrdinalIgnoreCase))
+            .Where(x => string.Equals(Path.GetDirectoryName(x)?.Replace('\\', '/'), directory, StringComparison.OrdinalIgnoreCase) &&
+                        Path.GetFileNameWithoutExtension(x).TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')
+                            .Equals(stem, StringComparison.OrdinalIgnoreCase))
+            .Select(x => catalog.Records.GetValueOrDefault(x))
+            .FirstOrDefault(x => x is not null && ContributesPersistentStats(x) &&
+                                 !RecordClass(x).Contains("Mastery", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static StatBlock TranslatePersistentStats(GameRecord record, int level, GameRecord? owner = null)
+    {
+        if (!IsReactiveAura(owner ?? record)) return GameStatTranslator.TranslateAtLevel(record, level);
+
+        // Reactive auras such as Vindictive Flame combine always-on character
+        // bonuses with a separate on-hit attack in the same DBR. Only the
+        // character fields belong in the persistent loadout: its attack damage
+        // must not become flat weapon damage or permanent retaliation.
+        var characterFields = new GameRecord
+        {
+            RecordName = record.RecordName,
+            RecordType = record.RecordType,
+            NumericValues = new StatBlock(record.NumericValues.Values
+                .Where(x => x.Key.StartsWith("character", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase)),
+            NumericSeries = record.NumericSeries
+                .Where(x => x.Key.StartsWith("character", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
+            TextValues = record.TextValues
+        };
+        return GameStatTranslator.TranslateAtLevel(characterFields, level);
+    }
+
+    private static bool IsReactiveAura(GameRecord record) =>
+        RecordClass(record).Equals("Skill_OnHitAttackRadius", StringComparison.OrdinalIgnoreCase);
 
     private static SkillRotationDefinition Fallback(
         CharacterSnapshot character,
@@ -123,7 +223,7 @@ public static class SkillRotationFactory
             MainSkillRecord = selectedSkill?.Record ?? string.Empty,
             MainSkillName = selectedSkill?.Name ?? "默认武器攻击",
             WeaponDamagePercent = 100,
-            BaseAttacksPerSecond = 1.5,
+            BaseAttacksPerSecond = CharacterStatEngine.ResolveAnimationProfile(character, catalog)?.UnarmedPanelAttacksPerSecond ?? 1.5,
             WeaponPoolChance = chance,
             WeaponPoolDamageMultiplier = multiplier,
             WeaponPoolFlatDamage = flat,

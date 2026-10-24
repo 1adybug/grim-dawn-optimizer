@@ -31,7 +31,7 @@ public sealed class ProfileStoreTests
             var loaded = await store.LoadAsync();
 
             Assert.Single(loaded);
-            Assert.Equal(6, loaded[0].SchemaVersion);
+            Assert.Equal(7, loaded[0].SchemaVersion);
             Assert.Equal("火焰测试", loaded[0].Name);
             Assert.Equal(42, loaded[0].Rotation.FlatDamage[StatKeys.DamageFlat("fire")]);
         }
@@ -51,6 +51,7 @@ public sealed class ProfileStoreTests
             var path = Path.Combine(root, "profiles.json");
             var profile = new OptimizationProfile
             {
+                UsePanelDpsCalibration = true,
                 CurrentWeaponAttackDps = 1_234,
                 CurrentPanelDps = 4_321
             };
@@ -62,6 +63,8 @@ public sealed class ProfileStoreTests
             var loaded = Assert.Single(await store.LoadAsync());
             Assert.DoesNotContain("CurrentWeaponAttackDps", json, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("CurrentPanelDps", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("UsePanelDpsCalibration", json, StringComparison.OrdinalIgnoreCase);
+            Assert.False(loaded.UsePanelDpsCalibration);
             Assert.Equal(0, loaded.CurrentWeaponAttackDps);
             Assert.Equal(0, loaded.CurrentPanelDps);
         }
@@ -100,7 +103,7 @@ public sealed class ProfileStoreTests
 
             var migrated = Assert.Single(await store.LoadAsync());
 
-            Assert.Equal(6, migrated.SchemaVersion);
+            Assert.Equal(7, migrated.SchemaVersion);
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "fireResistance");
             Assert.DoesNotContain(migrated.Metrics, x => x.Key == "resistanceCoverage");
             Assert.Equal(SupportedMetricCatalog.Keys.Count, migrated.Metrics.Count);
@@ -161,7 +164,7 @@ public sealed class ProfileStoreTests
 
             var loaded = Assert.Single(await store.LoadAsync());
 
-            Assert.Equal(6, loaded.SchemaVersion);
+            Assert.Equal(7, loaded.SchemaVersion);
             Assert.Equal(2.5, Assert.Single(loaded.Metrics, x => x.Key == "dps").Weight);
             await store.SaveAsync([loaded]);
             var saved = await File.ReadAllTextAsync(path);

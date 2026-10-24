@@ -76,6 +76,7 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         ApplyPercentModifier(stats, "physique");
         ApplyPercentModifier(stats, "cunning");
         ApplyPercentModifier(stats, "spirit");
+        PlayerAttributeRules.ApplyResourceBonuses(stats, catalog);
         ApplyPercentModifier(stats, "health");
         ApplyPercentModifier(stats, "energy");
         ApplyPercentModifier(stats, "healthRegen");
@@ -91,17 +92,9 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             ApplyPercentModifier(stats, "defensiveAbility");
         }
 
-        ResolveEquippedWeaponDamage(stats, slots);
+        ResolveEquippedWeaponDamage(stats, slots, character, catalog);
 
-        // Character attributes contribute directly to damage bonuses. The ARZ
-        // item/skill modifiers intentionally do not include these sheet bonuses.
-        var sheetCunning = stats["cunning"];
-        var sheetSpirit = stats["spirit"];
-        stats.Add(StatKeys.DamagePercent("physical"), sheetCunning * 0.41);
-        stats.Add(StatKeys.DamagePercent("pierce"), sheetCunning * 0.41);
-        stats.Add(StatKeys.DamagePercent("bleeding"), sheetCunning * 0.41);
-        foreach (var damageType in new[] { "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos" })
-            stats.Add(StatKeys.DamagePercent(damageType), sheetSpirit * 0.47);
+        PlayerAttributeRules.ApplyDamageBonuses(stats, catalog);
 
         var requirementState = ResolveRequirementState(character, slots, catalog);
         var requirementStats = requirementState.Stats;
@@ -157,8 +150,10 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
     {
         foreach (var skill in character.Skills.Where(x => x.Level > 0))
         {
-            if (!catalog.Records.TryGetValue(skill.Record, out var record) ||
-                !SkillRotationFactory.ContributesPersistentStats(record)) continue;
+            if (!catalog.Records.TryGetValue(skill.Record, out var record)) continue;
+            var owner = SkillRotationFactory.ResolvePersistentSkillOwner(record,
+                character.Skills.Where(x => x.Level > 0).Select(x => x.Record), catalog);
+            if (owner is null) continue;
             var @class = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
             if (@class.Contains("Mastery", StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -167,14 +162,14 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             {
                 var baseLevel = Math.Max(skill.Level, skill.DevotionLevel);
                 var effectiveLevel = baseLevel + bonus;
-                AddLevelDelta(record, baseLevel, effectiveLevel);
+                AddLevelDelta(record, baseLevel, effectiveLevel, owner);
                 foreach (var childName in new[]
                          {
                              record.Text("buffSkillName"), record.Text("buffSelfSkillName"),
                              record.Text("buffSelf2SkillName")
                          }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
                     if (catalog.Records.TryGetValue(childName, out var child))
-                        AddLevelDelta(child, baseLevel, effectiveLevel);
+                        AddLevelDelta(child, baseLevel, effectiveLevel, owner);
             }
 
             // Item skill modifiers are not ordinary item stats: the game applies
@@ -183,14 +178,14 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             // passive skills must instead become persistent loadout stats here.
             foreach (var modifier in SkillRotationFactory.ResolveCurrentSkillModifiers(
                          character, catalog, skill.Record, slots))
-                stats.Add(GameStatTranslator.TranslateAtLevel(modifier, 1));
+                stats.Add(SkillRotationFactory.TranslatePersistentStats(modifier, 1, owner));
         }
         return;
 
-        void AddLevelDelta(GameRecord record, int baseLevel, int effectiveLevel)
+        void AddLevelDelta(GameRecord record, int baseLevel, int effectiveLevel, GameRecord owner)
         {
-            var improved = GameStatTranslator.TranslateAtLevel(record, effectiveLevel);
-            var baseline = GameStatTranslator.TranslateAtLevel(record, baseLevel);
+            var improved = SkillRotationFactory.TranslatePersistentStats(record, effectiveLevel, owner);
+            var baseline = SkillRotationFactory.TranslatePersistentStats(record, baseLevel, owner);
             improved.Add(baseline, -1);
             stats.Add(improved);
         }
@@ -318,17 +313,24 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
 
     private static void ResolveEquippedWeaponDamage(
         StatBlock stats,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots,
+        CharacterSnapshot character,
+        GameDataCatalog catalog)
     {
         slots.TryGetValue(EquipmentSlot.MainHand, out var mainHand);
         slots.TryGetValue(EquipmentSlot.OffHand, out var offHand);
         var offHandIsWeapon = offHand?.Item.Slot == EquipmentSlot.MainHand;
-        var mainBaseSpeed = mainHand?.CombinedStats["weaponBaseAttackSpeed"] ?? 0;
-        var offBaseSpeed = offHandIsWeapon ? offHand!.CombinedStats["weaponBaseAttackSpeed"] : 0;
-        var weaponBaseSpeed = offHandIsWeapon ? (mainBaseSpeed + offBaseSpeed) / 2d : mainBaseSpeed;
-        var internalBaseSpeed = ResolveInternalWeaponSpeed(mainHand?.Item, offHandIsWeapon);
+        var prefix = ResolveWeaponAnimationPrefix(mainHand?.Item, offHandIsWeapon);
+        var weaponBaseSpeed = stats["weaponBaseAttackSpeed"];
+        // Character::GetAttackSpeed halves the base-speed sum only for dual
+        // melee weapons. Dual pistols retain both weapons' full base modifiers.
+        if (prefix == "dHanded")
+            weaponBaseSpeed *= catalog.Records.GetValueOrDefault("records/game/gameengine.dbr")?
+                .NumericValues.Values.GetValueOrDefault("dwWeaponSpeedFactor", 0.5) ?? 0.5;
         stats.Set("weaponBaseAttackSpeed", weaponBaseSpeed);
-        stats.Set("weaponAttackSpeedFactor", Math.Max(0.2, internalBaseSpeed + weaponBaseSpeed));
+        stats.Set("weaponAttackSpeedFactor", Math.Max(0, 1 + weaponBaseSpeed));
+        stats.Set("weaponAttackAnimationRatio", ResolveAnimationProfile(character, catalog)?
+            .GetAttackAnimationRatio(prefix) ?? 1);
         stats.Set("averageWeaponStrikesPerAction", offHandIsWeapon ? 1.5 : 1);
         stats.Set("dualWieldWeapon", offHandIsWeapon ? 1 : 0);
         foreach (var damageType in StatKeys.DamageTypes)
@@ -339,15 +341,46 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             var nonWeaponContribution = stats[key] - mainDamage - offDamage;
             var equippedDamage = offHandIsWeapon ? (mainDamage + offDamage) / 2d : mainDamage;
             stats.Set(key, nonWeaponContribution + equippedDamage);
+
+            var flatKey = StatKeys.DamageFlat(damageType);
+            var mainFlat = mainHand?.CombinedStats[flatKey] ?? 0;
+            var offFlat = offHandIsWeapon ? offHand!.CombinedStats[flatKey] : 0;
+            // A secondary collector receiving both weapon IDs sums the local
+            // weapon payloads, while character-wide flat bonuses enter once.
+            // Preserve the difference from the primary attack's average so the
+            // simulator can use that collector without doubling shared bonuses.
+            stats.Set($"secondaryWeaponDamageCorrection.{damageType}",
+                offHandIsWeapon ? (mainDamage + offDamage + mainFlat + offFlat) / 2d : 0);
+
+            // Flat damage on a weapon (including its component and augment) belongs
+            // only to that hand. Non-weapon flat bonuses are shared by both hands.
+            // Keep each hand's original values in Slots; only this aggregate is averaged.
+            // Percent bonuses and equipment conversion remain global.
+            if (offHandIsWeapon)
+            {
+                stats.Add(flatKey, -(mainFlat + offFlat) / 2d);
+            }
         }
     }
 
-    private static double ResolveInternalWeaponSpeed(ItemInstance? mainHand, bool dualWield)
+    internal static AnimationSpeedProfile? ResolveAnimationProfile(CharacterSnapshot character, GameDataCatalog catalog)
     {
-        if (mainHand is null) return 1;
-        var ranged = mainHand.AttachmentQualifier.Contains("ranged", StringComparison.OrdinalIgnoreCase);
-        if (dualWield) return ranged ? 0.87 : 1;
-        return ranged || mainHand.IsTwoHanded ? 0.92 : 1;
+        var playerRecord = character.IsFemale ? "records/creatures/pc/femalepc01.dbr" : "records/creatures/pc/malepc01.dbr";
+        var table = catalog.Records.GetValueOrDefault(playerRecord)?.Text("charAnimationTableName");
+        return !string.IsNullOrWhiteSpace(table) ? catalog.AnimationProfiles.GetValueOrDefault(table) : null;
+    }
+
+    private static string ResolveWeaponAnimationPrefix(ItemInstance? mainHand, bool dualWield)
+    {
+        if (mainHand is null) return "unarmed";
+        var qualifier = mainHand.AttachmentQualifier;
+        if (dualWield) return qualifier.StartsWith("ranged", StringComparison.OrdinalIgnoreCase) ? "dualRanged" : "dHanded";
+        return qualifier.ToLowerInvariant() switch
+        {
+            "ranged1h" => "ranged1h", "ranged2h" => "ranged2h", "axe2h" => "axe2h",
+            "mace2h" => "mace2h", "sword2h" => "sword2h", "spear2h" => "spear2h",
+            "spear" => "spear", "staff" => "staff", _ => "sHanded"
+        };
     }
 
     private static void ApplyPercentModifier(StatBlock stats, string key)

@@ -38,14 +38,33 @@ internal static class SeededItemStatResolver
             stats.Add(GameStatTranslator.Translate([WithoutSeedControlledValues(record)]));
 
         var rolledValues = new StatBlock(result.Stats);
-        // Chance-based modifier lines are represented by their expectation. Folding the
-        // full rolled value into a permanent modifier overstates e.g. "20% chance of
-        // +250% Fire Damage" by five times.
+        // The seed engine separates chance-bearing affixes from ordinary damage.
+        // Translate each line independently so its Chance and Duration cannot leak
+        // onto an ordinary contribution of the same type from another affix.
         foreach (var proc in result.ProcLines ?? [])
         {
             if (proc.Min is not { } minimum) continue;
             var chance = Math.Clamp(proc.Chance / 100d, 0, 1);
-            rolledValues.Add(proc.Field, minimum * chance);
+            var procValues = new StatBlock();
+            if (proc.Field.EndsWith("Modifier", StringComparison.Ordinal))
+                procValues.Set(proc.Field, minimum);
+            else
+            {
+                procValues.Set(proc.Field + "Min", minimum);
+                procValues.Set(proc.Field + "Max", proc.Max ?? minimum);
+                if (proc.DurationMin is { } duration)
+                    procValues.Set(proc.Field + "DurationMin", duration);
+            }
+            var procRecord = new GameRecord
+            {
+                RecordName = baseRecord.RecordName + "#seed-proc",
+                RecordType = baseRecord.RecordType,
+                NumericValues = procValues
+            };
+            stats.Add(GameStatTranslator.Translate([procRecord]), chance);
+            // Fixed-field echo may carry the split affix's Chance into result.Stats.
+            // Remaining normal damage was already separated and has no such chance.
+            rolledValues.Set(proc.Field + "Chance", 0);
         }
 
         var rolledRecord = new GameRecord
@@ -63,8 +82,9 @@ internal static class SeededItemStatResolver
         var itemClass = baseRecord.Text("Class");
         if (itemClass.StartsWith("Weapon", StringComparison.OrdinalIgnoreCase))
         {
-            var baseStats = GameStatTranslator.Translate([baseRecord]);
-            var legacyPhysical = baseStats[StatKeys.DamageFlat("physical")];
+            // Do not include offensiveBonusPhysical here: it has already been
+            // replayed by the seed engine as a separate added-damage roll.
+            var legacyPhysical = GameStatTranslator.LegacyPhysicalWeaponDamage(baseRecord);
             if (Math.Abs(legacyPhysical) > 1e-9)
                 stats.Add(StatKeys.WeaponDamage("physical"), legacyPhysical);
         }

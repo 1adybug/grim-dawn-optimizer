@@ -2,7 +2,7 @@ using GrimDawnOptimizer.Core.Domain;
 
 namespace GrimDawnOptimizer.App.ViewModels;
 
-public sealed class ResultViewModel
+public sealed class ResultViewModel : ObservableObject
 {
     private static readonly EquipmentSlot[] DisplaySlots =
     [
@@ -15,6 +15,8 @@ public sealed class ResultViewModel
     public ResultViewModel(LoadoutResult result, CharacterSnapshot character, IReadOnlyList<MetricRule> metricRules)
     {
         Model = result;
+        SingleSwaps = result.SingleItemComparisons.Select(x => new SwapComparisonViewModel(x)).ToArray();
+        SelectedSwap = SingleSwaps.FirstOrDefault();
         var currentItems = character.CurrentLoadout.ToDictionary(
             x => x.Key,
             x => character.Items.FirstOrDefault(i => i.Id == x.Value)?.Name ?? "—");
@@ -45,12 +47,27 @@ public sealed class ResultViewModel
     }
 
     public LoadoutResult Model { get; }
+    public IReadOnlyList<SwapComparisonViewModel> SingleSwaps { get; }
+    public bool HasSingleSwaps => SingleSwaps.Count > 0;
+    private SwapComparisonViewModel? _selectedSwap;
+    public SwapComparisonViewModel? SelectedSwap
+    {
+        get => _selectedSwap;
+        set => SetProperty(ref _selectedSwap, value);
+    }
     public int Rank => Model.Rank;
     public string Title => $"候选 {Rank:00}";
     public string Dps => FormatNumber(Model.Simulation.ExpectedDps);
     public string RetaliationDps => FormatNumber(Model.Simulation.RetaliationDps);
+    public string CombatResistances => "战斗中玩家抗性 · " + string.Join("  ", new[]
+    {
+        ("物理", "physical"), ("穿刺", "pierce"), ("火", "fire"), ("冰", "cold"), ("电", "lightning"),
+        ("酸毒", "acid"), ("活力", "vitality"), ("虚化", "aether"), ("混乱", "chaos"), ("流血", "bleeding")
+    }.Select(x => $"{x.Item1} {Model.Metrics.GetValueOrDefault(x.Item2 + "Resistance"):0.#}%"));
     public string UnmitigatedDps => FormatNumber(Model.Simulation.UnmitigatedDps);
     public string EquipmentOnlyUnmitigatedDps => FormatNumber(Model.EquipmentOnlyUnmitigatedDps);
+    public string UnmitigatedDpsFull => PanelDpsDisplay.Format(Model.Simulation.UnmitigatedDps);
+    public string EquipmentOnlyUnmitigatedDpsFull => PanelDpsDisplay.Format(Model.EquipmentOnlyUnmitigatedDps);
     public string TimeToKill => double.IsPositiveInfinity(Model.Simulation.TimeToKillSeconds) ? "∞" : $"{Model.Simulation.TimeToKillSeconds:0.0}s";
     public string EffectiveHealth => FormatNumber(Model.Simulation.EffectiveHealth);
     public string TimeToDeath => double.IsPositiveInfinity(Model.Simulation.TimeToDeathSeconds) ? "∞" : $"{Model.Simulation.TimeToDeathSeconds:0.0}s";
@@ -151,7 +168,7 @@ public sealed class ResultViewModel
 
     private static string Fallback(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
-    private static string SlotName(EquipmentSlot slot) => slot switch
+    internal static string SlotName(EquipmentSlot slot) => slot switch
     {
         EquipmentSlot.Head => "头盔", EquipmentSlot.Shoulders => "护肩", EquipmentSlot.Chest => "胸甲",
         EquipmentSlot.Hands => "手套", EquipmentSlot.Legs => "护腿", EquipmentSlot.Feet => "靴子",

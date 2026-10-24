@@ -250,10 +250,11 @@ public static class ItemStatEngine
     // field draws at the deferred Skill position, like the base record's own skill fields.
     private static readonly string[] SkillEarly = { "skillCooldownReduction", "skillManaCostReduction" };
 
-    // crit/total damage modifiers do NOT take item scale.
+    // Critical damage does not take item scale. All Damage is an ordinary
+    // damage bonus and scales with the item just like individual damage types.
     private static readonly HashSet<string> NonScaling = new(StringComparer.Ordinal)
     {
-        "offensiveCritDamageModifier", "offensiveTotalDamageModifier",
+        "offensiveCritDamageModifier",
     };
 
     private static readonly List<OrderEntry> Order = BuildOrder();

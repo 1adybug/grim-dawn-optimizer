@@ -93,7 +93,7 @@ internal sealed class ArzArchiveReader
             var key = strings[(int)keyIndex];
             if (valueType == 2)
             {
-                if (TextFields.Contains(key))
+                if (TextFields.Contains(key) || IsPlayerAnimationField(name, key) || name.StartsWith("records/game/", StringComparison.OrdinalIgnoreCase))
                 {
                     var values = new List<string>(count);
                     for (var i = 0; i < count; i++)
@@ -104,7 +104,8 @@ internal sealed class ArzArchiveReader
                     if (values.Count > 0) text[key] = values;
                 }
             }
-            else if (NumericFields.Contains(key) || IsPotentialCombatStatField(name, key))
+            else if (NumericFields.Contains(key) || IsPotentialCombatStatField(name, key) || IsPlayerAnimationField(name, key) ||
+                     name.StartsWith("records/game/", StringComparison.OrdinalIgnoreCase))
             {
                 var values = new double[count];
                 for (var i = 0; i < count; i++)
@@ -135,6 +136,14 @@ internal sealed class ArzArchiveReader
         {
             "augmentAllLevel",
             "attributeScalePercent",
+            "strengthIncrement",
+            "dexterityIncrement",
+            "intelligenceIncrement",
+            "lifeIncrement",
+            "lifeIncrementDexterity",
+            "lifeIncrementIntelligence",
+            "manaIncrement",
+            "dwWeaponSpeedFactor",
             "characterAttackSpeed",
             "characterAttackSpeedModifier",
             "characterBaseAttackSpeed",
@@ -272,6 +281,10 @@ internal sealed class ArzArchiveReader
         return result;
     }
 
+    private static bool IsPlayerAnimationField(string recordName, string field) =>
+        recordName.StartsWith("records/creatures/pc/", StringComparison.OrdinalIgnoreCase) &&
+        field.Contains("AttackAnim", StringComparison.OrdinalIgnoreCase);
+
     private static bool IsPotentialCombatStatField(string recordName, string field)
     {
         var relevantRecord = recordName.StartsWith("records/items/", StringComparison.OrdinalIgnoreCase) ||
@@ -292,6 +305,7 @@ internal sealed class ArzArchiveReader
             "itemClassification",
             "itemCostName",
             "characterAttributeEquations",
+            "charAnimationTableName",
             "characterDefensiveAbility",
             "characterLife",
             "characterOffensiveAbility",

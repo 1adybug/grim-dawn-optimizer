@@ -8,6 +8,102 @@ public sealed class CombatSimulatorTests
     private readonly CombatSimulator _simulator = new();
     private readonly CharacterStatEngine _engine = new();
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AllDamageAddsToExistingTypeBonusesForWeaponAndSpellDamage(bool spell)
+    {
+        var stats = Stats((StatKeys.WeaponDamage("fire"), 100),
+            (StatKeys.DamagePercent("fire"), 300), ("damage.total.percent", 26));
+        var rotation = new SkillRotationDefinition
+        {
+            BaseAttacksPerSecond = 1, WeaponDamagePercent = spell ? 0 : 100,
+            UsesAttackSpeed = !spell,
+            FlatDamage = spell ? Stats((StatKeys.DamageFlat("fire"), 100)) : new()
+        };
+
+        var report = Simulate(stats, Scenario(), rotation);
+
+        // 100 * (1 + 300% + 26%), not 100 * (1 + 300%) * (1 + 26%).
+        Assert.Equal(426, report.UnmitigatedDps, 8);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AllDamageMatchesEquivalentTypeBonusesIncludingDotsAndProcs(bool skillBonus)
+    {
+        var owner = Stats((StatKeys.WeaponDamage("fire"), 100),
+            (StatKeys.DamagePercent("fire"), 300), (StatKeys.DamagePercent("chaos"), 200),
+            (StatKeys.DamageDot("fire"), 20), (StatKeys.DamageDotPercent("fire"), 80));
+        SimulationReport Run(bool allDamage)
+        {
+            var stats = owner.Clone();
+            var skillStats = new StatBlock();
+            var bonusStats = skillBonus ? skillStats : stats;
+            if (allDamage) bonusStats.Add("damage.total.percent", 26);
+            else foreach (var type in StatKeys.DamageTypes)
+            {
+                bonusStats.Add(StatKeys.DamagePercent(type), 26);
+                bonusStats.Add(StatKeys.DamageDotPercent(type), 26);
+            }
+            var procDamage = Stats((StatKeys.DamageFlat("chaos"), 50), ("damage.chaos.dotTotal", 30));
+            if (allDamage) procDamage.Add("damage.total.percent", 40);
+            else foreach (var type in StatKeys.DamageTypes)
+            {
+                procDamage.Add(StatKeys.DamagePercent(type), 40);
+                procDamage.Add(StatKeys.DamageDotPercent(type), 40);
+            }
+            var loadout = new CalculatedLoadout
+            {
+                Slots = new Dictionary<EquipmentSlot, LoadoutVariant>(),
+                Stats = stats,
+                Effects = [new TriggeredEffect("proc", "Chaos proc", 1, 0, procDamage)]
+            };
+            return _simulator.Simulate(Character(stats), loadout, Scenario(), new SkillRotationDefinition
+            {
+                BaseAttacksPerSecond = 1, WeaponDamagePercent = 100, FlatDamage = skillStats
+            });
+        }
+
+        var all = Run(true);
+        var perType = Run(false);
+        Assert.Equal(perType.UnmitigatedDps, all.UnmitigatedDps, 8);
+        Assert.Equal(perType.ExpectedDps, all.ExpectedDps, 8);
+    }
+
+    [Fact]
+    public void ExplicitTotalDamageMultiplierRemainsMultiplicative()
+    {
+        var stats = Stats((StatKeys.WeaponDamage("fire"), 100),
+            (StatKeys.DamagePercent("fire"), 300), ("damage.total.percent", 26),
+            ("damage.total.multiplierPercent", 20));
+
+        Assert.Equal(426 * 1.2, Simulate(stats, Scenario()).UnmitigatedDps, 8);
+    }
+
+    [Fact]
+    public void EnergyLimitedCombatDoesNotHideAttackSpeedFromSheetDps()
+    {
+        var stats = Stats((StatKeys.WeaponDamage("fire"), 100), ("energy", 10));
+        var faster = stats.Clone();
+        faster.Add("attackSpeed", 7);
+        var rotation = new SkillRotationDefinition
+        {
+            BaseAttacksPerSecond = 1, WeaponDamagePercent = 100, EnergyPerUse = 10
+        };
+
+        var slow = Simulate(stats, Scenario(), rotation);
+        var fast = Simulate(faster, Scenario(), rotation);
+
+        Assert.Equal(100, slow.UnmitigatedDps, 8);
+        Assert.Equal(107, fast.UnmitigatedDps, 8);
+        Assert.Equal(slow.ExpectedDps, fast.ExpectedDps, 8);
+        var longFight = Scenario();
+        longFight.DurationSeconds = 100;
+        Assert.Equal(fast.UnmitigatedDps, Simulate(faster, longFight, rotation).UnmitigatedDps, 8);
+    }
+
     [Fact]
     public void ConversionUsesDestinationResistance()
     {

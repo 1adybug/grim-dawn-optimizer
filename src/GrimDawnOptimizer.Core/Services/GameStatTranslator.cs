@@ -267,6 +267,8 @@ internal static class GameStatTranslator
         }
     }
 
+    internal static double LegacyPhysicalWeaponDamage(GameRecord record) => Average(record, "offensivePhysical");
+
     private static double Average(GameRecord record, string prefix)
     {
         var minimum = record.NumericValues[prefix + "Min"];

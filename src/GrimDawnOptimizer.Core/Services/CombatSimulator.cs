@@ -56,7 +56,7 @@ public sealed class CombatSimulator : ICombatSimulator
                             totalDamage += proc.Damage;
                 }
 
-                var incomingHits = SampleEventCount(rng, scenario.IncomingDamage.HitsPerSecond * duration);
+                var incomingHits = SampleEventCount(rng, DifficultyRules.Incoming(scenario).HitsPerSecond * duration);
                 var received = 0d;
                 var retaliationDamage = 0d;
                 for (var hit = 0; hit < incomingHits; hit++)
@@ -114,7 +114,8 @@ public sealed class CombatSimulator : ICombatSimulator
         var stats = loadout.Stats;
         var offensiveStats = stats.Clone();
         foreach (var (key, value) in rotation.FlatDamage.Values)
-            if ((key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) && key.EndsWith(".percent", StringComparison.OrdinalIgnoreCase)) ||
+            if ((key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) &&
+                 (key.EndsWith(".percent", StringComparison.OrdinalIgnoreCase) || key.EndsWith(".dotPercent", StringComparison.OrdinalIgnoreCase))) ||
                 key.Equals("damage.total.multiplierPercent", StringComparison.OrdinalIgnoreCase) ||
                 key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
                 key.StartsWith("rr.", StringComparison.OrdinalIgnoreCase))
@@ -124,17 +125,19 @@ public sealed class CombatSimulator : ICombatSimulator
         var sheetDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var sheetDotDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var activationRate = Math.Clamp(rotation.ActivationRate, 0, 1);
-        var defaultStrikes = Math.Max(1, stats["averageWeaponStrikesPerAction"]);
+        var weaponDamageScale = Math.Max(0, rotation.WeaponDamagePercent) / 100d;
+        // Dual-wield weapon actions do not add strikes to a pure spell.
+        var defaultStrikes = weaponDamageScale > 0 ? Math.Max(1, stats["averageWeaponStrikesPerAction"]) : 1;
         var weaponPool = NormalizeWeaponPool(rotation.WeaponPoolAttacks);
         var weaponPoolChance = weaponPool.Sum(x => x.ChanceFraction);
         foreach (var type in StatKeys.DamageTypes)
         {
             var normalWeaponHit = stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)];
             var legacyPoolMultiplier = weaponPool.Count == 0 ? Math.Max(0, rotation.WeaponPoolDamageMultiplier) : 1;
-            var sheetSkillHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d +
+            var sheetSkillHit = normalWeaponHit * weaponDamageScale +
                                 rotation.FlatDamage[StatKeys.DamageFlat(type)];
             var selectedSkillHit = sheetSkillHit +
-                                   normalWeaponHit * rotation.WeaponDamagePercent / 100d * (legacyPoolMultiplier - 1) +
+                                   normalWeaponHit * weaponDamageScale * (legacyPoolMultiplier - 1) +
                                    (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageFlat(type)] : 0);
             var selectedPerStrike = normalWeaponHit + (selectedSkillHit - normalWeaponHit) * activationRate;
             // The character-sheet comparison value describes the selected attack
@@ -145,7 +148,7 @@ public sealed class CombatSimulator : ICombatSimulator
             var directPerAction = selectedPerStrike * defaultStrikes * (1 - weaponPoolChance);
             foreach (var entry in weaponPool)
             {
-                var wpsHit = normalWeaponHit * rotation.WeaponDamagePercent / 100d *
+                var wpsHit = normalWeaponHit * weaponDamageScale *
                              Math.Max(0, entry.Attack.WeaponDamageMultiplier) +
                              rotation.FlatDamage[StatKeys.DamageFlat(type)] +
                              entry.Attack.FlatDamage[StatKeys.DamageFlat(type)];
@@ -154,46 +157,99 @@ public sealed class CombatSimulator : ICombatSimulator
             damage[type] = directPerAction;
 
             var normalDot = stats[StatKeys.DamageDot(type)];
-            var sheetSelectedDot = normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)];
+            // Equipment DoT belongs to the weapon component, just like flat
+            // direct damage. A 0% weapon spell inherits none of it; the skill's
+            // own DoT is independent of its weapon-damage percentage.
+            var sheetSelectedDot = normalDot * weaponDamageScale + rotation.FlatDamage[StatKeys.DamageDot(type)];
             var selectedDot = sheetSelectedDot +
+                              normalDot * weaponDamageScale * (legacyPoolMultiplier - 1) +
                               (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageDot(type)] : 0);
-            sheetDotDamage[type] = sheetSelectedDot * defaultStrikes;
-            var dotPerAction = selectedDot * defaultStrikes * (1 - weaponPoolChance);
+            // CalculateDps filters duplicate duration damage sources between
+            // hands before applying its dual-wield 0.75-per-hand weighting.
+            // The damage tooltip does not apply this filter, so multiplying
+            // that tooltip's mean by APS does not reproduce the DPS field.
+            var sheetDotWeight = defaultStrikes > 1 ? defaultStrikes / 2d : 1;
+            sheetDotDamage[type] = sheetSelectedDot * sheetDotWeight;
+            var dotPerAction = selectedDot * (1 - weaponPoolChance);
             foreach (var entry in weaponPool)
                 dotPerAction += entry.ChanceFraction *
-                    (normalDot + rotation.FlatDamage[StatKeys.DamageDot(type)] +
-                     entry.Attack.FlatDamage[StatKeys.DamageDot(type)]) * Math.Max(1, entry.Attack.WeaponStrikes);
+                    (normalDot * weaponDamageScale * Math.Max(0, entry.Attack.WeaponDamageMultiplier) +
+                     rotation.FlatDamage[StatKeys.DamageDot(type)] +
+                     entry.Attack.FlatDamage[StatKeys.DamageDot(type)]);
             dotDamage[type] = dotPerAction;
         }
 
-        ApplyConversions(damage, offensiveStats);
-        ApplyConversions(sheetDamage, offensiveStats);
+        var localDamageBonus = DamageConversion.Apply(damage, rotation.FlatDamage, stats);
+        var localSheetDamageBonus = DamageConversion.Apply(sheetDamage, rotation.FlatDamage, stats);
 
         var rawDamagePerLandedHit = 0d;
         var sheetDamagePerHit = 0d;
         var rawDotDps = 0d;
         var sheetDotDps = 0d;
+        // offensiveTotalDamageModifier is the item's "+% All Damage": it joins
+        // each type's additive bonus. Only offensiveDamageMultModifier is a
+        // separate multiplier. Multiplying by All Damage overvalues such items
+        // and can reverse the predicted direction of an equipment swap.
+        var allDamageBonus = offensiveStats["damage.total.percent"];
         foreach (var type in StatKeys.DamageTypes)
         {
-            var damageMultiplier = Math.Max(0, 1 + offensiveStats[StatKeys.DamagePercent(type)] / 100d);
-            var boosted = damage[type] * damageMultiplier;
-            var sheetBoosted = sheetDamage[type] * damageMultiplier;
+            var typeBonus = stats[StatKeys.DamagePercent(type)] + stats["damage.total.percent"];
+            var damageMultiplier = Math.Max(0, 1 + typeBonus / 100d);
+            var boosted = Math.Max(0, damage[type] * damageMultiplier + localDamageBonus[type]);
+            var sheetBoosted = Math.Max(0, sheetDamage[type] * damageMultiplier + localSheetDamageBonus[type]);
             sheetDamagePerHit += sheetBoosted;
             rawDamagePerLandedHit += ApplyEnemyMitigation(type, boosted, scenario, offensiveStats);
-            var boostedDot = dotDamage[type] * Math.Max(0, 1 +
-                (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
-            var sheetBoostedDot = sheetDotDamage[type] * Math.Max(0, 1 +
-                (offensiveStats[StatKeys.DamagePercent(type)] + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
+            // Burn/poison/etc. have their own damage bonuses. Their associated
+            // direct type (fire/acid/etc.) does not also boost the DoT.
+            var dotMultiplier = Math.Max(0, 1 +
+                (allDamageBonus + offensiveStats[StatKeys.DamageDotPercent(type)]) / 100d);
+            var boostedDot = dotDamage[type] * dotMultiplier;
+            var sheetBoostedDot = sheetDotDamage[type] * dotMultiplier;
             sheetDotDps += sheetBoostedDot;
             rawDotDps += ApplyEnemyMitigation(type, boostedDot, scenario, offensiveStats);
         }
 
-        var totalDamageFactor = Math.Max(0, 1 + offensiveStats["damage.total.percent"] / 100d) *
-                                Math.Max(0, 1 + offensiveStats["damage.total.multiplierPercent"] / 100d);
+        var totalDamageFactor = Math.Max(0, 1 + offensiveStats["damage.total.multiplierPercent"] / 100d);
         rawDamagePerLandedHit *= totalDamageFactor;
         sheetDamagePerHit *= totalDamageFactor;
         rawDotDps *= totalDamageFactor;
         sheetDotDps *= totalDamageFactor;
+
+        // A secondary explosion carries a separate payload. The collector uses
+        // both weapon IDs at full weapon-damage percentage, with shared flat
+        // damage once, rather than the parent's averaged dual-strike action.
+        foreach (var secondary in rotation.SecondaryAttacks)
+        {
+            var secondaryStats = stats.Clone();
+            foreach (var (key, value) in secondary.FlatDamage.Values)
+                if ((key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) &&
+                     (key.EndsWith(".percent", StringComparison.OrdinalIgnoreCase) || key.EndsWith(".dotPercent", StringComparison.OrdinalIgnoreCase))) ||
+                    key.Equals("damage.total.multiplierPercent", StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith("rr.", StringComparison.OrdinalIgnoreCase))
+                    secondaryStats.Add(key, value);
+            var secondaryScale = Math.Max(0, secondary.WeaponDamagePercent) / 100d;
+            var secondaryDamage = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            foreach (var type in StatKeys.DamageTypes)
+                secondaryDamage[type] = ((stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)] +
+                                          stats[$"secondaryWeaponDamageCorrection.{type}"]) * secondaryScale +
+                                         secondary.FlatDamage[StatKeys.DamageFlat(type)]) * activationRate;
+            var secondaryLocalBonus = DamageConversion.Apply(secondaryDamage, secondary.FlatDamage, stats);
+            var secondaryTotal = Math.Max(0, 1 + secondaryStats["damage.total.multiplierPercent"] / 100d);
+            foreach (var type in StatKeys.DamageTypes)
+            {
+                var direct = Math.Max(0, secondaryDamage[type] * Math.Max(0, 1 +
+                    (stats[StatKeys.DamagePercent(type)] + stats["damage.total.percent"]) / 100d) +
+                    secondaryLocalBonus[type]) * secondaryTotal;
+                sheetDamagePerHit += direct;
+                rawDamagePerLandedHit += ApplyEnemyMitigation(type, direct, scenario, secondaryStats);
+                var dot = (stats[StatKeys.DamageDot(type)] * secondaryScale + secondary.FlatDamage[StatKeys.DamageDot(type)]) *
+                          activationRate * Math.Max(0, 1 + (secondaryStats[StatKeys.DamageDotPercent(type)] +
+                          secondaryStats["damage.total.percent"]) / 100d) * secondaryTotal;
+                sheetDotDps += dot;
+                rawDotDps += ApplyEnemyMitigation(type, dot, scenario, secondaryStats);
+            }
+        }
 
         var speedBonus = rotation.UsesAttackSpeed ? stats["attackSpeed"] : stats["castSpeed"];
         var weaponSpeedFactor = rotation.UsesAttackSpeed && stats["weaponAttackSpeedFactor"] > 0
@@ -204,11 +260,18 @@ public sealed class CombatSimulator : ICombatSimulator
         // isolation. This matters most for ranged dual wielding.
         var speedCap = 2.0 + Math.Max(0, stats[rotation.UsesAttackSpeed ? "attackSpeed.maxBonus" : "castSpeed.maxBonus"]) / 100d;
         var actionSpeed = Math.Clamp(weaponSpeedFactor * (1 + speedBonus / 100d), 0.2, speedCap);
+        // The engine caps Character::GetAttackSpeed before applying the ratio
+        // between unarmed and equipped-weapon animation durations.
+        if (rotation.UsesAttackSpeed && stats["weaponAttackAnimationRatio"] > 0)
+            actionSpeed *= stats["weaponAttackAnimationRatio"];
         var attacksPerSecond = Math.Max(0.05, rotation.BaseAttacksPerSecond * actionSpeed);
         var cooldown = rotation.CooldownSeconds *
                        (1 - Math.Clamp(stats["cooldownReduction"] / 100d, 0, 0.8));
         if (cooldown > Epsilon)
             attacksPerSecond = Math.Min(attacksPerSecond, 1d / cooldown);
+        // The sheet describes the attack at its actual speed. Resource limits
+        // over a chosen fight duration affect sustained combat DPS only.
+        var sheetAttacksPerSecond = attacksPerSecond;
         var energyPerUse = rotation.EnergyPerUse *
                            (1 - Math.Clamp(stats["energyCostReduction"] / 100d, 0, 0.8));
         var energyAvailable = Math.Max(0, stats["energyRegen"] + stats["energy"] / Math.Max(1, scenario.DurationSeconds));
@@ -225,7 +288,10 @@ public sealed class CombatSimulator : ICombatSimulator
         var weaponDps = rawDamagePerLandedHit * attacksPerSecond * hitAndCritFactor + rawDotDps * hitChance;
         // This value mirrors the game's target-free sheet tooltip: no armor,
         // resistance, hit chance or enemy defensive ability is applied.
-        var unmitigatedWeaponDps = sheetDamagePerHit * attacksPerSecond + sheetDotDps;
+        // The game includes the DoT rate in its displayed per-hit range, then
+        // multiplies that entire range by attack frequency. Sustained combat
+        // above keeps the separate, non-stacking DoT rate instead.
+        var unmitigatedWeaponDps = (sheetDamagePerHit + sheetDotDps) * sheetAttacksPerSecond;
 
         var procModels = new List<ProcModel>();
         var procDps = 0d;
@@ -254,20 +320,22 @@ public sealed class CombatSimulator : ICombatSimulator
         // Grim Dawn's target-free sheet value contains direct skill/weapon damage,
         // but no enemy DA exists to roll a crit against and random item procs are
         // not treated as guaranteed DPS. They remain in the active combat DPS.
-        var unmitigatedDps = unmitigatedWeaponDps * targetCount;
+        // The character panel describes this attack, independently of how many
+        // enemies a combat scenario assumes it will hit.
+        var unmitigatedDps = unmitigatedWeaponDps;
         var health = Math.Max(1, stats["health"]);
         var enemyHit = ResolveHitAndCrit(scenario.EnemyOffensiveAbility, stats["defensiveAbility"]).HitChance;
         var avoidance = Math.Clamp(stats["dodgeChance"] / 100d, 0, 0.8);
         var blockChance = Math.Clamp(stats["blockChance"] / 100d, 0, 0.9);
         var recovery = Math.Max(0, stats["blockRecoverySeconds"]) *
                        (1 - Math.Clamp(stats["blockRecoveryReduction"] / 100d, 0, 0.9));
-        if (recovery > Epsilon && scenario.IncomingDamage.HitsPerSecond > Epsilon)
-            blockChance = Math.Min(blockChance, 1d / (recovery * scenario.IncomingDamage.HitsPerSecond));
+        if (recovery > Epsilon && DifficultyRules.Incoming(scenario).HitsPerSecond > Epsilon)
+            blockChance = Math.Min(blockChance, 1d / (recovery * DifficultyRules.Incoming(scenario).HitsPerSecond));
         var blockAbsorption = stats["blockAbsorption"] > 0
             ? Math.Clamp(stats["blockAbsorption"] / 100d, 0, 1)
             : 1d;
         var blockAmount = Math.Max(0, stats["blockAmount"]) * blockAbsorption;
-        var retaliationTriggerRate = Math.Max(0, scenario.IncomingDamage.HitsPerSecond) * enemyHit * (1 - avoidance);
+        var retaliationTriggerRate = Math.Max(0, DifficultyRules.Incoming(scenario).HitsPerSecond) * enemyHit * (1 - avoidance);
         var (retaliationDps, retaliationDamagePerTrigger) = ResolveRetaliation(
             stats, scenario, retaliationTriggerRate);
         var expectedDps = activeExpectedDps + retaliationDps;
@@ -277,13 +345,13 @@ public sealed class CombatSimulator : ICombatSimulator
         var damageTakenPerHit = ResolveIncomingDamagePerHit(stats, scenario);
         var afterAvoidance = damageTakenPerHit * enemyHit * (1 - avoidance);
         var afterBlock = Math.Max(0, afterAvoidance - blockChance * Math.Min(blockAmount, afterAvoidance));
-        var incomingDps = afterBlock * Math.Max(0, scenario.IncomingDamage.HitsPerSecond);
+        var incomingDps = afterBlock * Math.Max(0, DifficultyRules.Incoming(scenario).HitsPerSecond);
         var lifeSteal = Math.Clamp(stats["lifeSteal"] / 100d, 0, 1) * Math.Clamp(1 - scenario.EnemyLifeLeechResistance / 100d, 0, 1);
         var healthRegen = Math.Max(0, stats["healthRegen"]);
         // Passive retaliation is not attack damage and therefore cannot produce
         // health through global attack-damage conversion.
         var sustain = healthRegen + lifeStealEligibleDps * lifeSteal;
-        var rawIncoming = RawIncomingPerHit(scenario) * Math.Max(0, scenario.IncomingDamage.HitsPerSecond);
+        var rawIncoming = RawIncomingPerHit(scenario) * Math.Max(0, DifficultyRules.Incoming(scenario).HitsPerSecond);
         var netIncomingDps = incomingDps - sustain;
         var effectiveHealth = netIncomingDps <= Epsilon ? double.PositiveInfinity : health * rawIncoming / netIncomingDps;
         var timeToDeath = netIncomingDps <= Epsilon ? double.PositiveInfinity : health / netIncomingDps;
@@ -303,26 +371,6 @@ public sealed class CombatSimulator : ICombatSimulator
         if (total <= Epsilon) return [];
         var scale = total > 100 ? 1d / total : 0.01d;
         return positive.Select(x => new NormalizedWeaponPoolAttack(x, x.Chance * scale)).ToArray();
-    }
-
-    private static void ApplyConversions(Dictionary<string, double> damage, StatBlock stats)
-    {
-        var original = new Dictionary<string, double>(damage, StringComparer.OrdinalIgnoreCase);
-        foreach (var from in StatKeys.DamageTypes)
-        {
-            var conversions = StatKeys.DamageTypes
-                .Where(to => !to.Equals(from, StringComparison.OrdinalIgnoreCase))
-                .Select(to => (To: to, Percent: Math.Max(0, stats[$"conversion.{from}.{to}"])))
-                .Where(x => x.Percent > Epsilon)
-                .ToArray();
-            var total = conversions.Sum(x => x.Percent);
-            if (total <= Epsilon) continue;
-            var scale = total > 100 ? 100 / total : 1;
-            var convertedFraction = Math.Min(1, total / 100d);
-            damage[from] -= original[from] * convertedFraction;
-            foreach (var conversion in conversions)
-                damage[conversion.To] += original[from] * conversion.Percent * scale / 100d;
-        }
     }
 
     private static double ResolveEnemyResistance(string type, CombatScenario scenario, StatBlock stats)
@@ -372,16 +420,17 @@ public sealed class CombatSimulator : ICombatSimulator
             var weapon = (owner[StatKeys.WeaponDamage(type)] + owner[StatKeys.DamageFlat(type)]) *
                          Math.Max(0, triggeredEffect.WeaponDamagePercent) / 100d;
             var raw = weapon + effect[StatKeys.DamageFlat(type)] + effect[type];
-            var typeBonus = owner[StatKeys.DamagePercent(type)] + effect[StatKeys.DamagePercent(type)];
+            var typeBonus = owner[StatKeys.DamagePercent(type)] + effect[StatKeys.DamagePercent(type)] +
+                            owner["damage.total.percent"] + effect["damage.total.percent"];
             var boosted = raw * Math.Max(0, 1 + typeBonus / 100d);
             var dot = effect[$"damage.{type}.dotTotal"] * Math.Max(0, 1 +
-                (typeBonus + owner[StatKeys.DamageDotPercent(type)] + effect[StatKeys.DamageDotPercent(type)]) / 100d);
+                (owner["damage.total.percent"] + effect["damage.total.percent"] +
+                 owner[StatKeys.DamageDotPercent(type)] + effect[StatKeys.DamageDotPercent(type)]) / 100d);
             var combined = boosted + dot;
             total += applyEnemyMitigation ? ApplyEnemyMitigation(type, combined, scenario, owner) : combined;
         }
-        var totalDamage = owner["damage.total.percent"] + effect["damage.total.percent"];
         var totalMultiplier = owner["damage.total.multiplierPercent"] + effect["damage.total.multiplierPercent"];
-        return total * Math.Max(0, 1 + totalDamage / 100d) * Math.Max(0, 1 + totalMultiplier / 100d);
+        return total * Math.Max(0, 1 + totalMultiplier / 100d);
     }
 
     private static (double Dps, double DamagePerTrigger) ResolveRetaliation(
@@ -417,7 +466,7 @@ public sealed class CombatSimulator : ICombatSimulator
 
     private static double ResolveIncomingDamagePerHit(StatBlock stats, CombatScenario scenario)
     {
-        var incoming = scenario.IncomingDamage;
+        var incoming = DifficultyRules.Incoming(scenario);
         var total = 0d;
         foreach (var type in StatKeys.IncomingDamageTypes)
         {
@@ -436,7 +485,7 @@ public sealed class CombatSimulator : ICombatSimulator
                 _ => 0
             };
             var cap = 80 + stats[StatKeys.MaxResistance(type)];
-            var resistance = Math.Clamp(stats[StatKeys.Resistance(type)], -100, cap);
+            var resistance = DifficultyRules.EffectiveResistance(stats, scenario, type);
             var afterResistance = raw * (1 - resistance / 100d);
             if (type == "physical")
             {
@@ -450,7 +499,7 @@ public sealed class CombatSimulator : ICombatSimulator
 
     private static double RawIncomingPerHit(CombatScenario scenario)
     {
-        var x = scenario.IncomingDamage;
+        var x = DifficultyRules.Incoming(scenario);
         return x.PhysicalPerHit + x.PiercePerHit + x.FirePerHit + x.ColdPerHit + x.LightningPerHit +
                x.AcidPerHit + x.VitalityPerHit + x.AetherPerHit + x.ChaosPerHit + x.BleedingPerHit;
     }

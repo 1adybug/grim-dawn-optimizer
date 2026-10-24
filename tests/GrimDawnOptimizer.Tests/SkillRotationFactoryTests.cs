@@ -341,7 +341,7 @@ public sealed class SkillRotationFactoryTests
     }
 
     [Fact]
-    public void ExpectedItemScaleAppliesToDamageButNotFixedUtilityStats()
+    public void ExpectedItemScaleAppliesToModifiersButNotFixedWeaponBaseOrUtilityStats()
     {
         var stats = new StatBlock(new Dictionary<string, double>
         {
@@ -352,7 +352,7 @@ public sealed class SkillRotationFactoryTests
 
         SaveReader.ApplyExpectedItemScale(stats, 20);
 
-        Assert.Equal(120, stats[StatKeys.WeaponDamage("fire")], 8);
+        Assert.Equal(100, stats[StatKeys.WeaponDamage("fire")], 8);
         Assert.Equal(60, stats[StatKeys.DamagePercent("fire")], 8);
         Assert.Equal(1000, stats["health"]);
     }

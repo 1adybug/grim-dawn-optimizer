@@ -21,7 +21,7 @@ internal sealed class CharacterFileParser
             throw new InvalidDataException($"不是受支持的 player.gdc 文件（标识 0x{magic:X8}，头版本 {headerVersion}）");
 
         var name = reader.ReadWideString();
-        _ = reader.ReadBoolean();
+        var isMale = reader.ReadBoolean();
         var classId = reader.ReadString();
         var headerLevel = reader.ReadInt32();
         var hardcore = reader.ReadBoolean();
@@ -31,7 +31,7 @@ internal sealed class CharacterFileParser
         if (dataVersion is < 6 or > 8) throw new InvalidDataException($"不支持的角色版本：{dataVersion}");
         _ = reader.ReadUid();
 
-        var result = new RawCharacter(filePath, name, classId, headerLevel, hardcore);
+        var result = new RawCharacter(filePath, name, classId, headerLevel, hardcore) { IsFemale = !isMale };
         while (reader.Remaining > 0)
         {
             var block = reader.BeginBlock();
@@ -348,6 +348,7 @@ internal sealed class RawCharacter(string filePath, string name, string classId,
     public string ClassId { get; } = classId;
     public int Level { get; set; } = level;
     public bool IsHardcore { get; } = isHardcore;
+    public bool IsFemale { get; init; }
     public int Experience { get; set; }
     public int ModifierPoints { get; set; }
     public int SkillPoints { get; set; }
