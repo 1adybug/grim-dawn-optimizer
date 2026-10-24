@@ -47,7 +47,7 @@ public static class ItemStatEngine
 
     private const double BaseJitterPercent = 20.0;
 
-    private enum Kind { Char, Flat, SlowFlat, Dmg, Leech, OffReflex, OffSlow, OffReduc, RetalFlat, RetalDur, RetalMod, RetalReflex, Def, Conv, Skill }
+    private enum Kind { Char, Flat, SlowFlat, Dmg, Leech, OffReflex, OffSlow, OffReduc, RetalFlat, RetalDur, RetalMod, RetalReflex, Def, DefCap, Conv, Skill }
 
     private readonly record struct OrderEntry(Kind Kind, string Field, bool Scales);
 
@@ -196,8 +196,8 @@ public static class ItemStatEngine
 
     // Defense store field order. defensiveBlockModifier/AmountModifier/ProtectionModifier load
     // first, then absorption, resists and the rest. Every entry is a single-value jittered draw
-    // (default 20% jitter), NOT scaled by attributeScalePercent. The resistance caps (71-90,
-    // defensive*MaxResist) draw no RNG and are fixed, so they are omitted from this list.
+    // (default 20% jitter), NOT scaled by attributeScalePercent. Resistance caps (71-90)
+    // follow this block, with zero base jitter but the affixes' own jitter percentages.
     private static readonly string[] Def =
     {
         "defensiveBlockModifier", "defensiveBlockAmountModifier", "defensiveProtectionModifier", // 01-03
@@ -224,8 +224,6 @@ public static class ItemStatEngine
         "defensiveTrap", "defensivePetrify", "defensiveSleep", "defensiveSleepModifier",         // 59-62
         "defensiveKnockdown", "defensiveKnockdownModifier", "defensiveTaunt", "defensiveFear",   // 63-66
         "defensiveConfusion", "defensiveConvert", "defensiveTotalSpeedResistance", "defensiveCrowdControl", // 67-70
-        // (71-90 defense caps = fixed)
-        "defensiveReflect", "defensiveReflectModifier", "defensivePercentCurrentLife", "defensivePercentReflectionResistance", // 91-94
     };
 
     // Shield block fields are read straight from the raw table with no jitter at all -> fixed,
@@ -233,6 +231,26 @@ public static class ItemStatEngine
     private static readonly string[] BlockFixed =
     {
         "defensiveBlock", "defensiveBlockChance", "blockAbsorption", "blockRecoveryTime",
+    };
+
+    // Defense slots 71-90: the base contribution has zero jitter; prefix/suffix
+    // contributions still use their lootRandomizerJitter and consume draws here.
+    // All sources add together without item attribute scaling. The explicit order
+    // comes from DefenseAttributeStore_Equipment::Load (Game.dll RVA 0x1BD460).
+    private static readonly string[] ResistanceCaps =
+    {
+        "defensivePhysicalMaxResist", "defensivePierceMaxResist", "defensiveFireMaxResist",
+        "defensiveColdMaxResist", "defensiveLightningMaxResist", "defensivePoisonMaxResist",
+        "defensiveLifeMaxResist", "defensiveAetherMaxResist", "defensiveChaosMaxResist",
+        "defensiveBleedingMaxResist", "defensiveSlowLifeLeachMaxResist", "defensiveSlowManaLeachMaxResist",
+        "defensiveDisruptionMaxResist", "defensiveTrapMaxResist", "defensivePetrifyMaxResist",
+        "defensiveFreezeMaxResist", "defensiveStunMaxResist", "defensiveSleepMaxResist",
+        "defensiveAllMaxResist", "defensiveCrowdControlMaxResist"
+    };
+
+    private static readonly string[] DefAfterCaps =
+    {
+        "defensiveReflect", "defensiveReflectModifier", "defensivePercentCurrentLife", "defensivePercentReflectionResistance", // 91-94
     };
 
     private static readonly string[] Conv = { "conversionPercentage", "conversionPercentage2" };
@@ -279,6 +297,8 @@ public static class ItemStatEngine
         foreach (var f in RetalDurPct) order.Add(new(Kind.RetalDur, f, false));
         foreach (var f in RetalReflex) order.Add(new(Kind.RetalReflex, f, false));
         foreach (var f in Def) order.Add(new(Kind.Def, f, false));
+        foreach (var f in ResistanceCaps) order.Add(new(Kind.DefCap, f, false));
+        foreach (var f in DefAfterCaps) order.Add(new(Kind.Def, f, false));
         foreach (var f in RetalDamageMultPostDef) order.Add(new(Kind.RetalMod, f, false));
         foreach (var f in Conv) order.Add(new(Kind.Conv, f, false));
         foreach (var f in Skill) order.Add(new(Kind.Skill, f, false));
@@ -776,9 +796,9 @@ public static class ItemStatEngine
                         sj = hasSuffix ? Jitter.Skill(sv, sfxPct, rng) : 0.0;
                         bj = Jitter.Skill(bv, BaseJitterPercent, rng);
                     }
-                    else if (e.Kind is Kind.Dmg or Kind.Def or Kind.RetalMod)
+                    else if (e.Kind is Kind.Dmg or Kind.Def or Kind.DefCap or Kind.RetalMod)
                     {
-                        bj = Jitter.Char(bv, BaseJitterPercent, rng);
+                        bj = Jitter.Char(bv, e.Kind == Kind.DefCap ? 0 : BaseJitterPercent, rng);
                         pj = hasPrefix ? Jitter.Char(pv, pfxPct, rng) : 0.0;
                         sj = hasSuffix ? Jitter.Char(sv, sfxPct, rng) : 0.0;
                     }

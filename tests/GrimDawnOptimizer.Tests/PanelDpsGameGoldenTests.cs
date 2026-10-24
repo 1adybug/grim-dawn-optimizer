@@ -12,6 +12,9 @@ public sealed class PanelDpsGameGoldenTests
     [InlineData("full-gear-default-attack", 4374)]
     [InlineData("remove-right-ring-fire-strike", 22157)]
     [InlineData("remove-head-fire-strike", 19441)]
+    [InlineData("phantom-shroud-fire-strike", 22817)]
+    [InlineData("sharpshooter-crossbow-fire-strike", 15362)]
+    [InlineData("sharpshooter-dual-pistols-fire-strike", 22756)]
     public void UncalibratedPanelDpsMatchesIndependentlyObservedGameDisplay(string name, int observedDps)
     {
         using var stream = typeof(PanelDpsGameGoldenTests).Assembly.GetManifestResourceStream(
@@ -23,14 +26,19 @@ public sealed class PanelDpsGameGoldenTests
         var character = new CharacterSnapshot { Name = "panel-fixture", SaveFilePath = "fixture.gdc", Level = 64 };
         var loadout = new CalculatedLoadout
         {
-            Slots = new Dictionary<EquipmentSlot, LoadoutVariant>(),
+            Slots = sample.WeaponSlots.ToDictionary(x => Enum.Parse<EquipmentSlot>(x.Slot), x => new LoadoutVariant(new ItemInstance
+            {
+                Id = x.Slot, Name = x.Slot, BaseRecord = x.Slot, Slot = EquipmentSlot.MainHand,
+                IsTwoHanded = x.IsTwoHanded, AttachmentQualifier = x.Qualifier, Stats = new StatBlock(x.Stats),
+                Source = new ItemSourceLocation(ItemSourceKind.Equipped, "fixture.gdc")
+            }, null, null)),
             Stats = new StatBlock(sample.Stats)
         };
 
         var result = new CombatSimulator().Simulate(character, loadout, new CombatScenario(), sample.Rotation);
 
         // No runtime calibration or target mitigation is used. The game rounds
-        // this display to the nearest integer; its five UI observations are
+        // this display to the nearest integer; its UI observations are
         // independent assertions, including changes to stats and skill levels.
         Assert.Equal(observedDps, (int)Math.Floor(result.UnmitigatedDps + 0.5));
     }
@@ -48,5 +56,15 @@ public sealed class PanelDpsGameGoldenTests
         public int GamePanelDps { get; init; }
         public Dictionary<string, double> Stats { get; init; } = [];
         public SkillRotationDefinition Rotation { get; init; } = new();
+        public List<GoldenWeapon> WeaponSlots { get; init; } = [];
+    }
+
+    private sealed class GoldenWeapon
+    {
+        public GoldenWeapon() { }
+        public string Slot { get; init; } = string.Empty;
+        public Dictionary<string, double> Stats { get; init; } = [];
+        public bool IsTwoHanded { get; init; }
+        public string Qualifier { get; init; } = string.Empty;
     }
 }

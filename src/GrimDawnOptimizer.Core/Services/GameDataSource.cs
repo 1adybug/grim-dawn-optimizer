@@ -513,7 +513,7 @@ public sealed class GameDataSource : IGameDataSource
             var display = string.Join(", ", fields.Take(6));
             if (fields.Count > 6) display += "…";
             result.Add(new UnsupportedEffect(record.RecordName,
-                $"{descriptionPrefix}词条：{display}", ["dps", "effectiveHealth"]));
+                $"{descriptionPrefix}词条：{display}", CalculationDiagnostics.AffectedMetrics(fields)));
         }
         result.AddRange(SaveReader.FindUnsupportedItemSkillEffects(records, catalog,
             $"{descriptionPrefix}技能"));
@@ -615,9 +615,9 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC26 uses complete expansion-record replacement. Older caches can
-        // contain removed base-game fields and invalid downstream seeded rolls.
-        private static readonly byte[] PayloadHeader = "GDOC26"u8.ToArray();
+        // GDOC31 rebuilds derived skill stats with flat energy reservations;
+        // older cached payloads must not retain stale stats or diagnostics.
+        private static readonly byte[] PayloadHeader = "GDOC31"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNameCaseInsensitive = true,

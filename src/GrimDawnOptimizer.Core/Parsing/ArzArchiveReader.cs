@@ -221,6 +221,12 @@ internal sealed class ArzArchiveReader
             "weaponDamagePct",
             "triggerCooldown",
             "triggerEventChance",
+            "chanceToRun",
+            "exclusiveSkill",
+            "dualWieldOnly",
+            "dualRangedOnly",
+            "dualRangedOrRanged2hOnly",
+            "dualRangedOrAllRangedOnly",
             "usesTwoHands"
         };
 
@@ -324,6 +330,7 @@ internal sealed class ArzArchiveReader
             "itemSkillAutoController",
             "itemSetName",
             "itemSkillName",
+            "itemSkillLevelEq",
             "lootRandomizerName",
             "marketFileName",
             "marketStaticItems",

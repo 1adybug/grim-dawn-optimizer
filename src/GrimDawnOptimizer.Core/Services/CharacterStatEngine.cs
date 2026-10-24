@@ -5,6 +5,7 @@ namespace GrimDawnOptimizer.Core.Services;
 
 public static class StatKeys
 {
+    public const string WeaponArmorPiercing = "weaponArmorPiercing";
     public static readonly string[] DamageTypes =
     [
         "physical", "pierce", "fire", "cold", "lightning", "acid", "vitality", "aether", "chaos", "bleeding"
@@ -35,14 +36,15 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
     {
         var stats = character.BaselineStats.Clone();
         var effects = new List<TriggeredEffect>();
-        var unsupported = new List<UnsupportedEffect>();
+        var unsupported = new List<UnsupportedEffect>(character.ImportDiagnostics);
         var errors = new List<string>();
         var itemIds = new HashSet<string>(StringComparer.Ordinal);
         var setCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var canDualWield = SkillRotationFactory.ResolveCanDualWield(character, catalog, slots);
 
         foreach (var (targetSlot, variant) in slots)
         {
-            if (!IsCompatible(targetSlot, variant.Item.Slot, character.CanDualWield) ||
+            if (!IsCompatible(targetSlot, variant.Item.Slot, canDualWield) ||
                 targetSlot == EquipmentSlot.OffHand && variant.Item.IsTwoHanded)
                 errors.Add($"{variant.Item.Name} 不能装备在 {targetSlot}");
 
@@ -72,6 +74,10 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         }
 
         ApplyEquipmentSkillBonuses(stats, character, slots, catalog);
+        ApplyGrantedSkillStats(stats, character, slots, catalog, unsupported);
+        stats.Add(SkillRotationFactory.ResolveActiveTemporaryLearnedStats(character, catalog, slots));
+        stats.Add(SkillRotationFactory.ResolveQualifiedLearnedStats(character, catalog, slots));
+        AddSkillAndAnimationDiagnostics(unsupported, character, slots, catalog);
 
         ApplyPercentModifier(stats, "physique");
         ApplyPercentModifier(stats, "cunning");
@@ -81,6 +87,7 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         ApplyPercentModifier(stats, "energy");
         ApplyPercentModifier(stats, "healthRegen");
         ApplyPercentModifier(stats, "energyRegen");
+        PlayerAttributeRules.ApplyRegeneration(stats, catalog, unsupported);
         ApplyPercentModifier(stats, "armor");
         ApplyPercentModifier(stats, "blockChance");
         ApplyPercentModifier(stats, "blockAmount");
@@ -151,9 +158,14 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         foreach (var skill in character.Skills.Where(x => x.Level > 0))
         {
             if (!catalog.Records.TryGetValue(skill.Record, out var record)) continue;
+            if (SkillRotationFactory.CollectGrantedRecordNames(catalog).Contains(skill.Record) &&
+                !SkillRotationFactory.IsIntrinsicLearnedSkill(character, skill.Record)) continue;
             var owner = SkillRotationFactory.ResolvePersistentSkillOwner(record,
                 character.Skills.Where(x => x.Level > 0).Select(x => x.Record), catalog);
-            if (owner is null) continue;
+            if (owner is null || !SkillRotationFactory.IsPersistentOwnerActive(owner, character)) continue;
+            var ownerLevel = character.Skills.FirstOrDefault(x => x.Record.Equals(owner.RecordName, StringComparison.OrdinalIgnoreCase))?.Level ?? skill.Level;
+            if (SkillRotationFactory.HasWeaponRequirements(owner) ||
+                SkillRotationFactory.ResolveBuffDuration(owner, catalog, ownerLevel) > 0) continue;
             var @class = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
             if (@class.Contains("Mastery", StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -191,11 +203,107 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         }
     }
 
+    private static void ApplyGrantedSkillStats(StatBlock stats, CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots, GameDataCatalog catalog,
+        List<UnsupportedEffect> unsupported)
+    {
+        var grants = SkillRotationFactory.ResolveGrantedSkills(character, catalog, slots);
+        var exclusiveRecords = grants.Where(x => x.IsExclusive && x.MeetsWeaponRequirements).Select(x => x.Record)
+            .Concat(character.Skills.Where(x => x.Level > 0 && x.Enabled && x.Active == true &&
+                catalog.Records.TryGetValue(x.Record, out var skill) && skill.NumericValues["exclusiveSkill"] > 0)
+                .Select(x => x.Record)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach (var grant in grants)
+        {
+            if (!grant.CanAffectPanelStats || !grant.MeetsWeaponRequirements ||
+                !catalog.Records.TryGetValue(grant.Record, out var root)) continue;
+            if (SkillRotationFactory.IsIntrinsicLearnedSkill(character, grant.Record)) continue;
+            if (grant.IsExclusive && exclusiveRecords.Length > 1)
+            {
+                unsupported.Add(new UnsupportedEffect(grant.Record,
+                    "候选装备引入多个互斥技能；尚未还原游戏的替换优先级，未叠加该授予效果。",
+                    [CalculationDiagnostics.PanelDps, CalculationDiagnostics.CombatDps, CalculationDiagnostics.Survival]));
+                continue;
+            }
+            if (!grant.IsPassive && !grant.IsToggle && !character.ActiveItemSkillRecords.Any(name =>
+                    name.Equals(grant.Record, StringComparison.OrdinalIgnoreCase))) continue;
+            AddActiveUpkeepDiagnostics(unsupported, root, catalog, grant.Level);
+            foreach (var record in SkillRotationFactory.ResolveBuffRecords(root, catalog))
+                stats.Add(SkillRotationFactory.TranslatePersistentStats(record, grant.Level, root));
+            foreach (var modifier in SkillRotationFactory.ResolveCurrentSkillModifiers(character, catalog, grant.Record, slots))
+            {
+                AddActiveUpkeepDiagnostics(unsupported, modifier, catalog, 1);
+                stats.Add(SkillRotationFactory.TranslatePersistentStats(modifier, 1, root));
+            }
+        }
+    }
+
     private static int ReducedRequirement(int requirement, double reductionPercent)
     {
         if (requirement <= 0) return 0;
         var multiplier = Math.Max(0, 1 - Math.Clamp(reductionPercent, 0, 100) / 100d);
         return (int)Math.Ceiling(requirement * multiplier - 1e-9);
+    }
+
+    private static void AddSkillAndAnimationDiagnostics(List<UnsupportedEffect> diagnostics, CharacterSnapshot character,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots, GameDataCatalog catalog)
+    {
+        var playerName = character.IsFemale ? "records/creatures/pc/femalepc01.dbr" : "records/creatures/pc/malepc01.dbr";
+        if (catalog.Records.ContainsKey(playerName) || character.BaselineStats["usePlayerAttributeFormula"] > 0)
+        {
+            slots.TryGetValue(EquipmentSlot.MainHand, out var main);
+            slots.TryGetValue(EquipmentSlot.OffHand, out var off);
+            var prefix = ResolveWeaponAnimationPrefix(main?.Item, off?.Item.Slot == EquipmentSlot.MainHand);
+            if (ResolveAnimationProfile(character, catalog)?.GetAttackAnimationRatio(prefix) is not > 0)
+                diagnostics.Add(new(playerName, $"缺少完整的 {prefix} 攻击动画时长，攻击频率正在使用估算值。", ["panelDps", "dps"]));
+        }
+
+        var granted = SkillRotationFactory.CollectGrantedRecordNames(catalog);
+        var allocated = character.Skills.Where(x => x.Level > 0 &&
+            (!granted.Contains(x.Record) || SkillRotationFactory.IsIntrinsicLearnedSkill(character, x.Record))).ToArray();
+        var exclusive = allocated.Where(x => x.Enabled && catalog.Records.TryGetValue(x.Record, out var record) &&
+            record.NumericValues["exclusiveSkill"] > 0 && SkillRotationFactory.MeetsSkillWeaponRequirements(record, character, slots)).ToArray();
+        if (exclusive.Length > 0 && !exclusive.Any(x => x.Active == true))
+            diagnostics.Add(new(exclusive[0].Record,
+                "已学习的互斥技能没有已确认的激活项（exclusiveSkill / Active）；无法从存档确定重启后的自动激活结果，暂未计入这些增益。",
+                ["panelDps", "dps", "effectiveHealth"]));
+        foreach (var skill in allocated)
+        {
+            if (!catalog.Records.TryGetValue(skill.Record, out var record))
+            {
+                diagnostics.Add(new(skill.Record, "已学习技能的游戏记录缺失，无法完整重算属性。", ["panelDps", "dps", "effectiveHealth"]));
+                continue;
+            }
+            if (SkillRotationFactory.IsNonPersistentAction(record)) continue;
+            if (!SkillRotationFactory.IsKnownSkillClass(record))
+            {
+                diagnostics.AddRange(SkillRotationFactory.FindSkillDiagnostics(record, catalog, skill.Level));
+                continue;
+            }
+            var owner = SkillRotationFactory.ResolvePersistentSkillOwner(record, allocated.Select(x => x.Record), catalog);
+            if (owner is null || !SkillRotationFactory.IsPersistentOwnerActive(owner, character)) continue;
+            if (!SkillRotationFactory.MeetsSkillWeaponRequirements(owner, character, slots)) continue;
+            var ownerLevel = allocated.FirstOrDefault(x => x.Record.Equals(owner.RecordName, StringComparison.OrdinalIgnoreCase))?.Level ?? skill.Level;
+            if (SkillRotationFactory.ResolveBuffDuration(owner, catalog, ownerLevel) > 0 &&
+                !character.ActiveItemSkillRecords.Contains(owner.RecordName, StringComparer.OrdinalIgnoreCase)) continue;
+            var level = Math.Max(skill.Level, skill.DevotionLevel) + SkillRotationFactory.ResolveCurrentSkillBonus(character, catalog, skill.Record, slots);
+            AddActiveUpkeepDiagnostics(diagnostics, record, catalog, level);
+            foreach (var modifier in SkillRotationFactory.ResolveCurrentSkillModifiers(character, catalog, skill.Record, slots))
+                AddActiveUpkeepDiagnostics(diagnostics, modifier, catalog, 1);
+            diagnostics.AddRange(SkillRotationFactory.FindSkillDiagnostics(record, catalog, level, persistentOwner: owner));
+        }
+    }
+
+    private static void AddActiveUpkeepDiagnostics(List<UnsupportedEffect> diagnostics,
+        GameRecord root, GameDataCatalog catalog, int level)
+    {
+        // The UI subtracts SkillManager::GetActiveManaCost after the resource
+        // equation. Only flag a source that is actually active in this candidate;
+        // per-use attack costs and disabled/removed buffs are different cases.
+        foreach (var record in SkillRotationFactory.ResolveBuffRecords(root, catalog))
+            if (GameStatTranslator.NumericAtLevel(record, "skillActiveManaCost", level) > 0)
+                diagnostics.Add(new(record.RecordName,
+                    "该已生效增益的持续能量消耗（skillActiveManaCost）尚未从回复与实战能量预算中扣除；当前回复为扣除持续消耗前的数值。",
+                    [CalculationDiagnostics.CombatDps]));
     }
 
     private static RequirementState ResolveRequirementState(

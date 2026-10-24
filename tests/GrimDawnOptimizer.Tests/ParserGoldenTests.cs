@@ -439,7 +439,7 @@ public sealed class ParserGoldenTests
             var read = connection.CreateCommand();
             read.CommandText = "SELECT payload FROM catalog_cache";
             var payload = Assert.IsType<byte[]>(await read.ExecuteScalarAsync());
-            "GDOC25"u8.CopyTo(payload);
+            "GDOC26"u8.CopyTo(payload);
             var write = connection.CreateCommand();
             write.CommandText = "UPDATE catalog_cache SET payload=$payload";
             write.Parameters.Add("$payload", SqliteType.Blob).Value = payload;
@@ -454,7 +454,7 @@ public sealed class ParserGoldenTests
         var verify = verifyConnection.CreateCommand();
         verify.CommandText = "SELECT payload FROM catalog_cache";
         var rewritten = Assert.IsType<byte[]>(await verify.ExecuteScalarAsync());
-        Assert.Equal("GDOC26", Encoding.ASCII.GetString(rewritten, 0, 6));
+        Assert.Equal("GDOC31", Encoding.ASCII.GetString(rewritten, 0, 6));
     }
 
     [Fact]

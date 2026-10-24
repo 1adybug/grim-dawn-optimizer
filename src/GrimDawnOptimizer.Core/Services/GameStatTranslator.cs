@@ -8,6 +8,9 @@ internal static class GameStatTranslator
     {
         ["characterLife"] = "health",
         ["characterMana"] = "energy",
+        // Reservation is its own resource quantity; characterManaModifier
+        // increases maximum energy, not this flat reservation.
+        ["characterManaLimitReserve"] = "energyReserved",
         ["characterLifeRegen"] = "healthRegen",
         ["characterLifeRegenModifier"] = "healthRegen.percent",
         ["characterManaRegen"] = "energyRegen",
@@ -61,6 +64,7 @@ internal static class GameStatTranslator
         ["offensiveCritDamage"] = "criticalDamage",
         ["offensiveCritDamageModifier"] = "criticalDamage",
         ["offensiveCriticalModifier"] = "criticalDamage",
+        ["offensivePierceRatioModifier"] = "armorPiercingModifier",
         ["offensiveDamageMultModifier"] = "damage.total.multiplierPercent",
         ["skillCooldownReduction"] = "cooldownReduction",
         ["skillCooldownReductionModifier"] = "cooldownReduction",
@@ -81,7 +85,7 @@ internal static class GameStatTranslator
         "characterRunSpeed", "characterRunSpeedModifier", "characterRunSpeedMaxModifier",
         "characterIncreasedExperience", "characterIncreasedGold", "characterLightRadius",
         "characterConstitution", "characterConstitutionModifier", "characterLevelReqReduction",
-        "characterModifierPoints", "offensivePierceRatioMin", "offensivePierceRatioMax",
+        "characterModifierPoints",
         "skillCooldownTime", "skillManaCost", "skillActiveManaCost", "skillChance",
         "skillChanceWeight", "skillChargeLevel", "skillTargetNumber", "skillTargetRadius",
         "skillMaxLevel", "skillMasteryLevelRequired", "skillUltimateLevel", "skillTier",
@@ -126,6 +130,9 @@ internal static class GameStatTranslator
 
     private static void TranslateInto(GameRecord record, StatBlock result)
     {
+        // Armor piercing belongs to the weapon that supplies this range. Keep
+        // it on that variant; the simulator applies it after normal conversion.
+        result.Add(StatKeys.WeaponArmorPiercing, Average(record, "offensivePierceRatio"));
         foreach (var (rawKey, rawValue) in record.NumericValues.Values)
         {
             // ArzArchiveReader stores these two keys only as summaries of a DBR
@@ -342,6 +349,7 @@ internal static class GameStatTranslator
     private static bool IsHandledCombatField(string key)
     {
         if (Simple.ContainsKey(key) || key is "characterTotalSpeedModifier" or "defensiveAllResistance" or
+            "offensivePierceRatioMin" or "offensivePierceRatioMax" or
             "defensiveAllMaxResist" or "offensiveTotalDamageModifier" or
             "offensiveTotalDamageModifierChance" or "defensiveElementalResistance" or
             "defensiveElementalResistanceChance" or "offensiveBonusPhysicalMin" or

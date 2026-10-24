@@ -84,7 +84,12 @@ public sealed class StatBlock
     }
 }
 
-public sealed record UnsupportedEffect(string Record, string Description, IReadOnlyList<string> AffectedMetrics);
+public enum DiagnosticSeverity { Information, Warning }
+
+public sealed record UnsupportedEffect(string Record, string Description, IReadOnlyList<string> AffectedMetrics)
+{
+    public DiagnosticSeverity Severity { get; init; } = DiagnosticSeverity.Warning;
+}
 
 public sealed record TriggeredEffect(
     string Id,
@@ -95,7 +100,10 @@ public sealed record TriggeredEffect(
     string Trigger = "OnAttack",
     double DurationSeconds = 0,
     bool IsDefensive = false,
-    double WeaponDamagePercent = 0);
+    double WeaponDamagePercent = 0)
+{
+    public bool TriggerResolved { get; init; } = true;
+}
 
 public sealed class ItemInstance
 {
@@ -160,7 +168,9 @@ public sealed record CharacterSkill(
     int DevotionLevel,
     bool Enabled,
     string AutoCastSkill,
-    string AutoCastController);
+    string AutoCastController,
+    bool? Active = null,
+    bool Transition = false);
 
 public sealed record OwnedAttachmentInstance(
     string RecordId,
@@ -203,6 +213,11 @@ public sealed class CharacterSnapshot
     public string SecondarySkillRecord { get; init; } = string.Empty;
     public bool CanDualWield { get; init; }
     public IReadOnlyList<string> ImportWarnings { get; init; } = [];
+    public IReadOnlyList<UnsupportedEffect> ImportDiagnostics { get; init; } = [];
+    // A live temporary buff is not part of an offline save. Explicit snapshot
+    // state is session-only and is checked against each candidate's sources.
+    [JsonIgnore]
+    public IReadOnlySet<string> ActiveItemSkillRecords { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed record IncomingDamageProfile(
@@ -249,6 +264,10 @@ public sealed class SkillRotationDefinition
 {
     public string MainSkillRecord { get; set; } = string.Empty;
     public string MainSkillName { get; set; } = "默认武器攻击";
+    public bool IsAvailable { get; set; } = true;
+    public string UnavailableReason { get; set; } = string.Empty;
+    [JsonIgnore]
+    public IReadOnlyList<UnsupportedEffect> UnsupportedEffects { get; set; } = [];
     public double WeaponDamagePercent { get; set; } = 100;
     public double BaseAttacksPerSecond { get; set; } = 1.5;
     public double EnergyPerUse { get; set; }
@@ -405,6 +424,8 @@ public sealed class LoadoutResult
     public IReadOnlyDictionary<string, double> ScoreContributions { get; init; } =
         new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
     public required ConfidenceLevel Confidence { get; init; }
+    public ConfidenceLevel PanelDpsConfidence { get; init; } = ConfidenceLevel.Medium;
+    public IReadOnlyList<UnsupportedEffect> SkillDiagnostics { get; init; } = [];
 }
 
 public sealed record ItemSwapComparison(

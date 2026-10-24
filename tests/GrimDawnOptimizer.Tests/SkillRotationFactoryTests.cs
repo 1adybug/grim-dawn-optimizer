@@ -204,6 +204,7 @@ public sealed class SkillRotationFactoryTests
     public void DualWieldWeaponPoolTechniqueUsesBothWeapons()
     {
         const string bursting = "records/skills/playerclass07/wpattack01.dbr";
+        const string dualWield = "records/skills/playerclass07/dualwield.dbr";
         var record = new GameRecord
         {
             RecordName = bursting,
@@ -221,7 +222,8 @@ public sealed class SkillRotationFactoryTests
         {
             Name = "gunner", SaveFilePath = "test.gdc", Level = 100,
             Physique = 1000, Cunning = 1000, Spirit = 1000, CanDualWield = true,
-            Skills = [new CharacterSkill(bursting, "爆裂子弹", 10, 0, true, "", "")],
+            Skills = [new CharacterSkill(bursting, "爆裂子弹", 10, 0, true, "", ""),
+                new CharacterSkill(dualWield, "远程专长", 1, 0, true, "", "")],
             Items =
             [
                 Weapon("main"), Weapon("off")
@@ -233,7 +235,9 @@ public sealed class SkillRotationFactoryTests
         };
         var catalog = new GameDataCatalog
         {
-            Records = new Dictionary<string, GameRecord> { [bursting] = record }
+            Records = new Dictionary<string, GameRecord> { [bursting] = record,
+                [dualWield] = new() { RecordName = dualWield, RecordType = "Skill_PassiveDualWieldWeapon",
+                    NumericValues = new StatBlock(new Dictionary<string, double> { ["dualRangedOnly"] = 1 }) } }
         };
 
         var rotation = SkillRotationFactory.Build(character, catalog, null);
@@ -248,7 +252,7 @@ public sealed class SkillRotationFactoryTests
 
         static ItemInstance Weapon(string id) => new()
         {
-            Id = id, Name = id, Slot = EquipmentSlot.MainHand, BaseRecord = id,
+            Id = id, Name = id, Slot = EquipmentSlot.MainHand, BaseRecord = id, AttachmentQualifier = "ranged1h",
             Source = new ItemSourceLocation(ItemSourceKind.Equipped, "test.gdc")
         };
     }

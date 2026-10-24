@@ -1,9 +1,49 @@
 using GrimDawnOptimizer.Core.Domain;
+using System.Text.RegularExpressions;
 
 namespace GrimDawnOptimizer.Core.Services;
 
 internal static class PlayerAttributeRules
 {
+    internal static void ApplyRegeneration(
+        StatBlock stats, GameDataCatalog catalog, ICollection<UnsupportedEffect> diagnostics)
+    {
+        if (stats["usePlayerAttributeFormula"] <= 0) return;
+        const string source = "records/game/playerresourcebehavior.dbr";
+        catalog.Records.TryGetValue(source, out var behavior);
+        // CharacterBio::Update passes GetAttribute's already percentage-adjusted
+        // regeneration into these equations. The attribute contribution belongs
+        // inside the database expression, not in the global regen multiplier.
+        var variables = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["lifeRegen"] = stats["healthRegen"], ["manaRegen"] = stats["energyRegen"],
+            ["lifeRegenMod"] = stats["healthRegen.percent"], ["manaRegenMod"] = stats["energyRegen.percent"],
+            ["lifeTotal"] = stats["health"],
+            ["manaTotal"] = Math.Max(0, stats["energy"] - Math.Max(0, stats["energyReserved"])),
+            ["physique"] = stats["physique"], ["intelligence"] = stats["spirit"],
+            ["charLevel"] = stats["characterLevel"], ["elapsedTime"] = 1
+        };
+        Apply("lifeRegenEquation", "healthRegen", CalculationDiagnostics.Survival);
+        Apply("manaRegenEquation", "energyRegen", CalculationDiagnostics.CombatDps);
+
+        void Apply(string field, string stat, string metric)
+        {
+            var equation = behavior?.Text(field);
+            // FormulaEvaluator's legacy callers allow absent identifiers as 0;
+            // resource equations must instead expose an unrecognized variable.
+            if (!string.IsNullOrWhiteSpace(equation) &&
+                Regex.Matches(equation, @"[A-Za-z_]\w*").Cast<Match>().All(match => variables.ContainsKey(match.Value)) &&
+                FormulaEvaluator.TryEvaluate(equation, variables, out var value))
+            {
+                stats.Set(stat, value);
+                return;
+            }
+            diagnostics.Add(new(source,
+                $"玩家回复公式 {field} 缺失或无法解析，暂只计入已解析的回复词条；回复预算尚不完整。",
+                [metric]));
+        }
+    }
+
     internal static void ApplyResourceBonuses(StatBlock stats, GameDataCatalog catalog)
     {
         if (stats["usePlayerAttributeFormula"] <= 0) return;

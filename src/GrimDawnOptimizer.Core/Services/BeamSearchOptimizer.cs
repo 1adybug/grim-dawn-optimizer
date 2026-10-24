@@ -105,13 +105,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             {
                 foreach (var state in beam)
                 {
-                    if (targetSlot == EquipmentSlot.OffHand &&
-                        state.Slots.TryGetValue(EquipmentSlot.MainHand, out var weapon) && weapon.Item.IsTwoHanded)
-                    {
-                        next.Add(state);
-                        continue;
-                    }
-                    if (candidates.Count == 0) next.Add(state);
+                    // An empty off-hand remains a valid branch. Other branches
+                    // may gain dual wield from armor searched in later slots.
+                    next.Add(state);
                 }
             }
 
@@ -155,7 +151,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         }
 
         var completedSlots = beam
-            .Select(state => CompleteLoadout(state.Slots, variantsBySlot, currentSlots))
+            .Select(state => CompleteLoadout(state.Slots, variantsBySlot, currentSlots, character, catalog))
             .ToArray();
         var complete = ParallelMap(
             completedSlots,
@@ -179,11 +175,11 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
 
         // A local-search seed can temporarily lose its off-hand when a two-handed
         // weapon is tested, or remain partial when the time budget expires between
-        // slots. Complete every plan again before it reaches the UI so a real
-        // one-handed/armor candidate is never shown as “no available equipment”.
+        // slots. Complete every plan again before it reaches the UI, filling
+        // armor and eligible off-hands from the available candidates.
         var completedFinalists = finalists.Select(result =>
         {
-            var slots = CompleteLoadout(result.Loadout.Slots, variantsBySlot, currentSlots);
+            var slots = CompleteLoadout(result.Loadout.Slots, variantsBySlot, currentSlots, character, catalog);
             if (Signature(slots) == Signature(result.Loadout.Slots)) return result;
             evaluated++;
             return Evaluate(character, slots, catalog, profile, scoring);
@@ -394,6 +390,13 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         ScoringEngine scoring)
     {
         var rotation = ResolveRotation(character, catalog, profile, slots);
+        if (!rotation.IsAvailable)
+            calculated = new CalculatedLoadout
+            {
+                Slots = calculated.Slots, Stats = calculated.Stats, Effects = calculated.Effects,
+                UnsupportedEffects = calculated.UnsupportedEffects,
+                ValidationErrors = calculated.ValidationErrors.Concat([rotation.UnavailableReason]).Distinct().ToArray()
+            };
         var rawSimulation = _simulator.Simulate(character, calculated, profile.Scenario, rotation);
         var rawWeaponSimulation = _simulator.Simulate(
             character,
@@ -406,13 +409,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             profile);
         var metrics = ExtractMetrics(calculated, simulation, profile.Scenario);
         var (tiers, contributions) = scoring.Score(metrics);
-        var confidence = calculated.UnsupportedEffects.Count switch
-        {
-            0 when calculated.Slots.Values.All(x => x.Item.Seed == 0 || x.Item.SeedStatsResolved) => ConfidenceLevel.High,
-            0 => ConfidenceLevel.Medium,
-            <= 2 => ConfidenceLevel.Medium,
-            _ => ConfidenceLevel.Low
-        };
+        var confidence = CalculationDiagnostics.OverallConfidence(calculated, rotation);
         return new LoadoutResult
         {
             Rank = 0,
@@ -421,7 +418,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             Metrics = metrics,
             TierScores = tiers,
             ScoreContributions = contributions,
-            Confidence = confidence
+            Confidence = confidence,
+            PanelDpsConfidence = CalculationDiagnostics.PanelConfidence(calculated, rotation),
+            SkillDiagnostics = CalculationDiagnostics.RotationDiagnostics(calculated, rotation)
         };
     }
 
@@ -518,7 +517,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             var perturbations = 2 + rng.Next(3);
             for (var step = 0; step < perturbations; step++)
                 TryRandomMutation(slots, variantsBySlot, rng);
-            slots = CompleteLoadout(slots, variantsBySlot, currentSlots);
+            slots = CompleteLoadout(slots, variantsBySlot, currentSlots, character, catalog);
             var best = Evaluate(character, slots, catalog, profile, scoring);
             evaluated++;
 
@@ -528,7 +527,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             {
                 var neighborSlots = new Dictionary<EquipmentSlot, LoadoutVariant>(best.Loadout.Slots);
                 if (!TryRandomMutation(neighborSlots, variantsBySlot, rng)) continue;
-                neighborSlots = CompleteLoadout(neighborSlots, variantsBySlot, currentSlots);
+                neighborSlots = CompleteLoadout(neighborSlots, variantsBySlot, currentSlots, character, catalog);
                 var neighbor = Evaluate(character, neighborSlots, catalog, profile, scoring);
                 evaluated++;
                 if (LoadoutResultComparer.Instance.Compare(neighbor, best) < 0) best = neighbor;
@@ -582,7 +581,7 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         {
             var variants = new List<LoadoutVariant>();
             foreach (var item in items.Where(x =>
-                         CharacterStatEngine.IsCompatible(target, x.Slot, character.CanDualWield) &&
+                         CharacterStatEngine.IsCompatible(target, x.Slot, canDualWield: true) &&
                          (target != EquipmentSlot.OffHand || !x.IsTwoHanded)))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -896,17 +895,16 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     private static Dictionary<EquipmentSlot, LoadoutVariant> CompleteLoadout(
         IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> partial,
         IReadOnlyDictionary<EquipmentSlot, IReadOnlyList<LoadoutVariant>> variantsBySlot,
-        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current)
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> current,
+        CharacterSnapshot character,
+        GameDataCatalog catalog)
     {
         var result = new Dictionary<EquipmentSlot, LoadoutVariant>(partial);
         foreach (var slot in TargetSlots)
         {
-            if (slot == EquipmentSlot.OffHand &&
-                result.TryGetValue(EquipmentSlot.MainHand, out var mainHand) && mainHand.Item.IsTwoHanded)
-            {
-                result.Remove(EquipmentSlot.OffHand);
-                continue;
-            }
+            // Complete sources of granted skills before deciding whether a
+            // second weapon is legal. An off-hand may itself supply the grant.
+            if (slot == EquipmentSlot.OffHand) continue;
             if (result.ContainsKey(slot)) continue;
 
             IEnumerable<LoadoutVariant> candidates = variantsBySlot.GetValueOrDefault(slot, []);
@@ -920,7 +918,35 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
             if (slot == EquipmentSlot.MainHand && selected.Item.IsTwoHanded)
                 result.Remove(EquipmentSlot.OffHand);
         }
+
+        if (result.TryGetValue(EquipmentSlot.MainHand, out var main) && main.Item.IsTwoHanded)
+        {
+            result.Remove(EquipmentSlot.OffHand);
+            return result;
+        }
+
+        if (result.TryGetValue(EquipmentSlot.OffHand, out var offHand) && IsAllowedOffHand(offHand))
+            return result;
+        result.Remove(EquipmentSlot.OffHand);
+
+        IEnumerable<LoadoutVariant> offHandCandidates = variantsBySlot.GetValueOrDefault(EquipmentSlot.OffHand, []);
+        if (current.TryGetValue(EquipmentSlot.OffHand, out var currentOffHand))
+            offHandCandidates = offHandCandidates.OrderByDescending(x => x == currentOffHand);
+        foreach (var candidate in offHandCandidates)
+        {
+            if (result.Values.Any(existing => existing.Item.Id == candidate.Item.Id)) continue;
+            result[EquipmentSlot.OffHand] = candidate;
+            if (IsAllowedOffHand(candidate)) return result;
+            result.Remove(EquipmentSlot.OffHand);
+        }
+        result.Remove(EquipmentSlot.OffHand);
         return result;
+
+        bool IsAllowedOffHand(LoadoutVariant candidate) =>
+            !candidate.Item.IsTwoHanded && CharacterStatEngine.IsCompatible(
+                EquipmentSlot.OffHand, candidate.Item.Slot,
+                candidate.Item.Slot == EquipmentSlot.MainHand &&
+                SkillRotationFactory.ResolveCanDualWield(character, catalog, result));
     }
 
     public static IReadOnlyDictionary<string, double> ExtractMetrics(CalculatedLoadout loadout, SimulationReport simulation, CombatScenario? scenario = null)
@@ -1106,9 +1132,8 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
         OptimizationProfile profile,
         IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots)
     {
-        var selected = character.Skills.FirstOrDefault(x =>
-            x.Record.Equals(profile.Rotation.MainSkillRecord, StringComparison.OrdinalIgnoreCase));
-        return SkillRotationFactory.Build(character, catalog, selected, slots);
+        return SkillRotationFactory.BuildSelectedRecord(character, catalog,
+            profile.Rotation.MainSkillRecord, profile.Rotation.MainSkillName, slots);
     }
 
     private static SkillRotationDefinition ResolveWeaponAttackRotation(

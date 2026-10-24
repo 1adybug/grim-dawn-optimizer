@@ -10,7 +10,8 @@ internal static class DamageConversion
     /// local skill bonuses. Global bonuses are applied to the final type by the caller.
     /// </summary>
     internal static Dictionary<string, double> Apply(
-        Dictionary<string, double> damage, StatBlock skillModifiers, StatBlock globalStats)
+        Dictionary<string, double> damage, StatBlock skillModifiers, StatBlock globalStats,
+        double armorPiercingPercent = 0)
     {
         var original = new Dictionary<string, double>(damage, StringComparer.OrdinalIgnoreCase);
         var converted = new Dictionary<string, double>(damage, StringComparer.OrdinalIgnoreCase);
@@ -28,7 +29,18 @@ internal static class DamageConversion
             var percent = skillModifiers[StatKeys.DamagePercent(source)] + skillModifiers["damage.total.percent"];
             var remaining = ApplyLayer(source, amount, percent, skillModifiers);
             remaining = ApplyLayer(source, remaining.Amount, remaining.Percent, globalStats);
-            Accumulate(source, remaining.Amount, remaining.Percent);
+            if (source.Equals("physical", StringComparison.OrdinalIgnoreCase) && armorPiercingPercent > 0)
+            {
+                // BasePhysical::Process performs armor piercing after ordinary
+                // conversion. Already-converted packets are locked above. Unlike
+                // conversion, piercing uses its own local modifier and does not
+                // scale the physical/pierce modifier by the piercing fraction.
+                var pierced = remaining.Amount * Math.Clamp(armorPiercingPercent / 100d, 0, 1);
+                var piercePercent = skillModifiers[StatKeys.DamagePercent("pierce")] + skillModifiers["damage.total.percent"];
+                Accumulate("pierce", pierced, piercePercent);
+                Accumulate(source, remaining.Amount - pierced, remaining.Percent);
+            }
+            else Accumulate(source, remaining.Amount, remaining.Percent);
         }
 
         damage.Clear();

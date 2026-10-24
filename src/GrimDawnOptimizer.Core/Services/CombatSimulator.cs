@@ -14,7 +14,7 @@ public sealed class CombatSimulator : ICombatSimulator
         SkillRotationDefinition rotation)
     {
         var breakdown = BuildBreakdown(loadout, scenario, rotation);
-        return ToReport(loadout, breakdown);
+        return ToReport(loadout, rotation, breakdown);
     }
 
     public async Task<SimulationReport> RunMonteCarloAsync(
@@ -34,6 +34,7 @@ public sealed class CombatSimulator : ICombatSimulator
             var damageSamples = new double[trials];
             var survivalSamples = new double[trials];
             var duration = Math.Max(1, scenario.DurationSeconds);
+            var targetCount = Math.Max(1, scenario.TargetCount);
 
             for (var trial = 0; trial < trials; trial++)
             {
@@ -51,8 +52,8 @@ public sealed class CombatSimulator : ICombatSimulator
                     totalDamage += directDamage;
                     lifeStealEligibleDamage += directDamage;
 
-                    foreach (var proc in breakdown.Procs)
-                        if (rng.NextDouble() < proc.ChancePerAttack)
+                    foreach (var proc in breakdown.Procs.Where(x => !x.OnIncomingHit))
+                        if (rng.NextDouble() < proc.ChancePerEvent)
                             totalDamage += proc.Damage;
                 }
 
@@ -63,6 +64,8 @@ public sealed class CombatSimulator : ICombatSimulator
                 {
                     if (rng.NextDouble() > breakdown.EnemyHitChance) continue;
                     if (rng.NextDouble() < breakdown.AvoidanceChance) continue;
+                    foreach (var proc in breakdown.Procs.Where(x => x.OnIncomingHit))
+                        if (rng.NextDouble() < proc.ChancePerEvent) totalDamage += proc.Damage;
                     retaliationDamage += breakdown.RetaliationDamagePerTrigger;
                     var damage = breakdown.DamageTakenPerLandedHit * (0.9 + rng.NextDouble() * 0.2);
                     if (rng.NextDouble() < breakdown.BlockChance)
@@ -70,11 +73,13 @@ public sealed class CombatSimulator : ICombatSimulator
                     received += damage;
                 }
 
-                var activeDamagePerSecond = totalDamage / duration;
+                // Match BuildBreakdown's target coverage: attacks and their
+                // procs hit the configured targets; retaliation is per incoming hit.
+                var activeDamagePerSecond = totalDamage / duration * targetCount;
                 damageSamples[trial] = activeDamagePerSecond + retaliationDamage / duration;
                 var incomingPerSecond = received / duration;
                 var sustain = breakdown.HealthRegen +
-                              lifeStealEligibleDamage / duration * breakdown.EffectiveLifeSteal;
+                              lifeStealEligibleDamage / duration * targetCount * breakdown.EffectiveLifeSteal;
                 survivalSamples[trial] = incomingPerSecond <= sustain + Epsilon
                     ? double.PositiveInfinity
                     : breakdown.Health / (incomingPerSecond - sustain);
@@ -82,7 +87,7 @@ public sealed class CombatSimulator : ICombatSimulator
 
             Array.Sort(damageSamples);
             var finiteSurvival = survivalSamples.Where(double.IsFinite).Order().ToArray();
-            var baseReport = ToReport(loadout, breakdown);
+            var baseReport = ToReport(loadout, rotation, breakdown);
             return new SimulationReport
             {
                 ExpectedDps = baseReport.ExpectedDps,
@@ -130,6 +135,7 @@ public sealed class CombatSimulator : ICombatSimulator
         var defaultStrikes = weaponDamageScale > 0 ? Math.Max(1, stats["averageWeaponStrikesPerAction"]) : 1;
         var weaponPool = NormalizeWeaponPool(rotation.WeaponPoolAttacks);
         var weaponPoolChance = weaponPool.Sum(x => x.ChanceFraction);
+        var piercingWeapons = ResolveArmorPiercingWeapons(loadout);
         foreach (var type in StatKeys.DamageTypes)
         {
             var normalWeaponHit = stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)];
@@ -179,8 +185,43 @@ public sealed class CombatSimulator : ICombatSimulator
             dotDamage[type] = dotPerAction;
         }
 
-        var localDamageBonus = DamageConversion.Apply(damage, rotation.FlatDamage, stats);
-        var localSheetDamageBonus = DamageConversion.Apply(sheetDamage, rotation.FlatDamage, stats);
+        Dictionary<string, double> localDamageBonus;
+        Dictionary<string, double> localSheetDamageBonus;
+        if (weaponDamageScale > 0 && piercingWeapons.Any(x => x.ArmorPiercing > 0))
+        {
+            var sharedPhysical = stats[StatKeys.WeaponDamage("physical")] + stats[StatKeys.DamageFlat("physical")] -
+                                 piercingWeapons.Average(x => x.PhysicalDamage);
+            var sheetPackets = new List<(double Damage, double ArmorPiercing)>();
+            var combatPackets = new List<(double Damage, double ArmorPiercing)>();
+            var legacyMultiplier = weaponPool.Count == 0 ? Math.Max(0, rotation.WeaponPoolDamageMultiplier) : 1;
+            foreach (var weapon in piercingWeapons)
+            {
+                // Ordinary dual-wield sheet attacks have separate collectors for
+                // each hand. Shared/native flat belongs in each hand's collector
+                // before MergePhysicalDamage and the 0.75-per-hand weighting.
+                var normal = weapon.PhysicalDamage + sharedPhysical;
+                var skill = normal * weaponDamageScale + rotation.FlatDamage[StatKeys.DamageFlat("physical")];
+                var sheet = (normal + (skill - normal) * activationRate) * defaultStrikes / piercingWeapons.Count;
+                var selected = skill + normal * weaponDamageScale * (legacyMultiplier - 1) +
+                               (weaponPool.Count == 0 ? rotation.WeaponPoolFlatDamage[StatKeys.DamageFlat("physical")] : 0);
+                var combat = (normal + (selected - normal) * activationRate) * defaultStrikes *
+                             (1 - weaponPoolChance) / piercingWeapons.Count;
+                foreach (var entry in weaponPool)
+                    combat += entry.ChanceFraction * (normal * weaponDamageScale * Math.Max(0, entry.Attack.WeaponDamageMultiplier) +
+                        rotation.FlatDamage[StatKeys.DamageFlat("physical")] + entry.Attack.FlatDamage[StatKeys.DamageFlat("physical")]) *
+                        Math.Max(1, entry.Attack.WeaponStrikes) / piercingWeapons.Count;
+                var piercing = ArmorPiercingPercent(weapon.ArmorPiercing, rotation.FlatDamage, stats);
+                sheetPackets.Add((sheet, piercing));
+                combatPackets.Add((combat, piercing));
+            }
+            localDamageBonus = ConvertPhysicalPackets(damage, combatPackets, rotation.FlatDamage, stats);
+            localSheetDamageBonus = ConvertPhysicalPackets(sheetDamage, sheetPackets, rotation.FlatDamage, stats);
+        }
+        else
+        {
+            localDamageBonus = DamageConversion.Apply(damage, rotation.FlatDamage, stats);
+            localSheetDamageBonus = DamageConversion.Apply(sheetDamage, rotation.FlatDamage, stats);
+        }
 
         var rawDamagePerLandedHit = 0d;
         var sheetDamagePerHit = 0d;
@@ -234,7 +275,14 @@ public sealed class CombatSimulator : ICombatSimulator
                 secondaryDamage[type] = ((stats[StatKeys.WeaponDamage(type)] + stats[StatKeys.DamageFlat(type)] +
                                           stats[$"secondaryWeaponDamageCorrection.{type}"]) * secondaryScale +
                                          secondary.FlatDamage[StatKeys.DamageFlat(type)]) * activationRate;
-            var secondaryLocalBonus = DamageConversion.Apply(secondaryDamage, secondary.FlatDamage, stats);
+            // Both weapon IDs enter one secondary collector. Its first positive
+            // piercing carrier absorbs every same-region physical source, including
+            // shared/native flat and the other weapon, before conversion.
+            var secondaryPiercing = secondaryScale > 0
+                ? piercingWeapons.FirstOrDefault(x => x.ArmorPiercing > 0)?.ArmorPiercing ?? 0
+                : 0;
+            var secondaryLocalBonus = DamageConversion.Apply(secondaryDamage, secondary.FlatDamage, stats,
+                ArmorPiercingPercent(secondaryPiercing, secondary.FlatDamage, stats));
             var secondaryTotal = Math.Max(0, 1 + secondaryStats["damage.total.multiplierPercent"] / 100d);
             foreach (var type in StatKeys.DamageTypes)
             {
@@ -274,7 +322,8 @@ public sealed class CombatSimulator : ICombatSimulator
         var sheetAttacksPerSecond = attacksPerSecond;
         var energyPerUse = rotation.EnergyPerUse *
                            (1 - Math.Clamp(stats["energyCostReduction"] / 100d, 0, 0.8));
-        var energyAvailable = Math.Max(0, stats["energyRegen"] + stats["energy"] / Math.Max(1, scenario.DurationSeconds));
+        var usableEnergy = Math.Max(0, stats["energy"] - Math.Max(0, stats["energyReserved"]));
+        var energyAvailable = Math.Max(0, stats["energyRegen"] + usableEnergy / Math.Max(1, scenario.DurationSeconds));
         var energyNeeded = energyPerUse * attacksPerSecond;
         if (energyNeeded > Epsilon)
             attacksPerSecond *= Math.Min(1, energyAvailable / energyNeeded);
@@ -295,23 +344,30 @@ public sealed class CombatSimulator : ICombatSimulator
 
         var procModels = new List<ProcModel>();
         var procDps = 0d;
+        var incomingLandedHits = Math.Max(0, DifficultyRules.Incoming(scenario).HitsPerSecond) *
+            ResolveHitAndCrit(scenario.EnemyOffensiveAbility, stats["defensiveAbility"]).HitChance *
+            (1 - Math.Clamp(stats["dodgeChance"] / 100d, 0, 0.8));
         foreach (var effect in loadout.Effects.Where(x => !x.IsDefensive))
         {
+            if (!effect.TriggerResolved) continue;
             var chance = Math.Clamp(effect.Chance, 0, 1);
-            var eventFactor = effect.Trigger.ToLowerInvariant() switch
+            var onIncoming = effect.Trigger.Equals("OnHit", StringComparison.OrdinalIgnoreCase);
+            var eventRate = effect.Trigger.ToLowerInvariant() switch
             {
-                "onattack" => 1d,
-                "oncrit" => critChance,
+                "onattack" => attacksPerSecond * hitChance,
+                "oncrit" => attacksPerSecond * hitChance * critChance,
+                "onhit" => incomingLandedHits,
                 _ => 0d
             };
-            if (eventFactor <= 0) continue;
-            var triggerRate = attacksPerSecond * chance * eventFactor;
+            if (eventRate <= 0) continue;
+            var triggerRate = eventRate * chance;
             if (effect.CooldownSeconds > Epsilon)
                 triggerRate = Math.Min(triggerRate, 1d / effect.CooldownSeconds);
 
             var procDamage = ResolveEffectDamage(effect, stats, scenario);
             procDps += triggerRate * procDamage;
-            procModels.Add(new ProcModel(Math.Clamp(triggerRate / attacksPerSecond, 0, 1), procDamage));
+            var eligibleEventRate = onIncoming ? incomingLandedHits : attacksPerSecond * hitChance;
+            procModels.Add(new ProcModel(Math.Clamp(triggerRate / eligibleEventRate, 0, 1), procDamage, onIncoming));
         }
 
         var targetCount = Math.Max(1, scenario.TargetCount);
@@ -371,6 +427,42 @@ public sealed class CombatSimulator : ICombatSimulator
         if (total <= Epsilon) return [];
         var scale = total > 100 ? 1d / total : 0.01d;
         return positive.Select(x => new NormalizedWeaponPoolAttack(x, x.Chance * scale)).ToArray();
+    }
+
+    private static IReadOnlyList<ArmorPiercingWeapon> ResolveArmorPiercingWeapons(CalculatedLoadout loadout)
+    {
+        var result = new List<ArmorPiercingWeapon>();
+        foreach (var slot in new[] { EquipmentSlot.MainHand, EquipmentSlot.OffHand })
+        {
+            if (!loadout.Slots.TryGetValue(slot, out var variant) || variant.Item.Slot != EquipmentSlot.MainHand) continue;
+            var local = variant.CombinedStats;
+            var basePhysical = local[StatKeys.WeaponDamage("physical")];
+            result.Add(new(basePhysical + local[StatKeys.DamageFlat("physical")],
+                basePhysical > 0 ? Math.Max(0, local[StatKeys.WeaponArmorPiercing]) : 0));
+        }
+        return result;
+    }
+
+    private static double ArmorPiercingPercent(double weaponRatio, StatBlock skill, StatBlock global) =>
+        Math.Clamp(weaponRatio * (1 + (skill["armorPiercingModifier"] + global["armorPiercingModifier"]) / 100d), 0, 100);
+
+    private static Dictionary<string, double> ConvertPhysicalPackets(
+        Dictionary<string, double> damage, IEnumerable<(double Damage, double ArmorPiercing)> physicalPackets,
+        StatBlock skillModifiers, StatBlock globalStats)
+    {
+        damage["physical"] = 0;
+        var localBonus = DamageConversion.Apply(damage, skillModifiers, globalStats);
+        foreach (var packet in physicalPackets)
+        {
+            var physical = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { ["physical"] = packet.Damage };
+            var packetBonus = DamageConversion.Apply(physical, skillModifiers, globalStats, packet.ArmorPiercing);
+            foreach (var type in StatKeys.DamageTypes)
+            {
+                damage[type] += physical[type];
+                localBonus[type] += packetBonus[type];
+            }
+        }
+        return localBonus;
     }
 
     private static double ResolveEnemyResistance(string type, CombatScenario scenario, StatBlock stats)
@@ -504,7 +596,7 @@ public sealed class CombatSimulator : ICombatSimulator
                x.AcidPerHit + x.VitalityPerHit + x.AetherPerHit + x.ChaosPerHit + x.BleedingPerHit;
     }
 
-    private static SimulationReport ToReport(CalculatedLoadout loadout, CombatBreakdown x) => new()
+    private static SimulationReport ToReport(CalculatedLoadout loadout, SkillRotationDefinition rotation, CombatBreakdown x) => new()
     {
         ExpectedDps = x.ExpectedDps,
         RetaliationDps = x.RetaliationDps,
@@ -521,7 +613,7 @@ public sealed class CombatSimulator : ICombatSimulator
         TimeToDeathSeconds = x.TimeToDeathSeconds,
         HitChance = x.HitChance,
         CritChance = x.CritChance,
-        UnsupportedEffects = loadout.UnsupportedEffects
+        UnsupportedEffects = loadout.UnsupportedEffects.Concat(CalculationDiagnostics.RotationDiagnostics(loadout, rotation)).ToArray()
     };
 
     private static int SampleEventCount(Random rng, double expected)
@@ -537,7 +629,8 @@ public sealed class CombatSimulator : ICombatSimulator
         return sorted[index];
     }
 
-    private sealed record ProcModel(double ChancePerAttack, double Damage);
+    private sealed record ProcModel(double ChancePerEvent, double Damage, bool OnIncomingHit = false);
+    private sealed record ArmorPiercingWeapon(double PhysicalDamage, double ArmorPiercing);
     private sealed record NormalizedWeaponPoolAttack(WeaponPoolAttackDefinition Attack, double ChanceFraction);
     private sealed record CombatBreakdown(
         double ExpectedDps,
