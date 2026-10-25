@@ -42,6 +42,26 @@ def fingerprint(state: dict):
     )}, ensure_ascii=False, sort_keys=True)
 
 
+def assert_same_file(actual: str | Path | None, expected: Path):
+    # Windows TEMP can contain an 8.3 alias (RUNNER~1) while .NET returns
+    # its expanded name. Compare filesystem identity, not path spelling.
+    assert actual is not None and str(actual), "Missing configured executable"
+    assert Path(actual).samefile(expected), f"Configured executable is a different file: {actual!s} != {expected!s}"
+
+
+def verify_path_identity_comparison(expected: Path, different: Path):
+    assert_same_file(expected.resolve(strict=True), expected)
+    assert_same_file(expected.parent / ".." / expected.parent.name / expected.name, expected)
+    # Fixtures intentionally have identical bytes. A content match or a loose
+    # basename comparison must never hide selection of another actual file.
+    try:
+        assert_same_file(different, expected)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Path identity assertion accepted a different file")
+
+
 def exercise(executable: Path):
     with tempfile.TemporaryDirectory(prefix="grim-dawn-trainer-offline-") as temporary:
         data = Path(temporary)
@@ -50,7 +70,11 @@ def exercise(executable: Path):
         files = [fixture / name for name in ("Grim Dawn.exe", "Game.dll", "Engine.dll")]
         for file in files:
             file.write_bytes(b"OFFLINE PATH-VALIDATION FIXTURE: NEVER EXECUTE")
-        hashes = {file: hashlib.sha256(file.read_bytes()).hexdigest() for file in files}
+        other_executable = data / "Another game folder" / "Grim Dawn.exe"
+        other_executable.parent.mkdir()
+        other_executable.write_bytes(files[0].read_bytes())
+        verify_path_identity_comparison(files[0], other_executable)
+        hashes = {file: hashlib.sha256(file.read_bytes()).hexdigest() for file in [*files, other_executable]}
         bridge = OfflineBridge(executable, data)
         try:
             first = bridge.request("trainerState")["state"]
@@ -78,12 +102,12 @@ def exercise(executable: Path):
             assert fingerprint(bridge.request("state")["state"]) == before, "Trainer errors must not replace/invalidate analysis"
 
             saved = bridge.request("trainerSelectExecutable", {"path": str(files[0])})["state"]
-            assert Path(saved["configuredExecutable"]) == files[0]
+            assert_same_file(saved["configuredExecutable"], files[0])
             preference = data / "combat-settings.json"
             saved_bytes = preference.read_bytes()
             for path in ("Grim Dawn.exe", str(fixture / "Wrong.exe"), str(data / "missing" / "Grim Dawn.exe")):
                 rejected = bridge.request("trainerSelectExecutable", {"path": path}, ok=False)["state"]
-                assert Path(rejected["configuredExecutable"]) == files[0]
+                assert_same_file(rejected["configuredExecutable"], files[0])
                 assert preference.read_bytes() == saved_bytes
 
             # The optimizer's long task must not monopolize combat off/state.
@@ -105,7 +129,7 @@ def exercise(executable: Path):
         try:
             state = reopened.request("trainerState")["state"]
             all_off(state)
-            assert Path(state["configuredExecutable"]) == files[0]
+            assert_same_file(state["configuredExecutable"], files[0])
             assert state["movementMultiplier"] == 2, "Only path persists; effect choices/multiplier reset"
             assert state["sessionId"] != first["sessionId"]
         finally:

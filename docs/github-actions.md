@@ -19,8 +19,8 @@ Rust 协议逻辑位于 `src-tauri/crates/bridge-protocol`，生产桥直接引�
 ## 缓存
 
 - npm：按 `package-lock.json` 缓存下载包。
-- NuGet：按 Windows 架构、实际 .NET 8 SDK 和项目依赖配置缓存包目录；命中后仍执行 restore/build/test。无需为了缓存引入 NuGet 锁文件。
-- Cargo：缓存 registry 和 `src-tauri/target` 的依赖构建结果，缓存 key 包含工具链和 Cargo 配置。仅 `main` 写入共享 Rust 缓存，不缓存工作区自身产物；前端、资源和桥接引擎仍由本次构建生成。
+- NuGet：按 Windows 架构、实际 .NET 8 SDK 和项目依赖配置缓存包目录；成功 restore 后立即保存，命中后仍执行 restore/build/test。无需为了缓存引入 NuGet 锁文件。
+- Cargo：缓存 registry 和 `src-tauri/target` 的依赖构建结果，缓存 key 包含工具链和 Cargo 配置。仅 `main` 写入共享 Rust 缓存，即使后续测试失败也保留已编译依赖；不缓存工作区自身产物，前端、资源和桥接引擎仍由本次构建生成。
 
 第一次运行需要建立新缓存，不能用其耗时代表后续缓存命中的耗时。Release 的 LTO、panic、优化级别保持原配置。
 

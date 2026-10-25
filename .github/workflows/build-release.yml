@@ -44,7 +44,8 @@ jobs:
             ConvertTo-Json | Set-Content -LiteralPath global.json -Encoding utf8
 
       - name: Cache NuGet packages
-        uses: actions/cache@v5
+        id: nuget
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-${{ runner.arch }}-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', '**/NuGet.Config') }}
@@ -53,6 +54,13 @@ jobs:
 
       - name: Restore dependencies
         run: dotnet restore .\GrimDawnOptimizer.sln
+
+      - name: Save restored NuGet packages
+        if: github.ref == 'refs/heads/main' && steps.nuget.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ steps.nuget.outputs.cache-primary-key }}
 
       - name: Build
         run: dotnet build .\GrimDawnOptimizer.sln -c Release --no-restore
@@ -79,6 +87,7 @@ jobs:
           workspaces: src/GrimDawnOptimizer.Desktop/src-tauri -> target
           shared-key: windows-desktop
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Test bridge protocol and portable launcher
         working-directory: src/GrimDawnOptimizer.Desktop/src-tauri
