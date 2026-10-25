@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "grim-dawn-bridge-protocol"
-version = "1.0.21"
+version = "1.0.22"
 dependencies = [
  "serde_json",
  "tokio",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "grim-dawn-optimizer"
-version = "1.0.21"
+version = "1.0.22"
 dependencies = [
  "grim-dawn-bridge-protocol",
  "serde",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "grim-dawn-portable-launcher"
-version = "1.0.21"
+version = "1.0.22"
 dependencies = [
  "flate2",
  "sha2",

@@ -10,8 +10,6 @@ import {
   Download,
   LoaderCircle,
   Monitor,
-  Minus,
-  Maximize2,
   Moon,
   RefreshCw,
   RotateCcw,
@@ -226,15 +224,14 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={300}>
       <Tabs
-        className={`app-shell ${isTauri() ? "native-shell" : "browser-shell"}`}
+        className="app-shell"
         value={view}
         onValueChange={(value) => navigate(value as Workspace)}
       >
-        <header className="app-chrome" data-tauri-drag-region>
-          <div className="app-topbar" data-tauri-drag-region>
-            <div className="topbar-content" data-tauri-drag-region>
-              <div className="topbar-brand" data-tauri-drag-region>
-                {isTauri() && <WindowControls onError={setError} />}
+        <header className="app-chrome">
+          <div className="app-topbar">
+            <div className="topbar-content">
+              <div className="topbar-brand">
                 <Button
                   variant="ghost"
                   className="brand"
@@ -258,7 +255,7 @@ export default function App() {
               </TabsList>
               <div className="header-tools">
                 {character && view !== "combat" && (
-                  <span className="header-character" data-tauri-drag-region>
+                  <span className="header-character">
                     {character.name}
                     <span>Lv. {character.level}</span>
                   </span>
@@ -349,7 +346,7 @@ export default function App() {
           <span className="footer-note">
             {view === "combat" ? "当前游戏会话" : "只读存档"}
             <span>·</span>
-            {state?.version || "1.0.21"}
+            {state?.version || "1.0.22"}
           </span>
         </footer>
         {state?.isBusy && (
@@ -368,48 +365,6 @@ export default function App() {
         )}
       </Tabs>
     </TooltipProvider>
-  );
-}
-
-function WindowControls({ onError }: { onError: (error: string) => void }) {
-  const windowActions = [
-    {
-      label: "关闭窗口",
-      className: "close",
-      icon: X,
-      action: () => getCurrentWindow().close(),
-    },
-    {
-      label: "最小化窗口",
-      className: "minimize",
-      icon: Minus,
-      action: () => getCurrentWindow().minimize(),
-    },
-    {
-      label: "最大化或还原窗口",
-      className: "maximize",
-      icon: Maximize2,
-      action: () => getCurrentWindow().toggleMaximize(),
-    },
-  ];
-  return (
-    <div className="window-controls">
-      {windowActions.map((action) => (
-        <button
-          key={action.className}
-          className={`window-control ${action.className}`}
-          aria-label={action.label}
-          title={action.label}
-          onClick={() =>
-            void action.action().catch((error) => onError(String(error)))
-          }
-        >
-          <span>
-            <action.icon size={8} />
-          </span>
-        </button>
-      ))}
-    </div>
   );
 }
 

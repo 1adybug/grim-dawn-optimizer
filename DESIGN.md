@@ -61,7 +61,7 @@ Preset identity is recorded in [components.json](src/GrimDawnOptimizer.Desktop/c
 
 The darker primary is for filled controls; highlighted text in dark mode uses the lighter semantic highlight. `--header` follows the canvas; `--soft-accent` derives from primary and canvas. Preset `--card` tokens may remain for preset compatibility but do not authorize page Card containers. Table fixed cells use an opaque canvas-matched background so scrolled text cannot show through. Do not restore old blue or custom amber colors inside individual screens. Errors use destructive color plus text. Forced-colors mode maps the interface to system colors.
 
-The restored top bar uses the same semantic canvas background as the workspace and a subtle bottom separator. The previous custom silver bar colors no longer define this composition. Keep all shadcn preset tokens: `--sidebar-primary` still supplies the dark text highlight even though there is no physical sidebar. The title-control red/yellow/green colors identify real native window actions, not a second application accent palette. Forced-colors mappings remain system-color based.
+The restored top bar uses the same semantic canvas background as the workspace and a subtle bottom separator. The previous custom silver bar colors no longer define this composition. Keep all shadcn preset tokens: `--sidebar-primary` still supplies the dark text highlight even though there is no physical sidebar. Window caption colors and controls belong to Windows, with the native theme following the app's system/light/dark preference. Forced-colors mappings remain system-color based.
 
 ## Typography
 
@@ -73,9 +73,9 @@ Center all table column headers. In the equipment comparison, center the compact
 
 ## Layout
 
-The native window starts at 1440 × 940 and permits 960 × 680. It is frameless with real close, minimize and maximize/restore controls beside the top-bar brand. These controls call Tauri window actions; green means maximize/restore, not fullscreen. Noninteractive top-bar areas provide dragging without intercepting control actions. The browser preview omits native window controls.
+The native window starts at 1440 × 940 and permits 960 × 680. Tauri enables system decorations: Windows owns the title bar and its upper-right minimize, maximize/restore and close buttons, as well as caption dragging, double-click, system menu and supported snap behavior. Do not draw macOS traffic-light controls or duplicate caption actions inside React. The browser preview has no app-owned window controls; the 62 px application navigation bar remains inside the native client area.
 
-Use a 62 px canvas-colored top navigation bar. Place the brand/native controls at the left and the text-only 角色库 / 配装工坊 / 方案对比 / 实战工具 tabs directly after the brand, without navigation icons. The brand icon no longer sits in a white background chip. The analysis character and settings share a group at the right; hide the analysis-character chip in 实战工具 so it cannot be mistaken for the active game character. Reuse shadcn Tabs with `TabsList variant="line"`; the active tab has an underline, not a raised white segment or gray group capsule. The full 52 px contextual-toolbar row stays removed. Header/footer content keeps 24 px horizontal padding, reducing to 18 px at ≤760 px and 16 px at ≤520 px. Main content has no outer padding or maximum-width cap; the same responsive reading padding belongs inside its sections. Do not add a new visible page title. All four tabs remain accessible on narrow layouts without introducing a sidebar.
+Use a 62 px canvas-colored top navigation bar. Place the brand at the left and the text-only 角色库 / 配装工坊 / 方案对比 / 实战工具 tabs directly after the brand, without navigation icons. The brand icon no longer sits in a white background chip. The analysis character and settings share a group at the right; hide the analysis-character chip in 实战工具 so it cannot be mistaken for the active game character. Reuse shadcn Tabs with `TabsList variant="line"`; the active tab has an underline, not a raised white segment or gray group capsule. The full 52 px contextual-toolbar row stays removed. Header/footer content keeps 24 px horizontal padding, reducing to 18 px at ≤760 px and 16 px at ≤520 px. Main content has no outer padding or maximum-width cap; the same responsive reading padding belongs inside its sections. Do not add a new visible page title. All four tabs remain accessible on narrow layouts without introducing a sidebar.
 
 Workspace tab labels are plain names: 方案对比 never appends a result-count badge or count to its visible or accessible label. Candidate counts belong in the result content.
 
@@ -108,7 +108,7 @@ All page sections use the shared workspace background, with whitespace, row alig
 
 ## Shapes
 
-The preset base is `--radius: 0.45rem`. Shared control radii flow through `@theme inline` and shadcn primitives. Avoid independent page-local button or select geometry. Icon-only controls use actual buttons with localized accessible names. Window controls have 12 px colored circles inside 25 × 28 px targets, labels/tooltips, and glyphs visible on hover or keyboard focus. Visual simplicity must not reduce target size or focus visibility.
+The preset base is `--radius: 0.45rem`. Shared control radii flow through `@theme inline` and shadcn primitives. Avoid independent page-local button or select geometry. Icon-only controls use actual buttons with localized accessible names. Windows owns native caption-button geometry, icons, labels and interaction feedback. Visual simplicity must not reduce target size or focus visibility.
 
 Character rows keep stable geometry when pressed: `.character-row` locally disables the preset button's active translation while retaining hover/selected feedback. The character list keeps its 400 px maximum height and real vertical scrolling; do not remove overflow handling to conceal a transient scrollbar.
 
