@@ -1115,9 +1115,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "grim-dawn-bridge-protocol"
+version = "1.0.21"
+dependencies = [
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "grim-dawn-optimizer"
 version = "1.0.21"
 dependencies = [
+ "grim-dawn-bridge-protocol",
  "serde",
  "serde_json",
  "tauri",

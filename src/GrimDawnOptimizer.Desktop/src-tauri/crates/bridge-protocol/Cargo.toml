@@ -1,0 +1,12 @@
+[package]
+name = "grim-dawn-bridge-protocol"
+version = "1.0.21"
+description = "GUI-independent Grim Dawn desktop bridge protocol"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }

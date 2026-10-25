@@ -2,31 +2,54 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A release promotes a completed main build; it never cancels or rebuilds it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   ci:
     name: Build and test
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}\.nuget\packages
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Set up .NET
+        id: dotnet
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
+
+      - name: Select the installed .NET SDK
+        shell: pwsh
+        env:
+          DOTNET_SDK_VERSION: ${{ steps.dotnet.outputs.dotnet-version }}
+        run: |
+          @{ sdk = @{ version = $env:DOTNET_SDK_VERSION; rollForward = 'disable' } } |
+            ConvertTo-Json | Set-Content -LiteralPath global.json -Encoding utf8
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ runner.arch }}-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', '**/NuGet.Config') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ runner.arch }}-${{ steps.dotnet.outputs.dotnet-version }}-
 
       - name: Restore dependencies
         run: dotnet restore .\GrimDawnOptimizer.sln
@@ -44,8 +67,22 @@ jobs:
           cache: npm
           cache-dependency-path: src/GrimDawnOptimizer.Desktop/package-lock.json
 
+      - name: Verify release selection and artifact validation
+        run: node --test "tests/ci/*.test.*js"
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/GrimDawnOptimizer.Desktop/src-tauri -> target
+          shared-key: windows-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test desktop bridge protocol
+        working-directory: src/GrimDawnOptimizer.Desktop/src-tauri
+        run: cargo test --locked --package grim-dawn-bridge-protocol
 
       - name: Install desktop dependencies
         working-directory: src/GrimDawnOptimizer.Desktop
@@ -54,16 +91,16 @@ jobs:
       - name: Build and simulate native trainer helpers
         run: powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Desktop/scripts/prepare-trainer-native.ps1 -RunTests
 
-      - name: Build Tauri desktop application
+      # This is the only Tauri build: its binaries are tested and then published.
+      - name: Build Windows installer
         working-directory: src/GrimDawnOptimizer.Desktop
-        run: npm run tauri:build -- --no-bundle
-
-      - name: Test desktop bridge transport
-        working-directory: src/GrimDawnOptimizer.Desktop/src-tauri
-        run: cargo test --locked
+        run: npm run tauri:build -- --ci -- --locked
 
       - name: Verify frontend snapshot ordering
         run: node tests/desktop-bridge/state-order.mjs
+
+      - name: Verify equipment table behavior
+        run: node tests/desktop-bridge/equipment-table.mjs
 
       - name: Verify development transport boundaries
         run: node tests/desktop-bridge/dev-transport.mjs
@@ -74,66 +111,73 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Smoke test calculation engine protocol
-        run: python tests/desktop-bridge/smoke.py
+      - name: Smoke test packaged calculation engine
+        run: python tests/desktop-bridge/smoke.py --executable src/GrimDawnOptimizer.Desktop/src-tauri/binaries/grim-dawn-engine-x86_64-pc-windows-msvc.exe
 
-  release:
-    name: Publish GitHub release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: ci
-    runs-on: windows-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: src/GrimDawnOptimizer.Desktop/package-lock.json
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install desktop dependencies
-        working-directory: src/GrimDawnOptimizer.Desktop
-        run: npm ci
-
-      - name: Build Windows installer
-        working-directory: src/GrimDawnOptimizer.Desktop
-        run: npm run tauri:build
+      - name: Smoke test packaged offline trainer protocol
+        run: python tests/desktop-bridge/trainer-smoke.py --executable src/GrimDawnOptimizer.Desktop/src-tauri/binaries/grim-dawn-engine-x86_64-pc-windows-msvc.exe
 
       - name: Package portable application
         working-directory: src/GrimDawnOptimizer.Desktop
         run: npm run desktop:portable
 
-      - name: Create GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PORTABLE_PACKAGE: ${{ github.workspace }}\artifacts\tauri-win-x64.zip
-        run: |
-          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $env:GITHUB_REF_NAME already exists; leaving it unchanged."
-            exit 0
-          }
+      - name: Stage release files and checksums
+        run: node .github/scripts/release-artifacts.mjs stage
 
-          $installer = Get-ChildItem -LiteralPath '.\src\GrimDawnOptimizer.Desktop\src-tauri\target\release\bundle\nsis' -Filter '*-setup.exe' | Select-Object -First 1
-          if (-not $installer) { throw 'Tauri installer was not created.' }
-          gh release create $env:GITHUB_REF_NAME $env:PORTABLE_PACKAGE $installer.FullName `
-            --repo $env:GITHUB_REPOSITORY `
-            --verify-tag `
-            --generate-notes `
-            --title $env:GITHUB_REF_NAME
+      - name: Upload verified Windows packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-x64-release
+          path: artifacts/release/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
+
+  release:
+    name: Publish GitHub release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Find verified main build for this commit
+        id: build
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const findBuild = require('./.github/scripts/find-release-build.cjs');
+            await findBuild({ github, context, core });
+
+      - name: Download verified Windows packages
+        uses: actions/download-artifact@v7
+        with:
+          artifact-ids: ${{ steps.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: artifacts/release
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.build.outputs.run-id }}
+
+      - name: Verify commit, version and package checksums
+        env:
+          RELEASE_BUILD_RUN_ID: ${{ steps.build.outputs.run-id }}
+        run: node .github/scripts/release-artifacts.mjs verify
+
+      - name: Publish complete GitHub release
+        uses: actions/github-script@v8
+        env:
+          RELEASE_BUILD_RUN_ID: ${{ steps.build.outputs.run-id }}
+        with:
+          script: |
+            const publish = require('./.github/scripts/publish-release.cjs');
+            await publish({ github, context, core });
