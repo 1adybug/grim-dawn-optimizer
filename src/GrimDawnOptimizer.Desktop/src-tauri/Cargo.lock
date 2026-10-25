@@ -1136,6 +1136,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grim-dawn-portable-launcher"
+version = "1.0.21"
+dependencies = [
+ "flate2",
+ "sha2",
+ "tauri-winres",
+]
+
+[[package]]
 name = "gtk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

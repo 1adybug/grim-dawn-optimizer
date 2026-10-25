@@ -1,0 +1,17 @@
+[package]
+name = "grim-dawn-portable-launcher"
+version = "1.0.21"
+description = "Single-file portable launcher for Grim Dawn Optimizer"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[dependencies]
+flate2 = "1"
+sha2 = "0.10"
+
+[build-dependencies]
+flate2 = "1"
+sha2 = "0.10"
+tauri-winres = "0.3"

@@ -22,9 +22,7 @@ async function fixture(t) {
     "src/GrimDawnOptimizer.Desktop/src-tauri/tauri.conf.json": JSON.stringify({
       version: "1.0.21",
     }),
-    "artifacts/tauri-win-x64.zip": "ZIP fixture",
-    "src/GrimDawnOptimizer.Desktop/src-tauri/target/release/bundle/nsis/Grim Dawn Optimizer_1.0.21_x64-setup.exe":
-      "EXE fixture",
+    "artifacts/GrimDawnOptimizer-1.0.21-win-x64.exe": "EXE fixture",
   };
   for (const [path, contents] of Object.entries(inputs)) {
     await mkdir(dirname(join(root, path)), { recursive: true });
@@ -35,13 +33,13 @@ async function fixture(t) {
   return { root, directory, commit, runId, tag };
 }
 
-test("packages with spaces in their names survive staging and verification", async (t) => {
+test("the single portable executable survives staging and verification", async (t) => {
   const options = await fixture(t);
   const manifest = await verifyRelease(options);
-  assert.equal(manifest.files.length, 2);
+  assert.equal(manifest.files.length, 1);
   assert.equal(
     await readFile(join(options.directory, manifest.files[0].name), "utf8"),
-    "ZIP fixture",
+    "EXE fixture",
   );
 });
 
@@ -59,7 +57,7 @@ for (const [field, value] of [
 test("reject modified package bytes even when the file size is unchanged", async (t) => {
   const options = await fixture(t);
   await writeFile(
-    join(options.directory, "grim-dawn-optimizer-1.0.21-win-x64.zip"),
+    join(options.directory, "GrimDawnOptimizer-1.0.21-win-x64.exe"),
     "BAD fixture",
   );
   await assert.rejects(verifyRelease(options), /Checksum mismatch/);
@@ -73,7 +71,7 @@ test("reject missing packages, extra files and modified checksum lists", async (
   await rm(extra);
   await writeFile(join(options.directory, "SHA256SUMS.txt"), "wrong");
   await assert.rejects(verifyRelease(options), /Checksum list/);
-  await rm(join(options.directory, "GrimDawnOptimizer-1.0.21-x64-setup.exe"));
+  await rm(join(options.directory, "GrimDawnOptimizer-1.0.21-win-x64.exe"));
   await assert.rejects(verifyRelease(options), /unexpected artifact files/);
 });
 

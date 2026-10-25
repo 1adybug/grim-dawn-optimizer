@@ -16,10 +16,7 @@ const repositoryRoot = resolve(
 );
 const defaultDirectory = join(repositoryRoot, "artifacts/release");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const payloadNames = (version) => [
-  `grim-dawn-optimizer-${version}-win-x64.zip`,
-  `GrimDawnOptimizer-${version}-x64-setup.exe`,
-];
+const payloadNames = (version) => [`GrimDawnOptimizer-${version}-win-x64.exe`];
 const checksumText = (files) =>
   files.map((file) => `${file.sha256}  ${file.name}\n`).join("");
 
@@ -116,17 +113,10 @@ export async function stageRelease({
   assert.equal(
     packageJson.version,
     version,
-    "Frontend and installer versions differ",
+    "Frontend and portable application versions differ",
   );
   const names = payloadNames(version);
-  const sources = [
-    join(root, "artifacts/tauri-win-x64.zip"),
-    join(
-      desktop,
-      "src-tauri/target/release/bundle/nsis",
-      `Grim Dawn Optimizer_${version}_x64-setup.exe`,
-    ),
-  ];
+  const sources = names.map((name) => join(root, "artifacts", name));
   await mkdir(directory, { recursive: true });
   const files = [];
   for (const [index, name] of names.entries()) {

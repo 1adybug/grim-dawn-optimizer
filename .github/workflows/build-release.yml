@@ -80,9 +80,9 @@ jobs:
           shared-key: windows-desktop
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Test desktop bridge protocol
+      - name: Test bridge protocol and portable launcher
         working-directory: src/GrimDawnOptimizer.Desktop/src-tauri
-        run: cargo test --locked --package grim-dawn-bridge-protocol
+        run: cargo test --locked --package grim-dawn-bridge-protocol --package grim-dawn-portable-launcher
 
       - name: Install desktop dependencies
         working-directory: src/GrimDawnOptimizer.Desktop
@@ -92,9 +92,9 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Desktop/scripts/prepare-trainer-native.ps1 -RunTests
 
       # This is the only Tauri build: its binaries are tested and then published.
-      - name: Build Windows installer
+      - name: Build Tauri desktop application
         working-directory: src/GrimDawnOptimizer.Desktop
-        run: npm run tauri:build -- --ci -- --locked
+        run: npm run tauri:build -- --ci --no-bundle -- --locked
 
       - name: Verify frontend snapshot ordering
         run: node tests/desktop-bridge/state-order.mjs
@@ -113,15 +113,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke test packaged calculation engine
-        run: python tests/desktop-bridge/smoke.py --executable src/GrimDawnOptimizer.Desktop/src-tauri/binaries/grim-dawn-engine-x86_64-pc-windows-msvc.exe
-
-      - name: Smoke test packaged offline trainer protocol
-        run: python tests/desktop-bridge/trainer-smoke.py --executable src/GrimDawnOptimizer.Desktop/src-tauri/binaries/grim-dawn-engine-x86_64-pc-windows-msvc.exe
-
       - name: Package portable application
         working-directory: src/GrimDawnOptimizer.Desktop
         run: npm run desktop:portable
+
+      - name: Verify portable executable without opening the UI
+        run: python tests/desktop-bridge/portable-smoke.py
 
       - name: Stage release files and checksums
         run: node .github/scripts/release-artifacts.mjs stage

@@ -25,10 +25,7 @@ async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "gd-release-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const files = [];
-  for (const name of [
-    "grim-dawn-optimizer-1.0.21-win-x64.zip",
-    "GrimDawnOptimizer-1.0.21-x64-setup.exe",
-  ]) {
+  for (const name of ["GrimDawnOptimizer-1.0.21-win-x64.exe"]) {
     const data = Buffer.from(`test payload ${name}`);
     await writeFile(join(directory, name), data);
     files.push({ name, size: data.length, sha256: sha256(data) });
@@ -49,11 +46,7 @@ async function fixture(t) {
     files.map((file) => `${file.sha256}  ${file.name}\n`).join(""),
   );
   const assets = [];
-  for (const name of [
-    ...files.map((file) => file.name),
-    "release-manifest.json",
-    "SHA256SUMS.txt",
-  ]) {
+  for (const name of files.map((file) => file.name)) {
     const data = await readFile(join(directory, name));
     assets.push({
       id: assets.length + 1,
@@ -158,13 +151,13 @@ const run = (f, api, override = {}) =>
     ...override,
   });
 
-test("new release remains draft until four verified assets finish uploading", async (t) => {
+test("new release stays draft until its portable EXE verifies and never uploads CI metadata", async (t) => {
   const f = await fixture(t);
   const api = mock();
   await run(f, api);
   assert.deepEqual(
     api.writes.map(([name]) => name),
-    ["createRelease", ...Array(4).fill("uploadReleaseAsset"), "updateRelease"],
+    ["createRelease", "uploadReleaseAsset", "updateRelease"],
   );
   const create = api.writes[0][1];
   assert.equal(create.draft, true);
@@ -173,15 +166,16 @@ test("new release remains draft until four verified assets finish uploading", as
   assert.equal(create.tag_name, "v1.0.21");
   assert.equal(api.release.draft, false);
   assert.equal(api.release.make_latest, "true");
-  assert.equal(api.assets.length, 4);
+  assert.equal(api.assets.length, 1);
+  assert.equal(api.assets[0].name, "GrimDawnOptimizer-1.0.21-win-x64.exe");
 });
 
 test("upload failure leaves a recoverable draft and never publishes", async (t) => {
   const f = await fixture(t);
-  const api = mock({ failUpload: f.assets[1].name });
+  const api = mock({ failUpload: f.assets[0].name });
   await assert.rejects(run(f, api), /Upload interrupted/);
   assert.equal(api.release.draft, true);
-  assert.equal(api.assets.length, 1);
+  assert.equal(api.assets.length, 0);
   assert.equal(
     api.writes.some(([name]) => name === "updateRelease"),
     false,
@@ -214,15 +208,12 @@ test("public release with wrong digest, size, missing, or extra asset is never r
   }
 });
 
-test("draft rerun retains correct assets, replaces incorrect same-name assets, and adds missing ones", async (t) => {
+test("draft rerun replaces an incorrect same-name EXE before publication", async (t) => {
   const f = await fixture(t);
   const api = mock({
     draft: true,
     hiddenDraft: true,
-    assets: [
-      f.assets[0],
-      { ...f.assets[1], digest: "sha256:" + "0".repeat(64) },
-    ],
+    assets: [{ ...f.assets[0], digest: "sha256:" + "0".repeat(64) }],
   });
   await run(f, api);
   assert.equal(
@@ -235,19 +226,35 @@ test("draft rerun retains correct assets, replaces incorrect same-name assets, a
   );
   assert.equal(
     api.writes.find(([name]) => name === "deleteReleaseAsset")[1].asset_id,
-    f.assets[1].id,
+    f.assets[0].id,
   );
   assert.deepEqual(
     api.writes
       .filter(([name]) => name === "uploadReleaseAsset")
       .map(([, args]) => args.name),
-    f.assets.slice(1).map((asset) => asset.name),
+    f.assets.map((asset) => asset.name),
   );
-  assert.equal(
-    api.assets.find((asset) => asset.name === f.assets[0].name).id,
-    f.assets[0].id,
-  );
+  assert.notEqual(api.assets[0].id, f.assets[0].id);
   assert.equal(api.release.draft, false);
+});
+
+test("draft rerun retains a verified EXE or uploads the missing EXE", async (t) => {
+  const f = await fixture(t);
+  for (const present of [true, false]) {
+    const api = mock({
+      draft: true,
+      hiddenDraft: true,
+      assets: present ? f.assets : [],
+    });
+    await run(f, api);
+    assert.deepEqual(
+      api.writes.map(([name]) => name),
+      present ? ["updateRelease"] : ["uploadReleaseAsset", "updateRelease"],
+    );
+    assert.equal(api.assets.length, 1);
+    if (present) assert.equal(api.assets[0].id, f.assets[0].id);
+    assert.equal(api.release.draft, false);
+  }
 });
 
 test("unknown draft assets are preserved and prevent accidental publication", async (t) => {
@@ -268,7 +275,7 @@ test("unsafe manifest filenames fail before any GitHub request", async (t) => {
       join(f.directory, "release-manifest.json"),
       JSON.stringify({
         ...f.manifest,
-        files: [{ ...f.manifest.files[0], name }, f.manifest.files[1]],
+        files: [{ ...f.manifest.files[0], name }],
       }),
     );
     const api = mock();
@@ -276,6 +283,36 @@ test("unsafe manifest filenames fail before any GitHub request", async (t) => {
     assert.deepEqual(api.reads, []);
     assert.deepEqual(api.writes, []);
   }
+});
+
+test("ZIP, installer, multiple payloads and modified checksums fail before any GitHub request", async (t) => {
+  const f = await fixture(t);
+  for (const files of [
+    [{ ...f.manifest.files[0], name: "GrimDawnOptimizer-1.0.21-win-x64.zip" }],
+    [
+      {
+        ...f.manifest.files[0],
+        name: "GrimDawnOptimizer-1.0.21-x64-setup.exe",
+      },
+    ],
+    [...f.manifest.files, { ...f.manifest.files[0], name: "extra.exe" }],
+  ]) {
+    await writeFile(
+      join(f.directory, "release-manifest.json"),
+      JSON.stringify({ ...f.manifest, files }),
+    );
+    const api = mock();
+    await assert.rejects(run(f, api), /Expected.*portable EXE/);
+    assert.deepEqual(api.reads, []);
+  }
+  await writeFile(
+    join(f.directory, "release-manifest.json"),
+    JSON.stringify(f.manifest),
+  );
+  await writeFile(join(f.directory, "SHA256SUMS.txt"), "altered checksum");
+  const api = mock();
+  await assert.rejects(run(f, api), /Checksum list/);
+  assert.deepEqual(api.reads, []);
 });
 
 test("mismatched build identity and altered payload fail before creating a release", async (t) => {

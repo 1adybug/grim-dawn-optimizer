@@ -8,7 +8,7 @@ rust-version = "1.90"
 license = "MIT"
 
 [workspace]
-members = ["crates/bridge-protocol"]
+members = ["crates/bridge-protocol", "crates/portable-launcher"]
 resolver = "2"
 
 [build-dependencies]

@@ -6,7 +6,7 @@
 
 ## 已实现
 
-- `Tauri 2 + React + TypeScript + shadcn/ui` 桌面界面，复用 `.NET 8` 存档与计算内核。当前支持 Windows x64，提供安装包和包含本地计算程序的便携包。
+- `Tauri 2 + React + TypeScript + shadcn/ui` 桌面界面，复用 `.NET 8` 存档与计算内核。当前支持 Windows x64，提供包含本地计算程序和辅助组件的单文件便携 EXE。
 - 使用指定的 shadcn 预设 `b6HGdE1wo`：Rhea 风格、neutral 基础色、绿色主色，本地 Inter Variable / Noto Sans SC Variable 字体；顶部文字下划线页签、连续分隔线和紧凑装备表格沿用当前 macOS 风格。无边框桌面窗口提供实际关闭、最小化、最大化/还原按钮；浏览器预览不显示这些窗口按钮。
 - “角色库”“配装工坊”“方案对比”“实战工具”四个工作区；支持跟随系统、浅色、深色及系统高对比模式。实战连接、功能状态与配装分析分别管理，切换页签不会自动连接游戏。
 - 自动发现正在运行的游戏安装、Steam、Steam Cloud、GOG/本地文档路径，并可手动选择目录。启动及每次导入时重新发现；优先保留本次明确手选，其次选择唯一正在运行的安装，再使用最近一次目录。存档优先采用游戏 `cloudSaving` 设置能够明确确定的来源，多 Steam 账户时不猜测当前账户。
@@ -89,16 +89,14 @@ npm run dev:web
 
 访问 `http://127.0.0.1:1420`。浏览器开发模式仍调用真实本地计算程序，通过仅限本机同源的开发接口通信；正式桌面包不开放这个 HTTP/SSE 接口。需要隔离测试偏好时，先设置 `$env:GRIM_DAWN_DATA_DIR` 为一个绝对目录。
 
-生成 Windows 安装包和便携包：
+生成 Windows 单文件便携 EXE：
 
 ```powershell
-npm run build
+npm --prefix src/GrimDawnOptimizer.Desktop run tauri:build -- --no-bundle
 npm --prefix src/GrimDawnOptimizer.Desktop run desktop:portable
 ```
 
-安装包位于 `src/GrimDawnOptimizer.Desktop/src-tauri/target/release/bundle/nsis/`。便携包为 `artifacts/tauri-win-x64.zip`；解压后启动 `GrimDawnOptimizer.exe`，同目录的 `grim-dawn-engine.exe` 与完整的 `trainer-native` 文件夹必须一起保留。计算程序自包含 .NET 运行时。安装程序在系统缺少 WebView2 时可能需要下载其运行时，程序运行和分析本身保持离线。
-
-本次 macOS 风格重设计使用独立的 `artifacts/tauri-macos-style-win-x64` 验收输出目录及同名 ZIP，避免覆盖仍在运行的旧便携程序；默认打包位置保持不变。
+产物为 `artifacts/GrimDawnOptimizer-1.0.21-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
 
 首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以删除缓存并自动重建。优化方案、最近一次游戏/存档路径与 `ui-settings.json` 偏好也保存在该目录，清理时不要误删需要保留的配置。UI 偏好使用 `schemaVersion: 1` 并原子写入。
 
@@ -110,6 +108,7 @@ npm run build:web
 dotnet test .\GrimDawnOptimizer.sln
 python .\tests\desktop-bridge\smoke.py
 python .\tests\desktop-bridge\trainer-smoke.py
+python .\tests\desktop-bridge\portable-smoke.py
 node .\tests\desktop-bridge\dev-transport.mjs
 node .\tests\desktop-bridge\sse-backpressure.mjs
 ```
@@ -120,16 +119,16 @@ node .\tests\desktop-bridge\sse-backpressure.mjs
 
 ## 持续集成与发布
 
-GitHub Actions 在提交到 `main`、创建或更新面向 `main` 的 Pull Request，以及手动运行时执行 .NET Release 构建/测试、Tauri 桌面构建和 Rust 传输测试。
+GitHub Actions 在提交到 `main`、创建或更新面向 `main` 的 Pull Request，以及手动运行时执行 .NET Release 构建/测试、Tauri 桌面构建和轻量 Rust 协议测试。缓存 npm、NuGet 和 Cargo 依赖；Tauri 只编译一次，随后封装并无窗口验证实际便携 EXE。
 
-推送以 `v` 开头的标签会在构建和测试通过后创建正式 GitHub Release，附带 Tauri Windows 安装包与 `tauri-win-x64.zip` 便携包。例如：
+先等待 `main` 上对应提交构建成功，再推送与程序版本一致的标签。标签任务直接复用该提交已验证的构建产物，GitHub Release 只上传单个便携 EXE。例如：
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.21
+git push origin v1.0.21
 ```
 
-所有 `v*` 标签都会创建正式版本，不会根据标签中的 `beta`、`rc` 或连字符自动标记为预发布版本。若同一标签的 Release 已经存在，工作流会保留现有 Release 和附件，不执行覆盖。
+发布前核对提交、版本、构建编号和 SHA-256；资产完整上传后才公开草稿。已有公开版本只校验，不覆盖不同文件。构建尚未完成或产物过期时会明确失败，处理后可重跑标签任务。缓存、产物保留和重试细节见 [Actions 构建与发布说明](docs/github-actions.md)。
 
 ## 评分与结果语义
 

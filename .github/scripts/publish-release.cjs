@@ -43,22 +43,24 @@ async function localAssets(directory, context) {
     throw new Error(
       "Release manifest does not match this tag, commit, and source build run.",
     );
-  if (!Array.isArray(manifest.files) || manifest.files.length !== 2)
+  if (!Array.isArray(manifest.files) || manifest.files.length !== 1)
     throw new Error(
-      "Expected one portable ZIP and one installer EXE in the release manifest.",
+      "Expected exactly one portable EXE in the release manifest.",
     );
-  const names = manifest.files.map((file) => safeName(file.name));
+  const name = safeName(manifest.files[0].name);
   if (
-    new Set(names.map((name) => name.toLowerCase())).size !== 2 ||
-    !names.some((name) => name.toLowerCase().endsWith(".zip")) ||
-    !names.some((name) => name.toLowerCase().endsWith(".exe"))
+    !/^\d+\.\d+\.\d+$/.test(manifest.version) ||
+    name !== `GrimDawnOptimizer-${manifest.version}-win-x64.exe`
   )
-    throw new Error("Expected distinct ZIP and EXE release assets.");
+    throw new Error(
+      "Expected the versioned portable EXE, not a ZIP or installer.",
+    );
   const assets = [];
   for (const file of manifest.files) {
     const asset = await read(file.name);
     if (
       !Number.isSafeInteger(file.size) ||
+      file.size <= 0 ||
       asset.size !== file.size ||
       typeof file.sha256 !== "string" ||
       !/^[a-fA-F0-9]{64}$/.test(file.sha256) ||
@@ -69,7 +71,14 @@ async function localAssets(directory, context) {
       );
     assets.push(asset);
   }
-  assets.push(manifestAsset, await read("SHA256SUMS.txt"));
+  const checksumAsset = await read("SHA256SUMS.txt");
+  const expectedChecksum = manifest.files
+    .map((file) => `${file.sha256}  ${file.name}\n`)
+    .join("");
+  if (checksumAsset.data.toString("utf8") !== expectedChecksum)
+    throw new Error("Checksum list does not match the release manifest.");
+  // Build identity and checksums are internal CI evidence. Only the portable
+  // executable belongs in the public release's downloadable assets.
   return { tag, assets };
 }
 
@@ -151,7 +160,7 @@ module.exports = async function publishRelease({
   if (!release.draft) {
     verifyAssets(remote, assets);
     core.info(
-      `Release ${tag} is already public and its four assets match. No changes made.`,
+      `Release ${tag} is already public and its portable EXE matches. No changes made.`,
     );
     return release;
   }
@@ -205,6 +214,6 @@ module.exports = async function publishRelease({
       make_latest: "true",
     })
   ).data;
-  core.info(`Published ${tag} with all four verified release assets.`);
+  core.info(`Published ${tag} with its one verified portable EXE.`);
   return published;
 };
