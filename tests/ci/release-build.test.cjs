@@ -3,74 +3,29 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const findReleaseBuild = require("../../.github/scripts/find-release-build.cjs");
+const { formatDraftBody } = require("../../.github/scripts/release-draft.cjs");
+const {
+  SHA,
+  OTHER_SHA,
+  run,
+  harness,
+} = require("./release-source-fixture.cjs");
 
-const SHA = "a".repeat(40);
-const OTHER_SHA = "b".repeat(40);
-const REPOSITORY = { full_name: "owner/project" };
-
-function run(overrides = {}) {
-  return {
-    id: 101,
-    head_sha: SHA,
-    head_branch: "main",
-    event: "push",
-    status: "completed",
-    conclusion: "success",
-    repository: REPOSITORY,
-    head_repository: REPOSITORY,
-    ...overrides,
-  };
-}
-
-function artifact(overrides = {}) {
-  return {
-    id: 201,
-    name: "windows-x64-release",
-    expired: false,
-    workflow_run: { id: 101, head_sha: SHA },
-    ...overrides,
-  };
-}
-
-function harness(runs = [run()], artifacts = { 101: [artifact()] }) {
-  const calls = [];
-  const outputs = {};
-  const actions = {
-    listWorkflowRuns() {},
-    listWorkflowRunArtifacts() {},
-  };
-  const github = {
-    rest: { actions },
-    async paginate(method, parameters) {
-      calls.push({ method, parameters });
-      if (method === actions.listWorkflowRuns) return runs;
-      assert.equal(method, actions.listWorkflowRunArtifacts);
-      return artifacts[parameters.run_id] ?? [];
-    },
-  };
-  return {
-    input: {
-      github,
-      context: { repo: { owner: "owner", repo: "project" }, sha: SHA },
-      core: {
-        setOutput(name, value) {
-          outputs[name] = value;
-        },
-        info() {},
-      },
-    },
-    calls,
-    outputs,
-  };
-}
-
-test("selects the exact successful main build and exports immutable identifiers", async () => {
+test("selects the exact successful main build and its verified release EXE", async () => {
   const fixture = harness();
   assert.deepEqual(await findReleaseBuild(fixture.input), {
     runId: 101,
-    artifactId: 201,
+    releaseId: 201,
+    assetId: 301,
+    alreadyPublished: false,
+    manifest: fixture.manifest,
   });
-  assert.deepEqual(fixture.outputs, { "run-id": "101", "artifact-id": "201" });
+  assert.deepEqual(fixture.outputs, {
+    "run-id": "101",
+    "release-id": "201",
+    "asset-id": "301",
+    "already-published": "false",
+  });
   assert.deepEqual(fixture.calls[0].parameters, {
     owner: "owner",
     repo: "project",
@@ -81,16 +36,16 @@ test("selects the exact successful main build and exports immutable identifiers"
     status: "success",
     per_page: 100,
   });
-  assert.deepEqual(fixture.calls[1].parameters, {
+  assert.deepEqual(fixture.calls.at(-1).parameters, {
     owner: "owner",
     repo: "project",
-    run_id: 101,
-    per_page: 100,
+    ref: "tags/v1.0.21",
   });
 });
 
 for (const [description, overrides] of [
   ["another commit", { head_sha: OTHER_SHA }],
+  ["another workflow", { path: ".github/workflows/other.yml" }],
   ["another branch", { head_branch: "feature" }],
   ["a PR event", { event: "pull_request" }],
   ["a manual event", { event: "workflow_dispatch" }],
@@ -101,7 +56,7 @@ for (const [description, overrides] of [
   ["missing repository metadata", { head_repository: null }],
 ]) {
   test(`rejects ${description} even when returned by the filtered API`, async () => {
-    const fixture = harness([run(overrides)]);
+    const fixture = harness({ runs: [run(overrides)] });
     await assert.rejects(
       findReleaseBuild(fixture.input),
       /No completed successful main push run/,
@@ -111,85 +66,141 @@ for (const [description, overrides] of [
   });
 }
 
-test("rejects an empty run search with an actionable retry message", async () => {
-  const fixture = harness([]);
+test("a draft hidden from lookup is found through the authenticated release list", async () => {
+  const fixture = harness({
+    lookupError: Object.assign(new Error("not found"), { status: 404 }),
+  });
+  assert.equal((await findReleaseBuild(fixture.input)).releaseId, 201);
+  assert.ok(fixture.calls.some((call) => call.method === "listReleases"));
+});
+
+test("missing or ambiguous releases fail without output", async () => {
+  const fixture = harness({
+    lookupError: Object.assign(new Error("not found"), { status: 404 }),
+    releases: [],
+  });
+  await assert.rejects(findReleaseBuild(fixture.input), /No staged release/);
+  const duplicated = harness({
+    lookupError: Object.assign(new Error("not found"), { status: 404 }),
+    releases: [fixture.release, { ...fixture.release, id: 202 }],
+  });
   await assert.rejects(
-    findReleaseBuild(fixture.input),
-    /rerun this tag release.*do not rebuild/,
+    findReleaseBuild(duplicated.input),
+    /ambiguous build source/,
   );
-  assert.deepEqual(fixture.outputs, {});
 });
 
-for (const [description, artifacts] of [
-  ["no artifact", []],
-  ["only an expired artifact", [artifact({ expired: true })]],
-  ["a differently named artifact", [artifact({ name: "untrusted-package" })]],
+test("does not conceal permission or network failures as a missing draft", async () => {
+  const fixture = harness({
+    lookupError: Object.assign(new Error("forbidden"), { status: 403 }),
+  });
+  await assert.rejects(findReleaseBuild(fixture.input), /forbidden/);
+  assert.equal(
+    fixture.calls.filter((call) => call.method === "listReleases").length,
+    0,
+  );
+});
+
+for (const [description, overrides] of [
+  ["wrong target", { target_commitish: OTHER_SHA }],
+  ["branch target", { target_commitish: "main" }],
+  ["wrong tag", { tag_name: "v1.0.22" }],
+  ["missing manifest", { body: "Release notes only" }],
+  ["invalid release ID", { id: 0 }],
 ]) {
-  test(`rejects ${description} without producing release outputs`, async () => {
-    const fixture = harness([run()], { 101: artifacts });
-    await assert.rejects(
-      findReleaseBuild(fixture.input),
-      /none contains an unexpired windows-x64-release artifact/,
-    );
+  test(`rejects release ${description}`, async () => {
+    const fixture = harness({ release: overrides });
+    await assert.rejects(findReleaseBuild(fixture.input));
     assert.deepEqual(fixture.outputs, {});
   });
 }
 
-test("rejects duplicate live artifacts instead of guessing", async () => {
-  const fixture = harness([run()], {
-    101: [artifact(), artifact({ id: 202 })],
-  });
-  await assert.rejects(findReleaseBuild(fixture.input), /multiple unexpired/);
-  assert.deepEqual(fixture.outputs, {});
-});
-
-for (const [description, metadata] of [
-  ["another SHA", { id: 101, head_sha: OTHER_SHA }],
-  ["another run", { id: 999, head_sha: SHA }],
+for (const [field, value] of [
+  ["commit", OTHER_SHA],
+  ["version", "1.0.22"],
+  ["runId", "999"],
 ]) {
-  test(`rejects artifact metadata naming ${description}`, async () => {
-    const fixture = harness([run()], {
-      101: [artifact({ workflow_run: metadata })],
-    });
-    await assert.rejects(
-      findReleaseBuild(fixture.input),
-      /Refusing mismatched release metadata/,
-    );
+  test(`rejects a release manifest with a different ${field}`, async () => {
+    const fixture = harness();
+    const manifest = { ...fixture.manifest, [field]: value };
+    if (field === "version")
+      manifest.files = [
+        {
+          ...manifest.files[0],
+          name: `GrimDawnOptimizer-${value}-win-x64.exe`,
+        },
+      ];
+    fixture.release.body = formatDraftBody(manifest);
+    await assert.rejects(findReleaseBuild(fixture.input), /manifest does not/);
     assert.deepEqual(fixture.outputs, {});
   });
 }
 
-test("allows absent optional artifact workflow metadata after validating its owning run", async () => {
-  const fixture = harness([run()], {
-    101: [artifact({ workflow_run: undefined })],
+for (const [field, value] of [
+  ["name", "installer.exe"],
+  ["size", 999],
+  ["digest", `sha256:${"0".repeat(64)}`],
+  ["digest", null],
+  ["state", "starter"],
+  ["id", 0],
+]) {
+  test(`rejects mismatching asset ${field}=${value}`, async () => {
+    const fixture = harness();
+    fixture.assets[0][field] = value;
+    await assert.rejects(
+      findReleaseBuild(fixture.input),
+      /exactly the verified portable EXE/,
+    );
   });
-  assert.equal((await findReleaseBuild(fixture.input)).artifactId, 201);
+}
+
+test("rejects missing or additional release assets", async () => {
+  for (const count of [0, 2]) {
+    const fixture = harness();
+    if (!count) fixture.assets.length = 0;
+    else fixture.assets.push({ ...fixture.assets[0], id: 302 });
+    await assert.rejects(
+      findReleaseBuild(fixture.input),
+      /exactly the verified portable EXE/,
+    );
+  }
 });
 
-test("prefers the newest eligible run and can reuse an older same-commit artifact", async () => {
-  const fixture = harness([run(), run({ id: 102 })], { 101: [artifact()] });
+test("selects the successful run named by the manifest, not an unrelated newer run", async () => {
+  const fixture = harness({ runs: [run({ id: 102 }), run()] });
   assert.equal((await findReleaseBuild(fixture.input)).runId, 101);
-  assert.deepEqual(
-    fixture.calls.slice(1).map((call) => call.parameters.run_id),
-    [102, 101],
-  );
 });
 
-test("does not hide an API permission/network failure as missing artifacts", async () => {
-  const fixture = harness();
-  fixture.input.github.paginate = async () => {
-    throw new Error("API unavailable");
-  };
-  await assert.rejects(findReleaseBuild(fixture.input), /API unavailable/);
-  assert.deepEqual(fixture.outputs, {});
+test("a correctly published release is idempotent only with full build proof", async () => {
+  const fixture = harness({ release: { draft: false } });
+  assert.equal((await findReleaseBuild(fixture.input)).alreadyPublished, true);
+  assert.equal(fixture.outputs["already-published"], "true");
+  fixture.release.body = "No source manifest";
+  await assert.rejects(findReleaseBuild(fixture.input), /manifest marker/);
 });
 
-test("rejects an invalid event SHA before any API call", async () => {
-  const fixture = harness();
-  fixture.input.context.sha = "main";
-  await assert.rejects(
-    findReleaseBuild(fixture.input),
-    /valid full commit SHA/,
-  );
-  assert.equal(fixture.calls.length, 0);
+test("resolves annotated tags and rejects tags moved after the workflow started", async () => {
+  const fixture = harness({ tagObject: { type: "tag", sha: OTHER_SHA } });
+  await findReleaseBuild(fixture.input);
+  assert.ok(fixture.calls.some((call) => call.method === "getTag"));
+  const moved = harness({ tagObject: { type: "commit", sha: OTHER_SHA } });
+  await assert.rejects(findReleaseBuild(moved.input), /current Git tag/);
+  assert.deepEqual(moved.outputs, {});
+  const cycle = harness({
+    tagObject: { type: "tag", sha: OTHER_SHA },
+    annotatedObject: { type: "tag", sha: OTHER_SHA },
+  });
+  await assert.rejects(findReleaseBuild(cycle.input), /Cannot resolve/);
+});
+
+test("invalid event identity fails before API access", async () => {
+  for (const [field, value] of [
+    ["sha", "main"],
+    ["ref", "refs/heads/main"],
+  ]) {
+    const fixture = harness();
+    fixture.input.context[field] = value;
+    await assert.rejects(findReleaseBuild(fixture.input));
+    assert.equal(fixture.calls.length, 0);
+  }
 });

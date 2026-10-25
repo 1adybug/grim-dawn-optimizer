@@ -1,6 +1,8 @@
 const { readFile, lstat } = require("node:fs/promises");
 const { resolve, join, basename } = require("node:path");
 const { createHash } = require("node:crypto");
+const assert = require("node:assert/strict");
+const { formatDraftBody, parseDraftBody } = require("./release-draft.cjs");
 
 const digest = (data) =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
@@ -19,7 +21,7 @@ function safeName(name) {
   return name;
 }
 
-async function localAssets(directory, context) {
+async function localAssets(directory, context, stageOnly) {
   const read = async (name) => {
     const file = join(directory, safeName(name));
     if (!(await lstat(file)).isFile())
@@ -29,16 +31,27 @@ async function localAssets(directory, context) {
   };
   const manifestAsset = await read("release-manifest.json");
   const manifest = JSON.parse(manifestAsset.data.toString("utf8"));
-  if (!context.ref?.startsWith("refs/tags/v"))
-    throw new Error("Publishing requires a version tag.");
-  const tag = context.ref.slice("refs/tags/".length);
+  if (
+    stageOnly
+      ? context.ref !== "refs/heads/main"
+      : !context.ref?.startsWith("refs/tags/v")
+  )
+    throw new Error(
+      stageOnly
+        ? "Draft staging requires the main branch."
+        : "Publishing requires a version tag.",
+    );
+  const tag = stageOnly
+    ? `v${manifest.version}`
+    : context.ref.slice("refs/tags/".length);
   const buildRunId = process.env.RELEASE_BUILD_RUN_ID;
   if (
     manifest.schemaVersion !== 1 ||
     tag !== `v${manifest.version}` ||
     manifest.commit !== context.sha ||
     !buildRunId ||
-    manifest.runId !== buildRunId
+    manifest.runId !== buildRunId ||
+    (stageOnly && buildRunId !== String(context.runId))
   )
     throw new Error(
       "Release manifest does not match this tag, commit, and source build run.",
@@ -79,7 +92,8 @@ async function localAssets(directory, context) {
     throw new Error("Checksum list does not match the release manifest.");
   // Build identity and checksums are internal CI evidence. Only the portable
   // executable belongs in the public release's downloadable assets.
-  return { tag, assets };
+  formatDraftBody(manifest); // Validate the shared provenance schema before any API call.
+  return { tag, assets, manifest };
 }
 
 async function listAll(method, parameters) {
@@ -133,16 +147,31 @@ module.exports = async function publishRelease({
   github,
   context,
   core,
+  stageOnly = false,
   releaseDirectory = resolve(
     process.env.GITHUB_WORKSPACE || process.cwd(),
     "artifacts/release",
   ),
 }) {
-  const { tag, assets } = await localAssets(releaseDirectory, context);
+  const { tag, assets, manifest } = await localAssets(
+    releaseDirectory,
+    context,
+    stageOnly,
+  );
   const repository = { owner: context.repo.owner, repo: context.repo.repo };
   const repos = github.rest.repos;
   let release = await findRelease(repos, repository, tag);
+  if (stageOnly && release && !release.draft) {
+    core.info(
+      `Release ${tag} is already public. The main build leaves it unchanged.`,
+    );
+    return release;
+  }
   if (!release) {
+    if (!stageOnly)
+      throw new Error(
+        `No staged release exists for ${tag}; publish its successful main build first.`,
+      );
     release = (
       await repos.createRelease({
         ...repository,
@@ -151,11 +180,23 @@ module.exports = async function publishRelease({
         name: tag,
         draft: true,
         prerelease: false,
-        generate_release_notes: true,
       })
     ).data;
   }
   const parameters = { ...repository, release_id: release.id };
+  const verifyManifest = (current) => {
+    assert.deepEqual(
+      parseDraftBody(current.body),
+      manifest,
+      "Release body manifest differs from the verified source build.",
+    );
+    assert.equal(
+      current.target_commitish,
+      context.sha,
+      "Release target differs from the source build commit.",
+    );
+  };
+  if (!stageOnly) verifyManifest(release);
   let remote = await listAll(repos.listReleaseAssets, parameters);
   if (!release.draft) {
     verifyAssets(remote, assets);
@@ -176,6 +217,7 @@ module.exports = async function publishRelease({
       throw new Error(
         "Release became public while uploading; refusing to modify its assets.",
       );
+    if (!stageOnly) verifyManifest(current);
   };
   for (const asset of assets) {
     const named = remote.filter((item) => item.name === asset.name);
@@ -206,12 +248,47 @@ module.exports = async function publishRelease({
   remote = await listAll(repos.listReleaseAssets, parameters);
   verifyAssets(remote, assets);
   await requireDraft();
+  if (stageOnly) {
+    const staged = (
+      await repos.updateRelease({
+        ...parameters,
+        target_commitish: context.sha,
+        body: formatDraftBody(manifest),
+        draft: true,
+        prerelease: false,
+      })
+    ).data;
+    core.info(
+      `Staged ${tag} from main build ${manifest.runId} with one verified portable EXE.`,
+    );
+    return staged;
+  }
+  const notes = (
+    await repos.generateReleaseNotes({
+      ...repository,
+      tag_name: tag,
+      target_commitish: context.sha,
+    })
+  ).data;
+  assert.equal(
+    typeof notes.body,
+    "string",
+    "GitHub did not return generated release notes.",
+  );
+  const body = `${notes.body}\n\n${formatDraftBody(manifest)}`;
+  assert.deepEqual(
+    parseDraftBody(body),
+    manifest,
+    "Generated release notes contain ambiguous build metadata.",
+  );
+  await requireDraft();
   const published = (
     await repos.updateRelease({
       ...parameters,
       draft: false,
       prerelease: false,
       make_latest: "true",
+      body,
     })
   ).data;
   core.info(`Published ${tag} with its one verified portable EXE.`);

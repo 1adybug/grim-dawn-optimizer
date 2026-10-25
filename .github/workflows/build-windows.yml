@@ -1,0 +1,134 @@
+name: Windows build
+
+on:
+  workflow_call:
+    inputs:
+      stage-release:
+        description: Store the verified EXE in an unpublished release for a later tag.
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}\.nuget\packages
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        id: dotnet
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Select the installed .NET SDK
+        shell: pwsh
+        env:
+          DOTNET_SDK_VERSION: ${{ steps.dotnet.outputs.dotnet-version }}
+        run: |
+          @{ sdk = @{ version = $env:DOTNET_SDK_VERSION; rollForward = 'disable' } } |
+            ConvertTo-Json | Set-Content -LiteralPath global.json -Encoding utf8
+
+      - name: Cache NuGet packages
+        id: nuget
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ runner.arch }}-${{ steps.dotnet.outputs.dotnet-version }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', '**/NuGet.Config') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ runner.arch }}-${{ steps.dotnet.outputs.dotnet-version }}-
+
+      - name: Restore dependencies
+        run: dotnet restore .\GrimDawnOptimizer.sln
+
+      - name: Save restored NuGet packages
+        if: github.ref == 'refs/heads/main' && steps.nuget.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: ${{ steps.nuget.outputs.cache-primary-key }}
+
+      - name: Build
+        run: dotnet build .\GrimDawnOptimizer.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test .\GrimDawnOptimizer.sln -c Release --no-build --no-restore
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/GrimDawnOptimizer.Desktop/package-lock.json
+
+      - name: Verify release selection and artifact validation
+        run: node --test "tests/ci/*.test.*js"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/GrimDawnOptimizer.Desktop/src-tauri -> target
+          shared-key: windows-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Test bridge protocol and portable launcher
+        working-directory: src/GrimDawnOptimizer.Desktop/src-tauri
+        run: cargo test --locked --package grim-dawn-bridge-protocol --package grim-dawn-portable-launcher
+
+      - name: Install desktop dependencies
+        working-directory: src/GrimDawnOptimizer.Desktop
+        run: npm ci
+
+      - name: Build and simulate native trainer helpers
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Desktop/scripts/prepare-trainer-native.ps1 -RunTests
+
+      # This is the only Tauri build: its binaries are tested and then published.
+      - name: Build Tauri desktop application
+        working-directory: src/GrimDawnOptimizer.Desktop
+        run: npm run tauri:build -- --ci --no-bundle -- --locked
+
+      - name: Verify frontend snapshot ordering
+        run: node tests/desktop-bridge/state-order.mjs
+
+      - name: Verify equipment table behavior
+        run: node tests/desktop-bridge/equipment-table.mjs
+
+      - name: Verify development transport boundaries
+        run: node tests/desktop-bridge/dev-transport.mjs
+
+      - name: Verify large state event delivery
+        run: node tests/desktop-bridge/sse-backpressure.mjs
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Package portable application
+        working-directory: src/GrimDawnOptimizer.Desktop
+        run: npm run desktop:portable
+
+      - name: Verify portable executable without opening the UI
+        run: python tests/desktop-bridge/portable-smoke.py
+
+      - name: Stage release files and checksums
+        run: node .github/scripts/release-artifacts.mjs stage
+
+      - name: Stage verified EXE in a release draft
+        if: inputs.stage-release
+        uses: actions/github-script@v8
+        env:
+          RELEASE_BUILD_RUN_ID: ${{ github.run_id }}
+        with:
+          script: |
+            const publish = require('./.github/scripts/publish-release.cjs');
+            await publish({ github, context, core, stageOnly: true });

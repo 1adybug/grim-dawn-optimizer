@@ -5,6 +5,10 @@ const { join } = require("node:path");
 const { tmpdir } = require("node:os");
 const { createHash } = require("node:crypto");
 const publish = require("../../.github/scripts/publish-release.cjs");
+const {
+  formatDraftBody,
+  parseDraftBody,
+} = require("../../.github/scripts/release-draft.cjs");
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 // The tag publishing run is different from the verified main-branch build run.
@@ -13,6 +17,25 @@ const context = {
   sha: "a".repeat(40),
   runId: 456,
   repo: { owner: "test-owner", repo: "test-repo" },
+};
+const portableName = "GrimDawnOptimizer-1.0.21-win-x64.exe";
+const portableData = Buffer.from(`test payload ${portableName}`);
+const sourceManifest = {
+  schemaVersion: 1,
+  version: "1.0.21",
+  commit: context.sha,
+  runId: "123",
+  files: [
+    {
+      name: portableName,
+      size: portableData.length,
+      sha256: sha256(portableData),
+    },
+  ],
+};
+const stageOptions = {
+  stageOnly: true,
+  context: { ...context, ref: "refs/heads/main", runId: 123 },
 };
 
 async function fixture(t) {
@@ -65,9 +88,20 @@ function mock({
   failUpload,
   hiddenDraft = false,
   failLookup,
+  failNotes = false,
+  body = formatDraftBody(sourceManifest),
+  targetCommit = context.sha,
 } = {}) {
   let release =
-    draft === undefined ? null : { id: 10, tag_name: "v1.0.21", draft };
+    draft === undefined
+      ? null
+      : {
+          id: 10,
+          tag_name: "v1.0.21",
+          draft,
+          body,
+          target_commitish: targetCommit,
+        };
   let remote = assets.map((asset) => ({ ...asset }));
   let nextId = 100;
   const writes = [];
@@ -123,6 +157,11 @@ function mock({
       remote.push(asset);
       return { data: asset };
     },
+    generateReleaseNotes: async (args) => {
+      reads.push(["generateReleaseNotes", args]);
+      if (failNotes) throw new Error("Release notes unavailable");
+      return { data: { body: "## Changes\n\nGenerated release notes." } };
+    },
     updateRelease: async (args) => {
       writes.push(["updateRelease", args]);
       release = { ...release, ...args };
@@ -151,29 +190,45 @@ const run = (f, api, override = {}) =>
     ...override,
   });
 
-test("new release stays draft until its portable EXE verifies and never uploads CI metadata", async (t) => {
+test("main stages one verified EXE and tag publishes notes with hidden provenance", async (t) => {
   const f = await fixture(t);
   const api = mock();
-  await run(f, api);
+  await run(f, api, stageOptions);
   assert.deepEqual(
     api.writes.map(([name]) => name),
     ["createRelease", "uploadReleaseAsset", "updateRelease"],
   );
   const create = api.writes[0][1];
   assert.equal(create.draft, true);
-  assert.equal(create.generate_release_notes, true);
+  assert.equal(create.generate_release_notes, undefined);
   assert.equal(create.target_commitish, context.sha);
   assert.equal(create.tag_name, "v1.0.21");
-  assert.equal(api.release.draft, false);
-  assert.equal(api.release.make_latest, "true");
+  assert.equal(api.release.draft, true);
+  assert.deepEqual(parseDraftBody(api.release.body), f.manifest);
+  assert.equal(api.release.target_commitish, context.sha);
+  assert.equal(
+    api.reads.some(([name]) => name === "generateReleaseNotes"),
+    false,
+  );
   assert.equal(api.assets.length, 1);
   assert.equal(api.assets[0].name, "GrimDawnOptimizer-1.0.21-win-x64.exe");
+  await run(f, api);
+  assert.equal(api.release.draft, false);
+  assert.equal(api.release.make_latest, "true");
+  assert.ok(
+    api.release.body.startsWith("## Changes\n\nGenerated release notes."),
+  );
+  assert.deepEqual(parseDraftBody(api.release.body), f.manifest);
+  assert.equal(
+    api.writes.filter(([name]) => name === "uploadReleaseAsset").length,
+    1,
+  );
 });
 
 test("upload failure leaves a recoverable draft and never publishes", async (t) => {
   const f = await fixture(t);
   const api = mock({ failUpload: f.assets[0].name });
-  await assert.rejects(run(f, api), /Upload interrupted/);
+  await assert.rejects(run(f, api, stageOptions), /Upload interrupted/);
   assert.equal(api.release.draft, true);
   assert.equal(api.assets.length, 0);
   assert.equal(
@@ -350,4 +405,103 @@ test("draft becoming public before a repair prevents every asset mutation", asyn
   });
   await assert.rejects(run(f, api), /became public/);
   assert.deepEqual(api.writes, []);
+});
+
+test("a newer main build can replace a prior draft payload and then update its provenance", async (t) => {
+  const f = await fixture(t);
+  const previous = { ...f.manifest, commit: "b".repeat(40), runId: "122" };
+  const api = mock({
+    draft: true,
+    body: formatDraftBody(previous),
+    targetCommit: previous.commit,
+    assets: [{ ...f.assets[0], digest: `sha256:${"0".repeat(64)}` }],
+  });
+  await run(f, api, stageOptions);
+  assert.deepEqual(
+    api.writes.map(([name]) => name),
+    ["deleteReleaseAsset", "uploadReleaseAsset", "updateRelease"],
+  );
+  assert.equal(api.release.draft, true);
+  assert.equal(api.release.target_commitish, context.sha);
+  assert.deepEqual(parseDraftBody(api.release.body), f.manifest);
+  assert.equal(
+    api.reads.some(([name]) => name === "generateReleaseNotes"),
+    false,
+  );
+});
+
+test("main staging leaves an already public version untouched even when its provenance differs", async (t) => {
+  const f = await fixture(t);
+  const api = mock({
+    draft: false,
+    body: "Earlier public release",
+    targetCommit: "b".repeat(40),
+    assets: [],
+  });
+  await run(f, api, stageOptions);
+  assert.deepEqual(api.writes, []);
+  assert.equal(api.release.body, "Earlier public release");
+});
+
+test("staging requires main and the current build run rather than a different source run", async (t) => {
+  const f = await fixture(t);
+  const api = mock();
+  await assert.rejects(
+    run(f, api, { stageOnly: true }),
+    /requires the main branch/,
+  );
+  await assert.rejects(
+    run(f, api, {
+      stageOnly: true,
+      context: { ...context, ref: "refs/heads/main" },
+    }),
+    /does not match/,
+  );
+  assert.deepEqual(api.reads, []);
+  assert.deepEqual(api.writes, []);
+});
+
+test("tag refuses missing, mismatched or malformed staged provenance before mutating assets", async (t) => {
+  const f = await fixture(t);
+  const absent = mock();
+  await assert.rejects(run(f, absent), /No staged release/);
+  assert.deepEqual(absent.writes, []);
+  for (const options of [
+    { body: "No build manifest" },
+    { body: formatDraftBody({ ...f.manifest, commit: "b".repeat(40) }) },
+    { body: formatDraftBody({ ...f.manifest, runId: "122" }) },
+    { targetCommit: "b".repeat(40) },
+  ]) {
+    const api = mock({ draft: true, assets: f.assets, ...options });
+    await assert.rejects(run(f, api));
+    assert.deepEqual(api.writes, []);
+  }
+});
+
+test("release notes failure preserves a fully staged draft", async (t) => {
+  const f = await fixture(t);
+  const api = mock({ draft: true, assets: f.assets, failNotes: true });
+  await assert.rejects(run(f, api), /Release notes unavailable/);
+  assert.deepEqual(api.writes, []);
+  assert.equal(api.release.draft, true);
+  assert.deepEqual(parseDraftBody(api.release.body), f.manifest);
+});
+
+test("shared draft manifest parser accepts hidden notes metadata and rejects ambiguity or unsafe payloads", async (t) => {
+  const f = await fixture(t);
+  const marker = formatDraftBody(f.manifest);
+  assert.deepEqual(parseDraftBody(`Public notes\n\n${marker}`), f.manifest);
+  assert.throws(() => parseDraftBody(`${marker}\n${marker}`), /exactly one/);
+  assert.throws(() => parseDraftBody("<!-- grim-dawn-build\n{bad}\n-->"));
+  for (const invalid of [
+    { ...f.manifest, runId: 123 },
+    { ...f.manifest, commit: "main" },
+    { ...f.manifest, extra: "unexpected" },
+    {
+      ...f.manifest,
+      files: [{ ...f.manifest.files[0], name: "../escape.exe" }],
+    },
+    { ...f.manifest, files: [{ ...f.manifest.files[0], size: -1 }] },
+  ])
+    assert.throws(() => formatDraftBody(invalid));
 });
