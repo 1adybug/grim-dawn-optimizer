@@ -252,12 +252,20 @@ module.exports = async function publishRelease({
     const staged = (
       await repos.updateRelease({
         ...parameters,
+        // Before the Git tag exists, GitHub can replace an omitted tag name
+        // with an untagged-* placeholder when updating a draft.
+        tag_name: tag,
         target_commitish: context.sha,
         body: formatDraftBody(manifest),
         draft: true,
         prerelease: false,
       })
     ).data;
+    assert.equal(
+      staged.tag_name,
+      tag,
+      "GitHub did not retain the staged version tag.",
+    );
     core.info(
       `Staged ${tag} from main build ${manifest.runId} with one verified portable EXE.`,
     );
@@ -285,12 +293,19 @@ module.exports = async function publishRelease({
   const published = (
     await repos.updateRelease({
       ...parameters,
+      tag_name: tag,
       draft: false,
       prerelease: false,
       make_latest: "true",
       body,
     })
   ).data;
+  assert.equal(
+    published.tag_name,
+    tag,
+    "GitHub did not retain the published version tag.",
+  );
+  assert.equal(published.draft, false, "GitHub did not publish the release.");
   core.info(`Published ${tag} with its one verified portable EXE.`);
   return published;
 };

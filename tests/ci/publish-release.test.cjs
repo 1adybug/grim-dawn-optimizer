@@ -89,6 +89,7 @@ function mock({
   hiddenDraft = false,
   failLookup,
   failNotes = false,
+  resetOmittedDraftTag = false,
   body = formatDraftBody(sourceManifest),
   targetCommit = context.sha,
 } = {}) {
@@ -165,6 +166,8 @@ function mock({
     updateRelease: async (args) => {
       writes.push(["updateRelease", args]);
       release = { ...release, ...args };
+      if (resetOmittedDraftTag && release.draft && !args.tag_name)
+        release.tag_name = "untagged-github-placeholder";
       return { data: { ...release } };
     },
   };
@@ -223,6 +226,31 @@ test("main stages one verified EXE and tag publishes notes with hidden provenanc
     api.writes.filter(([name]) => name === "uploadReleaseAsset").length,
     1,
   );
+});
+
+test("draft updates explicitly retain their version before the Git tag exists", async (t) => {
+  const f = await fixture(t);
+  const api = mock({ resetOmittedDraftTag: true });
+  await run(f, api, stageOptions);
+  assert.equal(api.release.tag_name, "v1.0.21");
+  await run(f, api);
+  assert.equal(api.release.tag_name, "v1.0.21");
+  assert.equal(api.release.draft, false);
+  const updates = api.writes.filter(([name]) => name === "updateRelease");
+  assert.equal(updates.length, 2);
+  for (const [, args] of updates) assert.equal(args.tag_name, "v1.0.21");
+});
+
+test("staging rejects a GitHub response that lost the version tag", async (t) => {
+  const f = await fixture(t);
+  const api = mock();
+  const update = api.github.rest.repos.updateRelease;
+  api.github.rest.repos.updateRelease = async (args) => {
+    const response = await update(args);
+    response.data.tag_name = "untagged-github-placeholder";
+    return response;
+  };
+  await assert.rejects(run(f, api, stageOptions), /retain the staged version tag/);
 });
 
 test("upload failure leaves a recoverable draft and never publishes", async (t) => {
