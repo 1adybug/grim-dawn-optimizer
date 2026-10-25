@@ -11,4 +11,13 @@
 - [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)，MIT License。
 - [WPF UI](https://github.com/lepoco/wpfui)，MIT License。
 
-《恐怖黎明》及其名称、数据和商标归 Crate Entertainment 所有；本项目是非官方、离线、只读的个人工具。
+桌面界面随程序本地打包以下字体，均采用 SIL Open Font License 1.1：
+
+- **Inter Variable**：`@fontsource-variable/inter`（依赖范围 `^5.3.0`），许可全文见 [`LICENSES/Inter-SIL-OFL-1.1.txt`](LICENSES/Inter-SIL-OFL-1.1.txt)。
+- **Noto Sans SC Variable**：`@fontsource-variable/noto-sans-sc`（依赖范围 `^5.3.0`），许可全文见 [`LICENSES/Noto-Sans-SC-SIL-OFL-1.1.txt`](LICENSES/Noto-Sans-SC-SIL-OFL-1.1.txt)。
+
+以上许可文件原样复制自对应已安装的官方 Fontsource 包，保留其版权声明。
+
+实战原生组件使用 [MinHook](https://github.com/TsudaKageyu/minhook)，来源提交为 `c3fcafdc10146beb5919319d0683e44e3c30d537`。`vendor/minhook/include`、`vendor/minhook/src` 与原始 `LICENSE.txt` 从已有实战工具的该提交原样迁入，未修改上游内容；来源记录见 `vendor/minhook/SOURCE.md`。完整 BSD 许可及随附版权声明见 [`LICENSES/MinHook-BSD.txt`](LICENSES/MinHook-BSD.txt)。
+
+《恐怖黎明》及其名称、数据和商标归 Crate Entertainment 所有；本项目是非官方、离线的个人工具。配装分析只读游戏文件；独立实战功能修改当前游戏会话内存，不直接编辑存档文件。

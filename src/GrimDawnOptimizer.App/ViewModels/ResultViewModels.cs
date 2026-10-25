@@ -1,4 +1,5 @@
 using GrimDawnOptimizer.Core.Domain;
+using GrimDawnOptimizer.Core.Services;
 
 namespace GrimDawnOptimizer.App.ViewModels;
 
@@ -31,15 +32,25 @@ public sealed class ResultViewModel : ObservableObject
                     SlotName(slot), currentItem, variant.Item.Name,
                     FormatAttachment(variant.Component, variant.Item, planItemIds),
                     FormatAttachment(variant.Augment, variant.Item, planItemIds),
-                    variant.Item.Source.DisplayName, currentItem != variant.Item.Name);
+                    variant.Item.Source.DisplayName,
+                    character.CurrentLoadout.GetValueOrDefault(slot) != variant.Item.Id ||
+                    !MatchesCurrentAttachment(variant.Component, variant.Item.ComponentRecord, variant.Item.CompletionBonusRecord) ||
+                    !MatchesCurrentAttachment(variant.Augment, variant.Item.AugmentRecord, string.Empty));
 
             var candidate = slot == EquipmentSlot.OffHand && usesTwoHands ? "由双手武器占用" : "—（无可用装备）";
             return new SlotResultViewModel(SlotName(slot), currentItem, candidate, "—", "—", "—", currentItem != "—");
         }).ToArray();
-        WarningRows = result.Loadout.UnsupportedEffects.Select(x => $"{x.Description} · {x.Record}")
+        var diagnostics = result.Loadout.UnsupportedEffects.Concat(result.SkillDiagnostics).ToArray();
+        WarningRows = diagnostics.Where(x => x.Severity == DiagnosticSeverity.Warning)
+            .Select(x => $"[{CalculationDiagnostics.ScopeLabel(x)}] {x.Description} · {x.Record}")
             .Concat(result.Loadout.ValidationErrors)
-            .Concat(character.ImportWarnings)
+            .Concat(character.ImportWarnings.Where(x => x.Contains("失败", StringComparison.Ordinal) ||
+                x.Contains("缺失", StringComparison.Ordinal) || x.Contains("无法", StringComparison.Ordinal)))
             .Distinct().ToArray();
+        InformationRows = diagnostics.Where(x => x.Severity == DiagnosticSeverity.Information)
+            .Select(x => $"[{CalculationDiagnostics.ScopeLabel(x)}] {x.Description}")
+            .Concat(character.ImportWarnings.Where(x => !x.Contains("失败", StringComparison.Ordinal) &&
+                !x.Contains("缺失", StringComparison.Ordinal) && !x.Contains("无法", StringComparison.Ordinal))).Distinct().ToArray();
         var labels = metricRules.GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First().DisplayName, StringComparer.OrdinalIgnoreCase);
         ScoreBreakdown = string.Join(" · ", result.ScoreContributions.Select(x =>
@@ -57,6 +68,11 @@ public sealed class ResultViewModel : ObservableObject
     }
     public int Rank => Model.Rank;
     public string Title => $"候选 {Rank:00}";
+    public string ChangeSummary => SlotRows.Any(x => x.Changed)
+        ? $"替换 {SlotRows.Count(x => x.Changed)} 个槽位" : "保持当前配装";
+    public string DiagnosticSummary => HasWarnings
+        ? $"有 {WarningRows.Count} 项效果尚未完整计算，具体影响见下方“计算范围”。"
+        : "按当前技能与增益状态自动计算；机制覆盖检查不代表所有配装均已实测。";
     public string Dps => FormatNumber(Model.Simulation.ExpectedDps);
     public string RetaliationDps => FormatNumber(Model.Simulation.RetaliationDps);
     public string CombatResistances => "战斗中玩家抗性 · " + string.Join("  ", new[]
@@ -71,7 +87,13 @@ public sealed class ResultViewModel : ObservableObject
     public string TimeToKill => double.IsPositiveInfinity(Model.Simulation.TimeToKillSeconds) ? "∞" : $"{Model.Simulation.TimeToKillSeconds:0.0}s";
     public string EffectiveHealth => FormatNumber(Model.Simulation.EffectiveHealth);
     public string TimeToDeath => double.IsPositiveInfinity(Model.Simulation.TimeToDeathSeconds) ? "∞" : $"{Model.Simulation.TimeToDeathSeconds:0.0}s";
-    public string Confidence => Model.Confidence switch { ConfidenceLevel.High => "高置信度", ConfidenceLevel.Medium => "中置信度", _ => "低置信度" };
+    public string Confidence => Model.PanelDpsConfidence switch
+    {
+        ConfidenceLevel.High => "面板未发现已知缺项",
+        ConfidenceLevel.Medium => "面板使用回退估算",
+        _ => "面板存在计算缺口"
+    };
+    public string CoverageExplanation => "这是机制覆盖检查，不是误差百分比或所有配装的实测保证。下列提示分别标明对面板、实战输出和生存的影响。";
     public string Validity => Model.Loadout.IsValid ? "配装合法" : "配装存在兼容性问题";
     public string MonteCarloRange => Model.Simulation.MonteCarloDpsHigh95 > 0
         ? $"95% · {FormatNumber(Model.Simulation.MonteCarloDpsLow95)} – {FormatNumber(Model.Simulation.MonteCarloDpsHigh95)}"
@@ -82,6 +104,9 @@ public sealed class ResultViewModel : ObservableObject
     public IReadOnlyList<string> WarningRows { get; }
     public bool HasWarnings => WarningRows.Count > 0;
     public string WarningSummary => string.Join(Environment.NewLine, WarningRows);
+    public IReadOnlyList<string> InformationRows { get; }
+    public bool HasInformation => InformationRows.Count > 0;
+    public string InformationSummary => string.Join(Environment.NewLine, InformationRows);
 
     private static string FormatNumber(double value) => double.IsPositiveInfinity(value) ? "∞" : value switch
     {
@@ -89,6 +114,12 @@ public sealed class ResultViewModel : ObservableObject
         >= 1_000 => $"{value / 1_000:0.0}k",
         _ => $"{value:0}"
     };
+
+    private static bool MatchesCurrentAttachment(AttachmentDefinition? attachment, string record, string completion) =>
+        attachment is null ? string.IsNullOrWhiteSpace(record) :
+        string.Equals(string.IsNullOrWhiteSpace(attachment.RecordId) ? attachment.Id : attachment.RecordId,
+            record, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(attachment.CompletionBonusRecord, completion, StringComparison.OrdinalIgnoreCase);
 
     public static string FormatAttachment(
         AttachmentDefinition? attachment,

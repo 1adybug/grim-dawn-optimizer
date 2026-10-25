@@ -6,3 +6,11 @@ artifacts/
 *.suo
 TestResults/
 coverage/
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+src/GrimDawnOptimizer.Desktop/src-tauri/binaries/*.exe
+src/GrimDawnOptimizer.Desktop/src-tauri/binaries/trainer-native/

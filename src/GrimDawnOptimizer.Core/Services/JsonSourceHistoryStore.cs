@@ -20,9 +20,23 @@ public sealed class JsonSourceHistoryStore : ISourceHistoryStore
         if (!File.Exists(_path)) return new SourceHistorySettings();
         try
         {
-            await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
-            var settings = await JsonSerializer.DeserializeAsync<SourceHistorySettings>(stream, _options, cancellationToken);
-            return settings is { SchemaVersion: 1 } ? Normalize(settings) : new SourceHistorySettings();
+            SourceHistorySettings? settings;
+            await using (var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true))
+                settings = await JsonSerializer.DeserializeAsync<SourceHistorySettings>(stream, _options, cancellationToken);
+            if (settings is not { SchemaVersion: 1 or 2 }) return new SourceHistorySettings();
+            var needsMigration = settings.SchemaVersion == 1 || settings.GameDirectories?.Count > 1 ||
+                settings.SaveDirectories?.Count > 1 || settings.RemovedGameDirectories?.Count > 0 ||
+                settings.RemovedSaveDirectories?.Count > 0;
+            settings = Normalize(settings);
+            if (needsMigration)
+            {
+                // Compact existing files too, rather than only hiding historical
+                // entries in memory. A read-only file still supplies its selection.
+                try { await SaveAsync(settings, cancellationToken); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            return settings;
         }
         catch (JsonException)
         {
@@ -53,19 +67,24 @@ public sealed class JsonSourceHistoryStore : ISourceHistoryStore
 
     private static SourceHistorySettings Normalize(SourceHistorySettings settings)
     {
-        settings.GameDirectories = NormalizePaths(settings.GameDirectories);
-        settings.SaveDirectories = NormalizePaths(settings.SaveDirectories);
-        settings.RemovedGameDirectories = NormalizePaths(settings.RemovedGameDirectories);
-        settings.RemovedSaveDirectories = NormalizePaths(settings.RemovedSaveDirectories);
-        settings.LastGameDirectory = NormalizePath(settings.LastGameDirectory);
-        settings.LastSaveDirectory = NormalizePath(settings.LastSaveDirectory);
-        settings.SchemaVersion = 1;
+        settings.LastGameDirectory = LatestPath(settings.LastGameDirectory, settings.GameDirectories);
+        settings.LastSaveDirectory = LatestPath(settings.LastSaveDirectory, settings.SaveDirectories);
+        settings.GameDirectories = string.IsNullOrWhiteSpace(settings.LastGameDirectory) ? [] : [settings.LastGameDirectory];
+        settings.SaveDirectories = string.IsNullOrWhiteSpace(settings.LastSaveDirectory) ? [] : [settings.LastSaveDirectory];
+        // Deletion remains available to legacy clients for the current session;
+        // no history of previously removed directories is retained on disk.
+        settings.RemovedGameDirectories = [];
+        settings.RemovedSaveDirectories = [];
+        settings.SchemaVersion = 2;
         return settings;
     }
 
-    private static List<string> NormalizePaths(IEnumerable<string>? paths) =>
-        (paths ?? []).Select(NormalizePath).Where(x => !string.IsNullOrWhiteSpace(x))
-        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    private static string LatestPath(string? selected, IEnumerable<string>? legacyPaths)
+    {
+        var path = NormalizePath(selected);
+        return !string.IsNullOrWhiteSpace(path) ? path :
+            (legacyPaths ?? []).Select(NormalizePath).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+    }
 
     public static string NormalizePath(string? path)
     {

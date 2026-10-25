@@ -6,7 +6,7 @@ namespace GrimDawnOptimizer.Tests;
 public sealed class OptionalDpsCalibrationViewModelTests
 {
     [Fact]
-    public void DpsInputsAreRequiredOnlyAfterExplicitOptIn()
+    public void LegacyCalibrationValidationDoesNotBlockAutomaticAnalysis()
     {
         var viewModel = new MainViewModel();
         viewModel.DemoCommand.Execute(null);
@@ -16,7 +16,7 @@ public sealed class OptionalDpsCalibrationViewModelTests
         Assert.False(viewModel.IsCurrentPanelDpsInvalid);
 
         viewModel.UsePanelDpsCalibration = true;
-        Assert.False(viewModel.OptimizeCommand.CanExecute(null));
+        Assert.True(viewModel.OptimizeCommand.CanExecute(null));
         Assert.True(viewModel.IsCurrentPanelDpsInvalid);
         viewModel.CurrentPanelDpsInput = "1000";
         viewModel.CurrentWeaponAttackDpsInput = "500";
@@ -24,7 +24,7 @@ public sealed class OptionalDpsCalibrationViewModelTests
 
         viewModel.CurrentPanelDpsInput = "invalid";
         viewModel.CurrentWeaponAttackDpsInput = "invalid";
-        Assert.False(viewModel.OptimizeCommand.CanExecute(null));
+        Assert.True(viewModel.OptimizeCommand.CanExecute(null));
         viewModel.UsePanelDpsCalibration = false;
         Assert.True(viewModel.OptimizeCommand.CanExecute(null));
         Assert.False(viewModel.IsCurrentPanelDpsInvalid);
@@ -52,6 +52,6 @@ public sealed class OptionalDpsCalibrationViewModelTests
         Assert.Empty(viewModel.CurrentWeaponAttackDpsInput);
         Assert.Equal(0, viewModel.Profile.CurrentPanelDps);
         Assert.Equal(0, viewModel.Profile.CurrentWeaponAttackDps);
-        Assert.True(viewModel.OptimizeCommand.CanExecute(null));
+        Assert.Equal(!changeSkill, viewModel.OptimizeCommand.CanExecute(null));
     }
 }

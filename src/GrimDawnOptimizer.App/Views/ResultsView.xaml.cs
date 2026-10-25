@@ -12,6 +12,7 @@ public partial class ResultsView : UserControl
 
     private void CandidatesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (DetailPanel is null || DetailTransform is null || !System.Windows.SystemParameters.ClientAreaAnimation) return;
         var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
         DetailPanel.BeginAnimation(
             OpacityProperty,

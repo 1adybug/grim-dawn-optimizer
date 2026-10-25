@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>GrimDawnOptimizer.Bridge</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="GrimDawnOptimizer.Bridge.Tests" />
+    <ProjectReference Include="../GrimDawnOptimizer.Core/GrimDawnOptimizer.Core.csproj" />
+    <!-- These presentation models are independent of WPF. Both shells use the
+         same source so the tested calculation and invalidation rules cannot drift. -->
+    <Compile Include="../GrimDawnOptimizer.App/ViewModels/*.cs" Link="ViewModels/%(Filename)%(Extension)" />
+    <Compile Include="../GrimDawnOptimizer.App/Services/UiPreferencesStore.cs" Link="Services/UiPreferencesStore.cs" />
+  </ItemGroup>
+</Project>

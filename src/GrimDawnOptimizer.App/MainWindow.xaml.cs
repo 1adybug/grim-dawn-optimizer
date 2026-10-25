@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using GrimDawnOptimizer.App.ViewModels;
 using Wpf.Ui.Appearance;
@@ -14,10 +15,12 @@ public partial class MainWindow : FluentWindow
 
     public MainWindow()
     {
+        Services.DesktopPalette.Apply(ApplicationTheme.Light);
         InitializeComponent();
         DataContext = _viewModel;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         SystemParameters.StaticPropertyChanged += SystemParameters_StaticPropertyChanged;
+        ApplicationThemeManager.Changed += ThemeChanged;
         ApplyTheme(_viewModel.SelectedThemePreference);
         Loaded += async (_, _) => await _viewModel.InitializeAsync();
         Closing += MainWindow_Closing;
@@ -34,7 +37,14 @@ public partial class MainWindow : FluentWindow
     {
         SystemParameters.StaticPropertyChanged -= SystemParameters_StaticPropertyChanged;
         _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
+        ApplicationThemeManager.Changed -= ThemeChanged;
     }
+
+    private void ThemeChanged(ApplicationTheme theme, Color accent) => Services.DesktopPalette.Apply(theme);
+    private void CloseWindow_Click(object sender, RoutedEventArgs e) => Close();
+    private void MinimizeWindow_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+    private void MaximizeWindow_Click(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
     private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -52,13 +62,11 @@ public partial class MainWindow : FluentWindow
         {
             if (!_systemThemeWatching)
             {
-                SystemThemeWatcher.Watch(this, WindowBackdropType.Mica, updateAccents: true);
+                SystemThemeWatcher.Watch(this, WindowBackdropType.None, updateAccents: false);
                 _systemThemeWatching = true;
             }
-            else
-            {
-                ApplicationThemeManager.ApplySystemTheme(updateAccent: true);
-            }
+            ApplicationThemeManager.ApplySystemTheme(updateAccent: false);
+            Services.DesktopPalette.Apply(ApplicationThemeManager.GetAppTheme());
             return;
         }
 
@@ -71,11 +79,13 @@ public partial class MainWindow : FluentWindow
         var theme = preference == Services.ThemePreference.Dark
             ? ApplicationTheme.Dark
             : ApplicationTheme.Light;
-        ApplicationThemeManager.Apply(theme, WindowBackdropType.Mica, updateAccent: true);
+        ApplicationThemeManager.Apply(theme, WindowBackdropType.None, updateAccent: false);
+        Services.DesktopPalette.Apply(theme);
     }
 
     private void AnimateWorkspace()
     {
+        if (!SystemParameters.ClientAreaAnimation) return;
         var easing = new QuadraticEase { EasingMode = EasingMode.EaseOut };
         WorkspaceHost.BeginAnimation(
             OpacityProperty,

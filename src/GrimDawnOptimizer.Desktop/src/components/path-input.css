@@ -1,0 +1,22 @@
+.path-input-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.path-input-editor > input {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 36px;
+  font-size: 12px;
+}
+.path-input-editor > button {
+  flex: 0 0 auto;
+  height: 36px;
+  padding-inline: 10px;
+  translate: none;
+}
+.path-input > .field-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

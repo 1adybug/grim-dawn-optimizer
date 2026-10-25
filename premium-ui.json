@@ -1,12 +1,19 @@
 {
   "profile": "product-admin",
-  "sourceRoots": ["src/GrimDawnOptimizer.App"],
+  "sourceRoots": ["src/GrimDawnOptimizer.Desktop/src"],
   "locale": "zh-CN",
   "canonicalMap": "UX-CONTRACT.md",
-  "requiredCapabilities": ["Form", "Select/Listbox", "Scrollbar"],
-  "ownership": { "Select/Listbox": "native" },
-  "requiredCommands": ["unit"],
+  "requiredCapabilities": ["Form", "Select/Listbox", "Scrollbar", "Table Selection"],
+  "ownership": { "Select/Listbox": "authored" },
+  "requiredCommands": ["check", "build", "unit", "bridge", "trainer", "transport", "sse"],
   "commands": {
-    "unit": "dotnet test tests/GrimDawnOptimizer.Tests/GrimDawnOptimizer.Tests.csproj"
-  }
+    "check": "npm run check",
+    "build": "npm run build:web",
+    "unit": "dotnet test GrimDawnOptimizer.sln",
+    "bridge": "python tests/desktop-bridge/smoke.py",
+    "trainer": "python tests/desktop-bridge/trainer-smoke.py",
+    "transport": "node tests/desktop-bridge/dev-transport.mjs",
+    "sse": "node tests/desktop-bridge/sse-backpressure.mjs"
+  },
+  "evidence": { "failurePaths": "tests/desktop-bridge/smoke.py" }
 }

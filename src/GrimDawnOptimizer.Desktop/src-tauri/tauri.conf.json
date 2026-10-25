@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Grim Dawn Optimizer",
+  "version": "1.0.21",
+  "identifier": "io.grimdawn.optimizer",
+  "build": {
+    "beforeDevCommand": "npm run engine:prepare && npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run engine:prepare && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "Grim Dawn Optimizer",
+      "width": 1440,
+      "height": 940,
+      "minWidth": 960,
+      "minHeight": 680,
+      "center": true,
+      "decorations": false,
+      "shadow": true,
+      "backgroundColor": "#F6F6F8"
+    }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "externalBin": ["binaries/grim-dawn-engine"],
+    "resources": {"../../../LICENSE": "LICENSE", "../../../THIRD-PARTY-NOTICES.md": "THIRD-PARTY-NOTICES.md", "../../../LICENSES/": "LICENSES/", "binaries/trainer-native/": "trainer-native/"},
+    "shortDescription": "恐怖黎明配装分析与单机实战助手",
+    "category": "Utility",
+    "windows": {
+      "webviewInstallMode": {"type": "downloadBootstrapper", "silent": true},
+      "nsis": {"languages": ["SimpChinese", "English"], "displayLanguageSelector": false, "installMode": "currentUser"}
+    }
+  }
+}

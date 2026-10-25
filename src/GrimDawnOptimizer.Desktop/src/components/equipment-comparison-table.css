@@ -1,0 +1,250 @@
+.equipment-comparison {
+  min-width: 0;
+  width: 100%;
+}
+.equipment-comparison-tools {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.equipment-table-frame {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+.equipment-table-frame > [data-slot="table-container"] {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.equipment-comparison-table {
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+.equipment-comparison-table:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.equipment-comparison-table :is(th, td) {
+  position: relative;
+  box-sizing: border-box;
+  height: var(--comparison-row-height, 40px);
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.equipment-comparison-table thead th {
+  z-index: 1;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+.equipment-comparison-table tbody tr {
+  --equipment-row-background: var(--background);
+  background: var(--equipment-row-background);
+}
+.equipment-comparison-table tbody tr:hover {
+  --equipment-row-background: var(--accent);
+}
+.equipment-comparison-table tbody :is(th, td) {
+  background: var(--equipment-row-background);
+}
+.equipment-comparison-table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+.equipment-comparison-table [data-pinned="left"] {
+  position: sticky;
+  z-index: 2;
+}
+.equipment-comparison-table thead [data-pinned="left"] {
+  z-index: 3;
+}
+.equipment-pin-boundary {
+  position: absolute;
+  z-index: 4;
+  top: 1px;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+.equipment-pin-boundary[data-overflow="true"]::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 1px;
+  width: 6px;
+  background: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--foreground) 14%, transparent),
+    transparent
+  );
+}
+.equipment-column-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-inline: 5px;
+}
+.equipment-column-resizer {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.equipment-column-resizer::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  right: 0;
+  width: 1px;
+  bottom: 10px;
+  background: var(--border);
+}
+.equipment-column-resizer:hover::after,
+.equipment-column-resizer[data-resizing="true"]::after,
+.equipment-column-resizer:focus-visible::after {
+  width: 3px;
+  background: var(--primary);
+}
+.equipment-column-resizer:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  background: var(--accent);
+}
+.equipment-cell-text {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.equipment-cell-text > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.equipment-comparison-table
+  :is(
+    [data-column="slot"],
+    [data-column="componentName"],
+    [data-column="augmentName"]
+  ) {
+  text-align: center;
+}
+.equipment-comparison-table
+  :is(
+    [data-column="slot"],
+    [data-column="componentName"],
+    [data-column="augmentName"]
+  )
+  .equipment-cell-text {
+  justify-content: center;
+  text-align: center;
+}
+.equipment-cell-text:hover > span:first-child {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.equipment-cell-text:active {
+  background: var(--muted);
+}
+.equipment-cell-text:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.equipment-comparison-table [data-column="candidateItem"] {
+  font-weight: 600;
+}
+.equipment-comparison-table [data-column="currentItem"],
+.equipment-comparison-table [data-column$="Source"],
+.equipment-comparison-table [data-column="source"],
+.equipment-cell-empty {
+  color: var(--muted-foreground);
+}
+.equipment-cell-empty {
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+.equipment-change-marker {
+  flex: 0 0 auto;
+  color: var(--highlight);
+  font-size: 10px;
+  font-weight: 500;
+}
+.equipment-cell-tooltip {
+  display: block;
+  max-width: min(420px, calc(100vw - 32px));
+  max-height: 40vh;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+}
+.equipment-cell-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+}
+.equipment-cell-fulltext {
+  max-height: 60vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+  user-select: text;
+}
+.equipment-cell-fulltext:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+.equipment-comparison-empty {
+  margin: 0;
+  padding: 20px 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+@media (forced-colors: active) {
+  .equipment-comparison-table :is(th, td) {
+    border-color: CanvasText;
+  }
+  .equipment-comparison-table thead th,
+  .equipment-comparison-table tbody :is(th, td) {
+    background: Canvas;
+    color: CanvasText;
+  }
+  .equipment-pin-boundary {
+    background: CanvasText;
+  }
+  .equipment-pin-boundary::after {
+    display: none;
+  }
+  .equipment-column-resizer::after {
+    background: ButtonText;
+  }
+}

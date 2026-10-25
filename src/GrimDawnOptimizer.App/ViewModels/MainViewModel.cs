@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text.Json;
 using GrimDawnOptimizer.App.Services;
 using GrimDawnOptimizer.Core.Contracts;
 using GrimDawnOptimizer.Core.Domain;
@@ -39,26 +40,48 @@ public sealed class MainViewModel : ObservableObject
     private bool _isBusy;
     private double _progressValue;
     private CancellationTokenSource? _cancellation;
+    private string? _loadedGameRoot;
+    private string? _loadedSaveRoot;
+    private string? _lastCharacterPath;
+    private Dictionary<string, string> _importedSourceHashes = new(StringComparer.OrdinalIgnoreCase);
+    private bool _isDemo;
+    private bool _lastImportSucceeded;
+    private bool _updatingCharacter;
+    private int _selectedGoalIndex;
+    private string _currentPanelDpsDisplay = "—";
+    private string _currentDefaultDpsDisplay = "—";
+    private string _currentHealthDisplay = "—";
+    private string _currentPanelCoverage = "载入角色后自动检查计算覆盖情况。";
+    private string _currentBuildSummary = "载入角色后自动计算当前配装。";
+    private string _requiredStatus = "请载入并选择角色。";
+    private bool _hasCurrentPanelWarning;
+    private bool _canAnalyzeCurrentBuild;
+    private long _analysisRevision;
 
-    public MainViewModel()
+    public MainViewModel() : this(new GameDataSource(), new SaveReader(),
+        new BeamSearchOptimizer(new CharacterStatEngine(), new CombatSimulator()),
+        new JsonProfileStore(), new JsonSourceHistoryStore()) { }
+
+    public MainViewModel(IGameDataSource gameDataSource, ISaveReader saveReader,
+        ILoadoutOptimizer optimizer, IProfileStore profileStore, ISourceHistoryStore sourceHistoryStore,
+        UiPreferencesStore? uiPreferencesStore = null)
     {
-        _gameDataSource = new GameDataSource();
-        _saveReader = new SaveReader();
-        var statEngine = new CharacterStatEngine();
-        var simulator = new CombatSimulator();
-        _optimizer = new BeamSearchOptimizer(statEngine, simulator);
-        _profileStore = new JsonProfileStore();
-        _sourceHistoryStore = new JsonSourceHistoryStore();
-        _uiPreferencesStore = new UiPreferencesStore();
+        _gameDataSource = gameDataSource;
+        _saveReader = saveReader;
+        _optimizer = optimizer;
+        _profileStore = profileStore;
+        _sourceHistoryStore = sourceHistoryStore;
+        _uiPreferencesStore = uiPreferencesStore ?? new UiPreferencesStore();
 
         DiscoverCommand = new AsyncRelayCommand(DiscoverAsync, () => !IsBusy);
         LoadCommand = new AsyncRelayCommand(LoadSelectedAsync, () => !IsBusy && SelectedInstallation is not null && SelectedSaveLocation is not null);
+        RefreshCharacterCommand = new AsyncRelayCommand(LoadSelectedAsync, () =>
+            !IsBusy && !_isDemo && SelectedCharacter is not null && SelectedInstallation is not null && SelectedSaveLocation is not null);
         OptimizeCommand = new AsyncRelayCommand(OptimizeAsync, () =>
             !IsBusy &&
             SelectedCharacter is not null &&
             SelectedCharacter.Items.Count > 0 &&
-            IsCurrentWeaponAttackDpsValid &&
-            IsCurrentPanelDpsValid && IsPanelStatsValid);
+            _canAnalyzeCurrentBuild);
         ClearPanelStatsCommand = new RelayCommand(_ => ResetPanelStats(), _ => !IsBusy);
         DemoCommand = new RelayCommand(_ => LoadDemo(), _ => !IsBusy);
         CancelCommand = new RelayCommand(_ => _cancellation?.Cancel(), _ => IsBusy);
@@ -76,17 +99,32 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(HasCharacters));
             OnPropertyChanged(nameof(HasNoCharacters));
         };
+        foreach (var metric in _profile.Metrics) Metrics.Add(metric);
     }
 
     public ObservableCollection<GameInstallation> Installations { get; } = [];
     public ObservableCollection<SaveLocation> SaveLocations { get; } = [];
     public ObservableCollection<CharacterSnapshot> Characters { get; } = [];
     public ObservableCollection<CharacterSkill> ActiveSkills { get; } = [];
+    public ObservableCollection<ItemBuffStateViewModel> ItemBuffStates { get; } = [];
+    public bool HasItemBuffStates => ItemBuffStates.Count > 0;
+    private void ItemBuffStateChanged()
+    {
+        if (SelectedCharacter is null) return;
+        SelectedCharacter.ActiveItemSkillRecords = ItemBuffStates.Where(x => x.IsActive)
+            .Select(x => x.Record).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Results.Clear();
+        SelectedResult = null;
+        ResetCurrentPanelDps();
+        ResetPanelStats();
+        ApplySelectedSkillRotation();
+    }
     public ObservableCollection<MetricRule> Metrics { get; } = [];
     public ObservableCollection<ResultViewModel> Results { get; } = [];
 
     public AsyncRelayCommand DiscoverCommand { get; }
     public AsyncRelayCommand LoadCommand { get; }
+    public AsyncRelayCommand RefreshCharacterCommand { get; }
     public AsyncRelayCommand OptimizeCommand { get; }
     public RelayCommand DemoCommand { get; }
     public RelayCommand CancelCommand { get; }
@@ -161,17 +199,15 @@ public sealed class MainViewModel : ObservableObject
     public string AppVersion { get; } = FormatVersion(typeof(MainViewModel).Assembly.GetName().Version);
     public string WorkspaceTitle => CurrentWorkspace switch
     {
-        WorkspaceSection.Sources => "数据源",
-        WorkspaceSection.Build => "构筑参数",
-        WorkspaceSection.Search => "运行优化",
-        WorkspaceSection.Results => "最佳候选",
+        WorkspaceSection.Sources => "角色",
+        WorkspaceSection.Build or WorkspaceSection.Search => "配装分析",
+        WorkspaceSection.Results => "方案对比",
         _ => string.Empty
     };
     public string WorkspaceDescription => CurrentWorkspace switch
     {
         WorkspaceSection.Sources => "连接游戏与存档，选择要分析的角色。",
-        WorkspaceSection.Build => "确认评分偏好、战斗目标与主攻技能。",
-        WorkspaceSection.Search => "从游戏数据计算 DPS，按需校准并设置搜索范围。",
+        WorkspaceSection.Build or WorkspaceSection.Search => "查看当前配装，选择目标后开始分析。",
         WorkspaceSection.Results => "比较候选方案、装备替换与来源位置。",
         _ => string.Empty
     };
@@ -198,6 +234,7 @@ public sealed class MainViewModel : ObservableObject
                 RememberGameDirectory(value.RootPath);
                 ScheduleSourceHistorySave();
             }
+            if (!_restoringSources) InvalidateMismatchedSources();
             RefreshCommands();
         }
     }
@@ -214,6 +251,7 @@ public sealed class MainViewModel : ObservableObject
                 RememberSaveDirectory(value.RootPath);
                 ScheduleSourceHistorySave();
             }
+            if (!_restoringSources) InvalidateMismatchedSources();
             RefreshCommands();
         }
     }
@@ -229,27 +267,54 @@ public sealed class MainViewModel : ObservableObject
             ResetCurrentPanelDps();
             ResetPanelStats();
             ActiveSkills.Clear();
+            ItemBuffStates.Clear();
+            _updatingCharacter = true;
+            if (value is not null) _lastCharacterPath = value.SaveFilePath;
             if (value is not null && _catalog is not null)
             {
+                ActiveSkills.Add(DefaultAttackSkill());
+                value.ActiveItemSkillRecords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var buff in SkillRotationFactory.ResolveAvailableGrantedSkills(value, _catalog)
+                             .Concat(SkillRotationFactory.ResolveTemporaryLearnedSkills(value, _catalog))
+                             .Where(x => x.CanAffectPanelStats && !x.IsPassive && !x.IsToggle)
+                             .GroupBy(x => x.Record, StringComparer.OrdinalIgnoreCase).Select(x => x.First())
+                             .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase))
+                    ItemBuffStates.Add(new ItemBuffStateViewModel(buff.Record, buff.Name,
+                        buff.DurationSeconds > 0
+                            ? $"持续 {buff.DurationSeconds:0.##} 秒；按激活时的面板计算，候选须保留技能来源并满足武器条件。"
+                            : "按激活时的面板计算，候选须保留技能来源并满足武器条件。", ItemBuffStateChanged));
                 foreach (var skill in value.Skills
                              .Where(x => x.Level > 0 && SkillRotationFactory.IsDirectAttackSkill(x, _catalog))
                              .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase))
                     ActiveSkills.Add(skill);
 
-                if (!string.IsNullOrWhiteSpace(value.PrimarySkillRecord) &&
-                    ActiveSkills.All(x => !x.Record.Equals(value.PrimarySkillRecord, StringComparison.OrdinalIgnoreCase)) &&
-                    _catalog.Records.TryGetValue(value.PrimarySkillRecord, out var primaryRecord))
+                foreach (var grant in SkillRotationFactory.ResolveGrantedSkills(value, _catalog)
+                             .Where(x => string.IsNullOrWhiteSpace(x.AutoControllerRecord))
+                             .OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase))
                 {
-                    var tag = primaryRecord.Text("skillDisplayName");
+                    var skill = new CharacterSkill(grant.Record, grant.Name, grant.Level, 0, true, "", "");
+                    if (SkillRotationFactory.IsDirectAttackSkill(skill, _catalog) &&
+                        ActiveSkills.All(x => !x.Record.Equals(skill.Record, StringComparison.OrdinalIgnoreCase)))
+                        ActiveSkills.Add(skill);
+                }
+
+                if (!string.IsNullOrWhiteSpace(value.PrimarySkillRecord) &&
+                    ActiveSkills.All(x => !x.Record.Equals(value.PrimarySkillRecord, StringComparison.OrdinalIgnoreCase)))
+                {
+                    _catalog.Records.TryGetValue(value.PrimarySkillRecord, out var primaryRecord);
+                    var tag = primaryRecord?.Text("skillDisplayName") ?? "";
                     var name = _catalog.Tags.GetValueOrDefault(tag, Path.GetFileNameWithoutExtension(value.PrimarySkillRecord));
                     var level = ResolveGrantedSkillLevel(value, value.PrimarySkillRecord, _catalog);
-                    ActiveSkills.Insert(0, new CharacterSkill(value.PrimarySkillRecord, name, level, 0, true, string.Empty, string.Empty));
+                    ActiveSkills.Add(new CharacterSkill(value.PrimarySkillRecord, name, level, 0, true, string.Empty, string.Empty));
                 }
             }
             SelectedSkill = ActiveSkills.FirstOrDefault(x =>
                                 value is not null && x.Record.Equals(value.PrimarySkillRecord, StringComparison.OrdinalIgnoreCase))
-                            ?? ActiveSkills.FirstOrDefault();
+                            ?? ActiveSkills.FirstOrDefault(x => string.IsNullOrWhiteSpace(x.Record));
+            _updatingCharacter = false;
             ApplyAverageBossScenario();
+            ApplySelectedSkillRotation();
+            OnPropertyChanged(nameof(HasItemBuffStates));
             OnPropertyChanged(nameof(CharacterSummary));
             OnPropertyChanged(nameof(BuildFoundationSummary));
             OnPropertyChanged(nameof(CanOpenBuild));
@@ -257,6 +322,8 @@ public sealed class MainViewModel : ObservableObject
             NavigateCommand.RaiseCanExecuteChanged();
             if (value is null && CurrentWorkspace != WorkspaceSection.Sources)
                 CurrentWorkspace = WorkspaceSection.Sources;
+            else if (value is not null)
+                CurrentWorkspace = WorkspaceSection.Build;
             RefreshCommands();
         }
     }
@@ -268,6 +335,8 @@ public sealed class MainViewModel : ObservableObject
         {
             if (!SetProperty(ref _selectedSkill, value)) return;
             ResetCurrentPanelDps();
+            ClearStaleResults();
+            if (_updatingCharacter) return;
             ApplySelectedSkillRotation();
             OnPropertyChanged(nameof(BuildFoundationSummary));
         }
@@ -285,17 +354,74 @@ public sealed class MainViewModel : ObservableObject
         private set
         {
             if (!SetProperty(ref _profile, value)) return;
+            NormalizeAutomaticProfileDefaults();
             ResetCurrentPanelDps();
             ResetPanelStats();
             Metrics.Clear();
             foreach (var metric in value.Metrics) Metrics.Add(metric);
+            DetectSelectedGoal();
             OnPropertyChanged(nameof(SelectedDifficulty));
             OnPropertyChanged(nameof(EnemyDamageIncreasePercent));
+            OnPropertyChanged(nameof(ScenarioDurationSeconds));
+            OnPropertyChanged(nameof(ScenarioTargetCount));
             foreach (var row in ResistanceDebuffs) row.Refresh();
         }
     }
 
     public IReadOnlyList<string> DifficultyOptions { get; } = ["普通（新手）", "老兵", "精英", "终极"];
+    public ObservableCollection<string> GoalOptions { get; } = ["均衡", "输出优先", "生存优先"];
+    public int SelectedGoalIndex
+    {
+        get => _selectedGoalIndex;
+        set
+        {
+            if (value < 0 || value >= GoalOptions.Count || !SetProperty(ref _selectedGoalIndex, value)) return;
+            if (value < 3)
+            {
+                var weights = GoalWeights(value);
+                Metrics.Clear();
+                foreach (var metric in SupportedMetricCatalog.CreateDefaults())
+                {
+                    metric.Weight = metric.Key == "dps" ? weights.Output : weights.Survival;
+                    Metrics.Add(metric);
+                }
+                Profile.Metrics = Metrics.ToList();
+                if (GoalOptions.Count > 3) GoalOptions.RemoveAt(3);
+            }
+            ClearStaleResults();
+        }
+    }
+
+    private static (double Output, double Survival) GoalWeights(int index) => index switch
+    {
+        1 => (2, 1), 2 => (1, 2), _ => (1, 1)
+    };
+
+    private void DetectSelectedGoal()
+    {
+        var output = Metrics.FirstOrDefault(x => x.Key == "dps")?.Weight ?? 0;
+        var survival = Metrics.FirstOrDefault(x => x.Key == "effectiveHealth")?.Weight ?? 0;
+        _selectedGoalIndex = Enumerable.Range(0, 3).FirstOrDefault(index =>
+        {
+            var weights = GoalWeights(index);
+            return Math.Abs(output - weights.Output) < 1e-9 && Math.Abs(survival - weights.Survival) < 1e-9;
+        }, -1);
+        if (_selectedGoalIndex < 0)
+        {
+            if (GoalOptions.Count == 3) GoalOptions.Add("自定义（已保存）");
+            _selectedGoalIndex = 3;
+        }
+        else if (GoalOptions.Count > 3) GoalOptions.RemoveAt(3);
+        OnPropertyChanged(nameof(SelectedGoalIndex));
+    }
+
+    public string CurrentPanelDpsDisplay { get => _currentPanelDpsDisplay; private set => SetProperty(ref _currentPanelDpsDisplay, value); }
+    public string CurrentDefaultDpsDisplay { get => _currentDefaultDpsDisplay; private set => SetProperty(ref _currentDefaultDpsDisplay, value); }
+    public string CurrentHealthDisplay { get => _currentHealthDisplay; private set => SetProperty(ref _currentHealthDisplay, value); }
+    public string CurrentPanelCoverage { get => _currentPanelCoverage; private set => SetProperty(ref _currentPanelCoverage, value); }
+    public string CurrentBuildSummary { get => _currentBuildSummary; private set => SetProperty(ref _currentBuildSummary, value); }
+    public string RequiredStatus { get => _requiredStatus; private set => SetProperty(ref _requiredStatus, value); }
+    public bool HasCurrentPanelWarning { get => _hasCurrentPanelWarning; private set => SetProperty(ref _hasCurrentPanelWarning, value); }
     public int SelectedDifficulty
     {
         get => (int)Profile.Scenario.Difficulty;
@@ -308,6 +434,7 @@ public sealed class MainViewModel : ObservableObject
             ApplyAverageBossScenario();
             foreach (var row in ResistanceDebuffs) row.Refresh();
             ClearStaleResults();
+            RefreshCurrentBuildPreview();
             OnPropertyChanged();
         }
     }
@@ -316,11 +443,38 @@ public sealed class MainViewModel : ObservableObject
         get => Profile.Scenario.EnemyDamageIncreasePercent;
         set
         {
+            if (!double.IsFinite(value)) return;
             Profile.Scenario.EnemyDamageIncreasePercent = Math.Clamp(value, 0, 1000);
             ClearStaleResults();
             OnPropertyChanged();
             OnPropertyChanged(nameof(EnemyProfileSummary));
             OnPropertyChanged(nameof(ScoreBenchmarkSummary));
+        }
+    }
+    public double ScenarioDurationSeconds
+    {
+        get => Profile.Scenario.DurationSeconds;
+        set
+        {
+            if (!double.IsFinite(value)) return;
+            var seconds = Math.Clamp(value, 1, 300);
+            if (Math.Abs(Profile.Scenario.DurationSeconds - seconds) < 1e-9) return;
+            Profile.Scenario.DurationSeconds = seconds;
+            ClearStaleResults();
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ScoreBenchmarkSummary));
+        }
+    }
+    public int ScenarioTargetCount
+    {
+        get => Profile.Scenario.TargetCount;
+        set
+        {
+            var count = Math.Clamp(value, 1, 20);
+            if (Profile.Scenario.TargetCount == count) return;
+            Profile.Scenario.TargetCount = count;
+            ClearStaleResults();
+            OnPropertyChanged();
         }
     }
     private IReadOnlyList<ResistanceDebuffViewModel>? _resistanceDebuffs;
@@ -334,8 +488,14 @@ public sealed class MainViewModel : ObservableObject
             () => DifficultyRules.PlayerPenalty(Profile.Scenario, x.Item1))).ToArray();
     private void ClearStaleResults()
     {
+        var hadResults = Results.Count > 0;
+        _analysisRevision++;
         Results.Clear();
         SelectedResult = null;
+        SearchStats = "尚未分析当前设置";
+        if (hadResults && !IsBusy) Status = "配装或设置已改变，请重新分析。";
+        if (CurrentWorkspace == WorkspaceSection.Results)
+            CurrentWorkspace = SelectedCharacter is null ? WorkspaceSection.Sources : WorkspaceSection.Build;
     }
 
     public string Status { get => _status; private set => SetProperty(ref _status, value); }
@@ -470,7 +630,8 @@ public sealed class MainViewModel : ObservableObject
 
     private void Navigate(object? value)
     {
-        if (value is WorkspaceSection section && CanNavigate(section)) CurrentWorkspace = section;
+        if (value is WorkspaceSection section && CanNavigate(section))
+            CurrentWorkspace = section == WorkspaceSection.Search ? WorkspaceSection.Build : section;
     }
 
     private bool CanNavigate(object? value) => value switch
@@ -526,6 +687,7 @@ public sealed class MainViewModel : ObservableObject
                 .GroupBy(x => JsonSourceHistoryStore.NormalizePath(x.RootPath), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
 
+            _restoringSources = true;
             Installations.Clear();
             SaveLocations.Clear();
             foreach (var path in _sourceHistory.GameDirectories
@@ -557,6 +719,7 @@ public sealed class MainViewModel : ObservableObject
             {
                 _restoringSources = false;
             }
+            InvalidateMismatchedSources();
             if (SelectedInstallation is not null) RememberGameDirectory(SelectedInstallation.RootPath);
             if (SelectedSaveLocation is not null) RememberSaveDirectory(SelectedSaveLocation.RootPath);
             await PersistSourceHistoryAsync();
@@ -566,7 +729,7 @@ public sealed class MainViewModel : ObservableObject
             return true;
         }
         catch (Exception ex) { Status = $"路径发现失败：{ex.Message}"; return false; }
-        finally { IsBusy = false; }
+        finally { _restoringSources = false; IsBusy = false; }
     }
 
     private void DeleteGameDirectory(object? value)
@@ -642,7 +805,8 @@ public sealed class MainViewModel : ObservableObject
         path = JsonSourceHistoryStore.NormalizePath(path);
         if (string.IsNullOrWhiteSpace(path)) return;
         RemovePath(_sourceHistory.RemovedGameDirectories, path);
-        MoveToFront(_sourceHistory.GameDirectories, path);
+        _sourceHistory.GameDirectories.Clear();
+        _sourceHistory.GameDirectories.Add(path);
         _sourceHistory.LastGameDirectory = path;
     }
 
@@ -651,7 +815,8 @@ public sealed class MainViewModel : ObservableObject
         path = JsonSourceHistoryStore.NormalizePath(path);
         if (string.IsNullOrWhiteSpace(path)) return;
         RemovePath(_sourceHistory.RemovedSaveDirectories, path);
-        MoveToFront(_sourceHistory.SaveDirectories, path);
+        _sourceHistory.SaveDirectories.Clear();
+        _sourceHistory.SaveDirectories.Add(path);
         _sourceHistory.LastSaveDirectory = path;
     }
 
@@ -667,8 +832,8 @@ public sealed class MainViewModel : ObservableObject
                 SchemaVersion = _sourceHistory.SchemaVersion,
                 GameDirectories = _sourceHistory.GameDirectories.ToList(),
                 SaveDirectories = _sourceHistory.SaveDirectories.ToList(),
-                RemovedGameDirectories = _sourceHistory.RemovedGameDirectories.ToList(),
-                RemovedSaveDirectories = _sourceHistory.RemovedSaveDirectories.ToList(),
+                RemovedGameDirectories = [],
+                RemovedSaveDirectories = [],
                 LastGameDirectory = _sourceHistory.LastGameDirectory,
                 LastSaveDirectory = _sourceHistory.LastSaveDirectory
             };
@@ -692,12 +857,6 @@ public sealed class MainViewModel : ObservableObject
         catch (UnauthorizedAccessException) { }
     }
 
-    private static void MoveToFront(List<string> paths, string path)
-    {
-        RemovePath(paths, path);
-        paths.Insert(0, path);
-    }
-
     private static void AddUnique(List<string> paths, string path)
     {
         if (!paths.Any(x => PathEquals(x, path))) paths.Add(path);
@@ -710,8 +869,26 @@ public sealed class MainViewModel : ObservableObject
         JsonSourceHistoryStore.NormalizePath(left)
             .Equals(JsonSourceHistoryStore.NormalizePath(right), StringComparison.OrdinalIgnoreCase);
 
+    private void InvalidateMismatchedSources()
+    {
+        if (_catalog is null || !_isDemo &&
+            PathEquals(_loadedGameRoot, SelectedInstallation?.RootPath) &&
+            PathEquals(_loadedSaveRoot, SelectedSaveLocation?.RootPath)) return;
+        _catalog = null;
+        _isDemo = false;
+        _importedSourceHashes.Clear();
+        Characters.Clear();
+        SelectedCharacter = null;
+        ClearStaleResults();
+        RequiredStatus = "数据源已改变，请载入角色。";
+        CurrentWorkspace = WorkspaceSection.Sources;
+    }
+
     private async Task LoadSelectedAsync()
     {
+        _lastImportSucceeded = false;
+        var previousPath = SelectedCharacter?.SaveFilePath ?? _lastCharacterPath;
+        var previousSkill = SelectedSkill;
         // The game may have been restarted from a different installation, or a new
         // character may have been saved since this app opened. Refresh before import.
         if (!await DiscoverAsync()) return;
@@ -724,18 +901,51 @@ public sealed class MainViewModel : ObservableObject
         {
             var progress = new Progress<double>(x => ProgressValue = x * 100);
             var installation = SelectedInstallation;
+            var saveLocation = SelectedSaveLocation;
             var token = _cancellation.Token;
             // Cache JSON, ARZ records, and animation resources all perform CPU work
             // after I/O awaits. Keep that continuation off the UI dispatcher.
-            _catalog = await Task.Run(
+            var catalog = await Task.Run(
                 () => _gameDataSource.LoadCatalogAsync(installation, progress, token), token);
             Status = "正在只读导入角色与仓库…";
-            var characters = await _saveReader.ReadCharactersAsync(SelectedSaveLocation, _catalog, _cancellation.Token);
+            var beforeHashes = await ComputeLocationHashesAsync(saveLocation, token);
+            var characters = await _saveReader.ReadCharactersAsync(saveLocation, catalog, token);
+            var afterHashes = await ComputeLocationHashesAsync(saveLocation, token);
+            if (!HashesMatch(beforeHashes, afterHashes))
+                throw new IOException("导入期间游戏存档发生变化，请在游戏保存完成后刷新。");
+            if (!PathEquals(installation.RootPath, SelectedInstallation?.RootPath) ||
+                !PathEquals(saveLocation.RootPath, SelectedSaveLocation?.RootPath))
+                throw new IOException("数据源已改变，请载入当前选择的目录。");
+
+            // Commit the database and its matching snapshots together. Failed or
+            // cancelled imports cannot pair an old character with a new database.
+            var sameSource = PathEquals(_loadedSaveRoot, saveLocation.RootPath);
+            _catalog = catalog;
+            _loadedGameRoot = installation.RootPath;
+            _loadedSaveRoot = saveLocation.RootPath;
+            _isDemo = false;
+            _importedSourceHashes = afterHashes;
+            _lastImportSucceeded = true;
             Characters.Clear();
             foreach (var character in characters) Characters.Add(character);
-            SelectedCharacter = Characters.FirstOrDefault(x => x.Items.Count > 0) ?? Characters.FirstOrDefault();
+            var retainedCharacter = Characters.FirstOrDefault(x => PathEquals(x.SaveFilePath, previousPath));
+            SelectedCharacter = retainedCharacter ??
+                (Characters.Count == 1 && (!sameSource || string.IsNullOrWhiteSpace(previousPath)) ? Characters[0] : null);
+            if (retainedCharacter is not null && previousSkill is not null)
+            {
+                var retainedSkill = ActiveSkills.FirstOrDefault(x => x.Record.Equals(previousSkill.Record, StringComparison.OrdinalIgnoreCase));
+                if (retainedSkill is null)
+                {
+                    // Keep an unavailable former selection visible in the picker;
+                    // selecting an item outside ItemsSource can otherwise clear it.
+                    ActiveSkills.Add(previousSkill);
+                    retainedSkill = previousSkill;
+                }
+                SelectedSkill = retainedSkill;
+            }
+            if (SelectedCharacter is null) RefreshCurrentBuildPreview();
             Status = SelectedCharacter is null
-                ? "没有找到可读取的角色"
+                ? Characters.Count == 0 ? "没有找到可读取的角色" : "已载入角色列表，请选择要分析的角色。"
                 : $"已载入 {Characters.Count} 个角色；{SelectedCharacter.ImportWarnings.Count} 条导入提示";
             if (SelectedCharacter is not null) CurrentWorkspace = WorkspaceSection.Build;
         }
@@ -748,35 +958,24 @@ public sealed class MainViewModel : ObservableObject
     {
         var (character, catalog) = DemoDataFactory.Create();
         _catalog = catalog;
+        _isDemo = true;
+        _importedSourceHashes.Clear();
         Characters.Clear();
         Characters.Add(character);
         SelectedCharacter = character;
-        Status = "已载入脱敏演示装备池；可直接运行优化，DPS 校准为可选项";
+        Status = "已载入演示装备池，可直接开始配装分析。";
         CurrentWorkspace = WorkspaceSection.Build;
     }
 
     private async Task OptimizeAsync()
     {
         if (SelectedCharacter is null || _catalog is null) return;
-        if (!IsPanelStatsValid) { Status = "请修正角色属性校准中的无效输入"; return; }
-        var panelDps = 0d;
-        if (UsePanelDpsCalibration && !TryParseRequiredDps(CurrentPanelDpsInput, out panelDps))
-        {
-            Status = "请先输入当前主攻技能的游戏面板 DPS";
-            return;
-        }
-        var weaponAttackDps = 0d;
-        if (UsesSeparateWeaponDpsCalibration &&
-            !TryParseRequiredDps(CurrentWeaponAttackDpsInput, out weaponAttackDps))
-        {
-            Status = "当前技能还需要输入默认武器攻击的游戏面板 DPS";
-            return;
-        }
-        Profile.CurrentWeaponAttackDps = weaponAttackDps;
-        Profile.CurrentPanelDps = panelDps;
+        ResetCurrentPanelDps();
+        ResetPanelStats();
+        ApplySelectedSkillRotation();
+        if (!_canAnalyzeCurrentBuild) { Status = RequiredStatus; return; }
         IsBusy = true;
-        Results.Clear();
-        SelectedResult = null;
+        ClearStaleResults();
         ProgressValue = 0;
         Status = "正在生成装备与附件变体…";
         _cancellation = new CancellationTokenSource();
@@ -784,55 +983,75 @@ public sealed class MainViewModel : ObservableObject
         SyncProfile();
         try
         {
+            var character = SelectedCharacter;
+            var catalog = _catalog;
+            var saveLocation = _isDemo ? null : SelectedSaveLocation;
+            var beforeHashes = saveLocation is null
+                ? await ComputeSourceHashesAsync(character, _cancellation.Token)
+                : await ComputeLocationHashesAsync(saveLocation, _cancellation.Token);
+            if (!_isDemo && !HashesMatch(_importedSourceHashes, beforeHashes))
+            {
+                // A save made after import is a new snapshot, not a safe baseline
+                // for this run. Reload it and let the user see the changed build.
+                _cancellation.Dispose();
+                _cancellation = null;
+                IsBusy = false;
+                await LoadSelectedAsync();
+                if (_lastImportSucceeded && SelectedCharacter is not null && !HashesMatch(_importedSourceHashes, beforeHashes))
+                    Status = "存档已发生变化，请确认刷新后的角色状态再开始分析。";
+                else if (_lastImportSucceeded && SelectedCharacter is not null)
+                    Status = "存档已更新并重新载入，请确认当前配装后再次开始分析。";
+                return;
+            }
             await SaveProfileAsync();
-            var beforeHashes = await ComputeSourceHashesAsync(SelectedCharacter, _cancellation.Token);
-            var availableAttachments = _gameDataSource.GetUnlockedAttachments(SelectedCharacter, _catalog);
-            var attachments = Profile.UseUnlockedAttachments
+            var runProfile = JsonSerializer.Deserialize<OptimizationProfile>(JsonSerializer.Serialize(Profile))!;
+            var revision = _analysisRevision;
+            var availableAttachments = _gameDataSource.GetUnlockedAttachments(character, catalog);
+            var attachments = runProfile.UseUnlockedAttachments
                 ? availableAttachments
                 : availableAttachments.Where(x => x.IsOwned).ToArray();
             var progress = new Progress<SearchProgress>(x =>
             {
-                Status = x.Message;
-                SearchStats = $"{x.EvaluatedCandidates:N0} 次评估 · {x.Elapsed.TotalSeconds:0.0}s · {x.Phase}";
-                ProgressValue = Math.Min(100, x.Elapsed.TotalSeconds / Math.Max(1, Profile.SearchBudgetSeconds) * 100);
+                if (!IsBusy || _analysisRevision != revision) return;
+                UpdateSearchProgress(x, runProfile.SearchBudgetSeconds);
             });
             var run = await Task.Run(() => _optimizer.OptimizeAsync(
-                SelectedCharacter, SelectedCharacter.Items, attachments, _catalog, Profile, progress, _cancellation.Token),
+                character, character.Items, attachments, catalog, runProfile, progress, _cancellation.Token),
                 _cancellation.Token);
-            var afterHashes = await ComputeSourceHashesAsync(SelectedCharacter, _cancellation.Token);
-            if (beforeHashes.Any(x => !afterHashes.TryGetValue(x.Key, out var hash) || hash != x.Value))
-                throw new IOException("只读保护校验失败：源存档哈希发生变化");
+            var afterHashes = saveLocation is null
+                ? await ComputeSourceHashesAsync(character, _cancellation.Token)
+                : await ComputeLocationHashesAsync(saveLocation, _cancellation.Token);
+            if (!HashesMatch(beforeHashes, afterHashes))
+                throw new IOException("分析期间源存档发生变化，结果已舍弃；请刷新角色后重试。");
+            if (_analysisRevision != revision || !ReferenceEquals(character, SelectedCharacter) || !ReferenceEquals(catalog, _catalog))
+            {
+                Status = "分析设置已改变，旧结果已舍弃，请重新开始分析。";
+                return;
+            }
 
-            foreach (var result in run.Results) Results.Add(new ResultViewModel(result, SelectedCharacter, Profile.Metrics));
+            foreach (var result in run.Results) Results.Add(new ResultViewModel(result, character, runProfile.Metrics));
             SelectedResult = Results.FirstOrDefault();
             SearchStats = $"{run.EvaluatedCandidates:N0} 次评估 · {run.Elapsed.TotalSeconds:0.0}s · {run.Iterations} 轮";
-            var calibration = Profile.RuntimeDpsCalibrationMode switch
-            {
-                DpsCalibrationMode.SingleAnchor =>
-                    $"；单点 DPS 校准 ×{Profile.RuntimeDpsCalibrationFactor:0.000}",
-                DpsCalibrationMode.DualAnchor =>
-                    $"；武器校准 ×{Profile.RuntimeWeaponDpsCalibrationFactor:0.000}，技能附加校准 ×{Profile.RuntimeSkillAddedDpsCalibrationFactor:0.000}",
-                DpsCalibrationMode.SingleAnchorFallback =>
-                    $"；双锚点差值不稳定，已回退单点校准 ×{Profile.RuntimeDpsCalibrationFactor:0.000}",
-                _ => string.Empty
-            };
-            Status = $"{run.StopReason}{calibration}；存档哈希保持不变";
+            Status = Results.Count > 0
+                ? $"分析完成，得到 {Results.Count} 套候选；分析期间存档未变化"
+                : "未找到可用候选，请检查主攻要求与装备来源。";
             ProgressValue = 100;
             if (Results.Count > 0) CurrentWorkspace = WorkspaceSection.Results;
         }
         catch (OperationCanceledException) { Status = "优化已取消"; }
         catch (Exception ex) { Status = $"优化失败：{ex.Message}"; }
-        finally { IsBusy = false; _cancellation.Dispose(); _cancellation = null; }
+        finally { IsBusy = false; _cancellation?.Dispose(); _cancellation = null; }
     }
 
     private void SyncProfile()
     {
+        NormalizeAutomaticProfileDefaults();
         Profile.Metrics = Metrics.ToList();
         Profile.SchemaVersion = 7;
         ApplySelectedSkillRotation();
-        Profile.SearchBudgetSeconds = Math.Clamp(Profile.SearchBudgetSeconds, 1, 300);
-        Profile.ResultCount = Math.Clamp(Profile.ResultCount, 1, 50);
-        Profile.MonteCarloTrials = Math.Clamp(Profile.MonteCarloTrials, 500, 10_000);
+        Profile.SearchBudgetSeconds = 180;
+        Profile.ResultCount = 10;
+        Profile.MonteCarloTrials = 4000;
         Profile.CurrentWeaponAttackDps = UsesSeparateWeaponDpsCalibration &&
                                          TryParseRequiredDps(CurrentWeaponAttackDpsInput, out var weaponAttackDps)
             ? weaponAttackDps
@@ -840,12 +1059,131 @@ public sealed class MainViewModel : ObservableObject
         Profile.CurrentPanelDps = UsePanelDpsCalibration && TryParseRequiredDps(CurrentPanelDpsInput, out var panelDps) ? panelDps : 0;
     }
 
+    private void NormalizeAutomaticProfileDefaults()
+    {
+        // These inputs are no longer user choices in the automatic workflow.
+        // A saved legacy value must not silently change its advertised scope.
+        Profile.UseUnlockedAttachments = true;
+        Profile.Scenario.IncomingDamage = new IncomingDamageProfile();
+        Profile.Scenario.EnemyArmorAbsorption = 70;
+        OnPropertyChanged(nameof(EnemyProfileSummary));
+        OnPropertyChanged(nameof(ScoreBenchmarkSummary));
+    }
+
+    private void UpdateSearchProgress(SearchProgress progress, int searchBudgetSeconds)
+    {
+        Status = progress.Phase switch
+        {
+            "LocalSearch" or "MultiStart" => "正在细化候选…",
+            "MonteCarlo" => "正在复核结果…",
+            _ => "正在比较配装…"
+        };
+        SearchStats = $"已评估 {progress.EvaluatedCandidates:N0} 个方案 · 已用 {progress.Elapsed.TotalSeconds:0.0} 秒";
+        ProgressValue = Math.Min(100, progress.Elapsed.TotalSeconds / Math.Max(1, searchBudgetSeconds) * 100);
+    }
+
     private void ApplySelectedSkillRotation()
     {
-        if (SelectedCharacter is null || _catalog is null) return;
-        Profile.Rotation = SkillRotationFactory.Build(SelectedCharacter, _catalog, SelectedSkill);
+        if (SelectedCharacter is not null && _catalog is not null)
+            Profile.Rotation = SkillRotationFactory.BuildSelectedRecord(SelectedCharacter, _catalog,
+                SelectedSkill?.Record ?? "", SelectedSkill?.Name ?? "");
         OnPropertyChanged(nameof(Profile));
         NotifyDpsCalibrationProperties();
+        RefreshCurrentBuildPreview();
+        RefreshCommands();
+    }
+
+    private static CharacterSkill DefaultAttackSkill() =>
+        new("", "默认武器攻击", 1, 0, true, "", "");
+
+    private void RefreshCurrentBuildPreview()
+    {
+        _canAnalyzeCurrentBuild = false;
+        CurrentPanelDpsDisplay = CurrentDefaultDpsDisplay = CurrentHealthDisplay = "—";
+        HasCurrentPanelWarning = false;
+        if (SelectedCharacter is null || _catalog is null)
+        {
+            RequiredStatus = HasCharacters ? "请选择要分析的角色。" : "请载入并选择角色。";
+            CurrentBuildSummary = "载入角色后自动计算当前配装。";
+            CurrentPanelCoverage = "载入角色后自动检查计算覆盖情况。";
+            RefreshCommands();
+            return;
+        }
+        try
+        {
+            var character = SelectedCharacter;
+            var attachments = _gameDataSource.GetUnlockedAttachments(character, _catalog);
+            var slots = new Dictionary<EquipmentSlot, LoadoutVariant>();
+            var missing = new List<string>();
+            foreach (var (slot, itemId) in character.CurrentLoadout)
+            {
+                var item = character.Items.FirstOrDefault(x => x.Id == itemId);
+                if (item is null)
+                {
+                    missing.Add($"当前 {slot} 装备来源缺失，数值不完整。");
+                    continue;
+                }
+                AttachmentDefinition? FindInstalled(string record, string completion, AttachmentKind kind)
+                {
+                    if (string.IsNullOrWhiteSpace(record)) return null;
+                    var attachment = attachments.FirstOrDefault(x => x.Kind == kind &&
+                        (string.IsNullOrWhiteSpace(x.RecordId) ? x.Id : x.RecordId).Equals(record, StringComparison.OrdinalIgnoreCase) &&
+                        x.CompletionBonusRecord.Equals(completion, StringComparison.OrdinalIgnoreCase));
+                    if (attachment is null) missing.Add($"{item.Name} 已安装附件无法还原：{record}");
+                    return attachment;
+                }
+                slots[slot] = new(item,
+                    FindInstalled(item.ComponentRecord, item.CompletionBonusRecord, AttachmentKind.Component),
+                    FindInstalled(item.AugmentRecord, "", AttachmentKind.Augment));
+            }
+
+            // Preview uses the same engine and installed attachments as optimization,
+            // without persisted/manual DPS anchors or attribute corrections.
+            var loadout = new CharacterStatEngine().Calculate(character, slots, _catalog);
+            var rotation = SkillRotationFactory.BuildSelectedRecord(character, _catalog,
+                SelectedSkill?.Record ?? "", SelectedSkill?.Name ?? "", slots);
+            var defaultRotation = SkillRotationFactory.Build(character, _catalog, null, slots);
+            Profile.Rotation = rotation;
+            var simulator = new CombatSimulator();
+            CurrentDefaultDpsDisplay = PanelDpsDisplay.Format(
+                simulator.Simulate(character, loadout, Profile.Scenario, defaultRotation).UnmitigatedDps);
+            CurrentHealthDisplay = loadout.Stats["health"].ToString("N0");
+            CurrentPanelDpsDisplay = rotation.IsAvailable
+                ? PanelDpsDisplay.Format(simulator.Simulate(character, loadout, Profile.Scenario, rotation).UnmitigatedDps)
+                : "不可用";
+            _canAnalyzeCurrentBuild = rotation.IsAvailable && loadout.IsValid && character.Items.Count > 0;
+            RequiredStatus = !rotation.IsAvailable ? rotation.UnavailableReason
+                : !loadout.IsValid ? "当前装备状态存在问题，请查看计算说明。"
+                : character.Items.Count == 0 ? "角色没有可用于分析的装备。"
+                : "已按存档与游戏数据计算，可直接开始分析。";
+            CurrentBuildSummary = $"{character.Name} · Lv.{character.Level} · {SelectedSkill?.Name ?? "默认武器攻击"}" +
+                (character.ActiveItemSkillRecords.Count > 0 ? $" · {character.ActiveItemSkillRecords.Count} 项临时增益已激活" : " · 常驻状态") +
+                (_isDemo ? " · 演示数据" : "");
+            var diagnostics = loadout.UnsupportedEffects.Concat(CalculationDiagnostics.RotationDiagnostics(loadout, rotation)).Distinct().ToArray();
+            var warnings = diagnostics.Where(x => x.Severity == DiagnosticSeverity.Warning)
+                .Select(x => $"[{CalculationDiagnostics.ScopeLabel(x)}] {x.Description}")
+                .Concat(loadout.ValidationErrors).Concat(missing)
+                .Concat(character.ImportWarnings.Where(x => x.Contains("失败", StringComparison.Ordinal) ||
+                    x.Contains("缺失", StringComparison.Ordinal) || x.Contains("无法", StringComparison.Ordinal)))
+                .Distinct().ToArray();
+            var coverage = CalculationDiagnostics.PanelConfidence(loadout, rotation) switch
+            {
+                ConfidenceLevel.High when missing.Count == 0 => "面板未发现已知缺项。",
+                ConfidenceLevel.Medium when missing.Count == 0 => "面板使用部分回退估算。",
+                _ => "面板存在计算缺口。"
+            };
+            HasCurrentPanelWarning = warnings.Length > 0 || CalculationDiagnostics.PanelConfidence(loadout, rotation) != ConfidenceLevel.High;
+            CurrentPanelCoverage = string.Join(Environment.NewLine,
+                new[] { coverage, "覆盖检查不等于所有配装的实测精度保证。" }.Concat(warnings));
+        }
+        catch (Exception ex)
+        {
+            CurrentPanelDpsDisplay = CurrentDefaultDpsDisplay = CurrentHealthDisplay = "—";
+            RequiredStatus = "当前配装无法计算，请刷新角色或检查数据源。";
+            CurrentBuildSummary = SelectedCharacter.Name;
+            CurrentPanelCoverage = $"预览失败：{ex.Message}";
+            HasCurrentPanelWarning = true;
+        }
         RefreshCommands();
     }
 
@@ -854,6 +1192,10 @@ public sealed class MainViewModel : ObservableObject
         Profile.UsePanelDpsCalibration = false;
         Profile.CurrentWeaponAttackDps = 0;
         Profile.CurrentPanelDps = 0;
+        Profile.RuntimeDpsCalibrationFactor = 1;
+        Profile.RuntimeWeaponDpsCalibrationFactor = 1;
+        Profile.RuntimeSkillAddedDpsCalibrationFactor = 1;
+        Profile.RuntimeDpsCalibrationMode = DpsCalibrationMode.None;
         _currentWeaponAttackDpsInput = string.Empty;
         _currentPanelDpsInput = string.Empty;
         OnPropertyChanged(nameof(CurrentWeaponAttackDpsInput));
@@ -942,12 +1284,26 @@ public sealed class MainViewModel : ObservableObject
         if (!IsBusy) Status = "方案已保存到本地";
     }
 
-    private static async Task<Dictionary<string, string>> ComputeSourceHashesAsync(CharacterSnapshot character, CancellationToken cancellationToken)
+    private static Task<Dictionary<string, string>> ComputeSourceHashesAsync(CharacterSnapshot character, CancellationToken cancellationToken) =>
+        ComputeFileHashesAsync(character.Items.Select(x => x.Source.FilePath).Append(character.SaveFilePath), cancellationToken);
+
+    private static Task<Dictionary<string, string>> ComputeLocationHashesAsync(SaveLocation location, CancellationToken cancellationToken) =>
+        ComputeFileHashesAsync(location.CharacterFiles.Concat(new[]
+        {
+            location.SharedStashFile, location.FormulaFile,
+            Path.Combine(location.RootPath, "transfer.gst"), Path.Combine(location.RootPath, "transfer.gsh"),
+            Path.Combine(location.RootPath, "formulas.gst")
+        }.OfType<string>()), cancellationToken);
+
+    private static bool HashesMatch(IReadOnlyDictionary<string, string> left, IReadOnlyDictionary<string, string> right) =>
+        left.Count == right.Count && left.All(x => right.TryGetValue(x.Key, out var hash) && hash == x.Value);
+
+    private static async Task<Dictionary<string, string>> ComputeFileHashesAsync(IEnumerable<string> paths, CancellationToken cancellationToken)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var files = character.Items.Select(x => x.Source.FilePath).Append(character.SaveFilePath).Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists);
-        foreach (var file in files)
+        foreach (var file in paths.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
+            if (!File.Exists(file)) { result[file] = "<missing>"; continue; }
             await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, useAsync: true);
             result[file] = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken));
         }
@@ -958,6 +1314,7 @@ public sealed class MainViewModel : ObservableObject
     {
         DiscoverCommand.RaiseCanExecuteChanged();
         LoadCommand.RaiseCanExecuteChanged();
+        RefreshCharacterCommand.RaiseCanExecuteChanged();
         OptimizeCommand.RaiseCanExecuteChanged();
         SaveProfileCommand.RaiseCanExecuteChanged();
         (CancelCommand as RelayCommand)?.RaiseCanExecuteChanged();
