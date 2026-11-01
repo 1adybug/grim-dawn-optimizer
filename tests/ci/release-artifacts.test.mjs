@@ -23,6 +23,9 @@ async function fixture(t) {
       version: "1.0.21",
     }),
     "artifacts/GrimDawnOptimizer-1.0.21-win-x64.exe": "EXE fixture",
+    "artifacts/GrimDawnOptimizer-1.0.21-win-x64-setup.exe": "Installer fixture",
+    "artifacts/GrimDawnOptimizer-1.0.21-win-x64-setup.exe.sig":
+      "Signature fixture",
   };
   for (const [path, contents] of Object.entries(inputs)) {
     await mkdir(dirname(join(root, path)), { recursive: true });
@@ -33,13 +36,35 @@ async function fixture(t) {
   return { root, directory, commit, runId, tag };
 }
 
-test("the single portable executable survives staging and verification", async (t) => {
+test("both packages, signature and update manifest survive staging and verification", async (t) => {
   const options = await fixture(t);
   const manifest = await verifyRelease(options);
-  assert.equal(manifest.files.length, 1);
+  assert.equal(manifest.files.length, 4);
   assert.equal(
     await readFile(join(options.directory, manifest.files[0].name), "utf8"),
     "EXE fixture",
+  );
+});
+
+test("a release cannot be staged without a signed installer", async (t) => {
+  const options = await fixture(t);
+  await rm(
+    join(
+      options.root,
+      "artifacts/GrimDawnOptimizer-1.0.21-win-x64-setup.exe.sig",
+    ),
+  );
+  await assert.rejects(stageRelease(options), /ENOENT/);
+});
+
+test("updater metadata never points at the portable executable", async (t) => {
+  const options = await fixture(t);
+  const path = join(options.directory, "latest.json");
+  const metadata = JSON.parse(await readFile(path, "utf8"));
+  assert.match(metadata.platforms["windows-x86_64"].url, /-setup\.exe$/);
+  assert.equal(
+    metadata.platforms["windows-x86_64"].signature,
+    "Signature fixture",
   );
 });
 

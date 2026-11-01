@@ -8,6 +8,9 @@ public sealed class TrainerSettings
 {
     private readonly string _storage;
     public string? Executable { get; private set; }
+    public bool AutoConnect { get; private set; } = true;
+    public int EnabledFeatures { get; private set; }
+    public int MovementMultiplier { get; private set; } = 2;
     public string? LoadWarning { get; private set; }
 
     public TrainerSettings(string? storage = null, bool importLegacyDefault = true, string? legacyStorage = null)
@@ -20,28 +23,54 @@ public sealed class TrainerSettings
         if (source is null || !File.Exists(source)) return;
         try
         {
-            var preference = JsonSerializer.Deserialize<PathPreference>(File.ReadAllText(source),
+            var preference = JsonSerializer.Deserialize<Preference>(File.ReadAllText(source),
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             Executable = string.IsNullOrWhiteSpace(preference?.GameExecutable) ? null : preference.GameExecutable;
+            // The old tool contributes only its path, never its runtime effects.
+            if (source == _storage && preference is not null)
+            {
+                if (preference.SchemaVersion > 1) throw new JsonException("Unsupported combat settings version.");
+                AutoConnect = preference.AutoConnect;
+                EnabledFeatures = preference.EnabledFeatures & TrainerFeatures.Mask;
+                MovementMultiplier = TrainerFeatures.MovementMultipliers.Contains(preference.MovementMultiplier)
+                    ? preference.MovementMultiplier : 2;
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         {
-            LoadWarning = "实战工具的路径设置未能读取，请重新选择游戏程序。";
+            Executable = null;
+            LoadWarning = "实战工具设置未能读取，当前使用默认配置；请重新选择游戏程序。";
         }
     }
 
     public void SaveExecutable(string path)
     {
         var fullPath = Validate(path);
+        Save(new(fullPath, AutoConnect, EnabledFeatures, MovementMultiplier));
+    }
+
+    public void SaveAutoConnect(bool enabled) => Save(new(Executable, enabled, EnabledFeatures, MovementMultiplier));
+    public void SaveFeatures(int flags) => Save(new(Executable, AutoConnect, flags & TrainerFeatures.Mask, MovementMultiplier));
+    public void SaveMovementMultiplier(int value)
+    {
+        if (!TrainerFeatures.MovementMultipliers.Contains(value)) throw new ArgumentException("移动倍率只能为 2、4、8 或 16。");
+        Save(new(Executable, AutoConnect, EnabledFeatures, value));
+    }
+
+    private void Save(Preference preference)
+    {
         var directory = Path.GetDirectoryName(_storage)!;
         Directory.CreateDirectory(directory);
         var temporary = Path.Combine(directory, $"combat-settings.{Guid.NewGuid():N}.tmp");
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new PathPreference(fullPath),
+            File.WriteAllText(temporary, JsonSerializer.Serialize(preference,
                 new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
             File.Move(temporary, _storage, overwrite: true);
-            Executable = fullPath;
+            Executable = preference.GameExecutable;
+            AutoConnect = preference.AutoConnect;
+            EnabledFeatures = preference.EnabledFeatures;
+            MovementMultiplier = preference.MovementMultiplier;
             LoadWarning = null;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -74,5 +103,6 @@ public sealed class TrainerSettings
         return new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = RootFor(path) };
     }
 
-    private sealed record PathPreference(string GameExecutable);
+    private sealed record Preference(string? GameExecutable = null, bool AutoConnect = true,
+        int EnabledFeatures = 0, int MovementMultiplier = 2, int SchemaVersion = 1);
 }

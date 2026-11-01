@@ -123,33 +123,40 @@ module.exports = async function findReleaseBuild({ github, context, core }) {
     release_id: release.id,
     per_page: 100,
   });
-  const file = manifest.files[0];
-  const asset = assets[0];
-  if (
-    assets.length !== 1 ||
-    !validId(asset?.id) ||
-    asset.name !== file.name ||
-    asset.state !== "uploaded" ||
-    asset.size !== file.size ||
-    asset.digest?.toLowerCase() !== `sha256:${file.sha256.toLowerCase()}`
-  )
+  const selected = manifest.files.map((file) => {
+    const named = assets.filter((asset) => asset.name === file.name);
+    const asset = named[0];
+    if (
+      named.length !== 1 ||
+      !validId(asset?.id) ||
+      asset.state !== "uploaded" ||
+      asset.size !== file.size ||
+      asset.digest?.toLowerCase() !== `sha256:${file.sha256.toLowerCase()}`
+    )
+      throw new Error(
+        "Release assets differ from the verified packages and updater metadata.",
+      );
+    return { id: asset.id, name: file.name };
+  });
+  if (assets.length !== manifest.files.length)
     throw new Error(
-      "Release must contain exactly the verified portable EXE (name, size, and SHA-256 digest).",
+      "Release must contain exactly the verified packages and updater metadata.",
     );
   await verifyTag(github, repository, tag, sha);
 
   const alreadyPublished = !release.draft;
   core.setOutput("run-id", String(run.id));
   core.setOutput("release-id", String(release.id));
-  core.setOutput("asset-id", String(asset.id));
+  core.setOutput("asset-id", String(selected[0].id));
   core.setOutput("already-published", String(alreadyPublished));
   core.info(
-    `Verified ${fullName} main build ${run.id}, release ${release.id}, asset ${asset.id}, commit ${sha}.`,
+    `Verified ${fullName} main build ${run.id}, release ${release.id}, ${selected.length} assets, commit ${sha}.`,
   );
   return {
     runId: run.id,
     releaseId: release.id,
-    assetId: asset.id,
+    assetId: selected[0].id,
+    assets: selected,
     alreadyPublished,
     manifest,
   };

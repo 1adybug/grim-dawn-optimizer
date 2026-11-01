@@ -1254,6 +1254,26 @@ h3 {
   padding-top: 20px;
   font-size: 12px;
 }
+.app-updates {
+  display: grid;
+  gap: 12px;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.update-option,
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.update-option {
+  justify-content: space-between;
+}
+.update-hint {
+  color: var(--muted-foreground);
+  line-height: 1.65;
+}
 .about-copy > img {
   object-fit: contain;
   flex-shrink: 0;

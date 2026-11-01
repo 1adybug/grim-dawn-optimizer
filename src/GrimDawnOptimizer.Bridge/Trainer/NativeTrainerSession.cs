@@ -7,8 +7,8 @@ using System.Text;
 
 namespace GrimDawnOptimizer.Bridge.Trainer;
 
-/// <summary>Port of Cairn Companion's v5 session. Only an explicit connect
-/// command opens game memory; construction and ordinary state reads do not.</summary>
+/// <summary>Port of Cairn Companion's v5 session. Connecting opens game memory;
+/// process discovery and construction do not load the trainer.</summary>
 public sealed class NativeTrainerSession : ITrainerSession
 {
     public const int Capacity = 4096, StateSize = 720;
@@ -48,6 +48,18 @@ public sealed class NativeTrainerSession : ITrainerSession
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool IsWow64Process2(IntPtr process, out ushort machine, out ushort native);
+
+    public static int? FindRunningProcess(string executable)
+    {
+        var games = Process.GetProcessesByName("Grim Dawn");
+        try
+        {
+            var matches = games.Where(process => !process.HasExited &&
+                string.Equals(process.MainModule?.FileName, executable, StringComparison.OrdinalIgnoreCase)).ToArray();
+            return matches.Length == 1 ? matches[0].Id : null;
+        }
+        finally { foreach (var game in games) game.Dispose(); }
+    }
 
     public async Task ConnectAsync(string executable, CancellationToken cancellationToken)
     {

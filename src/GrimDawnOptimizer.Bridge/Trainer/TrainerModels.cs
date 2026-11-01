@@ -20,10 +20,10 @@ public static class TrainerFeatures
     ];
 }
 
-public sealed record TrainerFeatureState(string Id, string Title, string Description, string Shortcut, bool Requested, bool Applied, bool Pending);
+public sealed record TrainerFeatureState(string Id, string Title, string Description, string Shortcut, bool Enabled, bool Requested, bool Applied, bool Pending);
 
 public sealed record TrainerState(
-    string SessionId, long Revision, string? ConfiguredExecutable,
+    string SessionId, long Revision, string? ConfiguredExecutable, bool AutoConnect, bool AutoConnectPaused,
     bool Connected, bool Connecting, bool Available, string Status, string StatusText,
     string? Error, string? HotkeyWarning, int? Pid, string? Architecture, int MovementMultiplier,
     IReadOnlyList<TrainerFeatureState> Features,

@@ -35,6 +35,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       stage-release: true
+    secrets: inherit
 
   release:
     name: Publish GitHub release
@@ -62,7 +63,7 @@ jobs:
             const findBuild = require('./.github/scripts/find-release-build.cjs');
             await findBuild({ github, context, core });
 
-      - name: Download verified portable EXE from its draft
+      - name: Download verified packages and update metadata from their draft
         if: steps.build.outputs.already-published != 'true'
         uses: actions/github-script@v8
         env:
@@ -80,7 +81,7 @@ jobs:
           RELEASE_BUILD_RUN_ID: ${{ steps.build.outputs.run-id }}
         run: node .github/scripts/release-artifacts.mjs verify
 
-      - name: Publish verified portable EXE
+      - name: Publish installer, portable EXE and signed update metadata
         if: steps.build.outputs.already-published != 'true'
         uses: actions/github-script@v8
         env:

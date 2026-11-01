@@ -4,6 +4,7 @@ artifacts/
 .vs/
 *.user
 *.suo
+*.key
 TestResults/
 coverage/
 node_modules/

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       stage-release:
-        description: Store the verified EXE in an unpublished release for a later tag.
+        description: Store verified installer, portable EXE and update metadata in a release draft.
         type: boolean
         default: false
 
@@ -94,7 +94,26 @@ jobs:
       # This is the only Tauri build: its binaries are tested and then published.
       - name: Build Tauri desktop application
         working-directory: src/GrimDawnOptimizer.Desktop
-        run: npm run tauri:build -- --ci --no-bundle -- --locked
+        env:
+          STAGE_RELEASE: ${{ inputs.stage-release }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          if ($env:STAGE_RELEASE -eq 'true') {
+            if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'Configure the TAURI_SIGNING_PRIVATE_KEY repository secret before building a release.' }
+            npm run tauri:build -- --ci -- --locked
+          } else {
+            npm run tauri:build -- --ci --config src-tauri/tauri.unsigned.conf.json -- --locked
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Tauri build failed.' }
+
+      - name: Package installer
+        shell: pwsh
+        env:
+          STAGE_RELEASE: ${{ inputs.stage-release }}
+        run: |
+          & ./src/GrimDawnOptimizer.Desktop/scripts/package-installer.ps1 -RequireSignature:($env:STAGE_RELEASE -eq 'true')
 
       - name: Verify frontend snapshot ordering
         run: node tests/desktop-bridge/state-order.mjs
@@ -121,9 +140,10 @@ jobs:
         run: python tests/desktop-bridge/portable-smoke.py
 
       - name: Stage release files and checksums
+        if: inputs.stage-release
         run: node .github/scripts/release-artifacts.mjs stage
 
-      - name: Stage verified EXE in a release draft
+      - name: Stage both packages and signed updates in a release draft
         if: inputs.stage-release
         uses: actions/github-script@v8
         env:

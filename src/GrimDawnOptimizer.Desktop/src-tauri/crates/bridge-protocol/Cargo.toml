@@ -1,6 +1,6 @@
 [package]
 name = "grim-dawn-bridge-protocol"
-version = "1.0.22"
+version = "1.0.23"
 description = "GUI-independent Grim Dawn desktop bridge protocol"
 edition = "2021"
 rust-version = "1.90"

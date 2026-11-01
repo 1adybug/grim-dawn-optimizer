@@ -23,6 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { EquipmentComparisonTable } from "@/components/equipment-comparison-table";
 import { CombatTools } from "@/components/combat-tools";
+import { AppUpdates } from "@/components/app-updates";
 import { PathInput } from "@/components/path-input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -65,6 +66,7 @@ import {
 import { request, subscribe } from "@/lib/bridge";
 import { SnapshotOrder } from "@/lib/state-order";
 import { useTrainer } from "@/lib/use-trainer";
+import { useAppUpdater, type AppUpdater } from "@/lib/use-app-updater";
 import appIcon from "../src-tauri/icons/icon.png";
 import type { Run, State, Theme, Workspace } from "@/lib/types";
 
@@ -85,6 +87,15 @@ export default function App() {
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const updater = useAppUpdater(
+    !state ||
+      state.isBusy ||
+      pending ||
+      !!trainer.transportError ||
+      !!trainer.state?.connected ||
+      !!trainer.state?.connecting ||
+      trainer.pending.length > 0,
+  );
   const pendingCount = useRef(0);
   const inFlight = useRef(new Set<Promise<State>>());
   const configurationTail = useRef(Promise.resolve());
@@ -260,12 +271,16 @@ export default function App() {
                     <span>Lv. {character.level}</span>
                   </span>
                 )}
-                <Settings state={state} run={run} />
+                <Settings state={state} run={run} updater={updater} />
               </div>
             </div>
           </div>
         </header>
-        <main id="main-content" className="main-content">
+        <main
+          id="main-content"
+          className="main-content"
+          inert={updater.installing}
+        >
           {error && (
             <div className="connection-error" role="alert">
               <span>{error}</span>
@@ -336,17 +351,19 @@ export default function App() {
               <span className="status-dot" />
             )}
             <span>
-              {view === "combat"
-                ? trainer.transportError
-                  ? "实战工具连接中断"
-                  : trainer.state?.statusText || "连接实战工具"
-                : state?.status || "连接本地计算服务"}
+              {updater.installing
+                ? `正在下载并安装更新${updater.progress === null ? "…" : ` ${updater.progress}%`}`
+                : view === "combat"
+                  ? trainer.transportError
+                    ? "实战工具连接中断"
+                    : trainer.state?.statusText || "连接实战工具"
+                  : state?.status || "连接本地计算服务"}
             </span>
           </div>
           <span className="footer-note">
             {view === "combat" ? "当前游戏会话" : "只读存档"}
             <span>·</span>
-            {state?.version || "1.0.22"}
+            {state?.version || "1.0.23"}
           </span>
         </footer>
         {state?.isBusy && (
@@ -368,18 +385,26 @@ export default function App() {
   );
 }
 
-function Settings({ state, run }: { state: State | null; run: Run }) {
+function Settings({
+  state,
+  run,
+  updater,
+}: {
+  state: State | null;
+  run: Run;
+  updater: AppUpdater;
+}) {
   return (
     <Dialog>
       <Tooltip>
         <TooltipTrigger asChild>
           <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="外观与关于">
+            <Button variant="ghost" size="icon" aria-label="设置与关于">
               <Settings2 />
             </Button>
           </DialogTrigger>
         </TooltipTrigger>
-        <TooltipContent>外观与关于</TooltipContent>
+        <TooltipContent>设置与关于</TooltipContent>
       </Tooltip>
       <DialogContent>
         <DialogHeader>
@@ -392,7 +417,7 @@ function Settings({ state, run }: { state: State | null; run: Run }) {
             className="theme-options"
             aria-labelledby="appearance-label"
             value={state?.theme ?? "system"}
-            disabled={!state || state.isBusy}
+            disabled={!state || state.isBusy || updater.installing}
             onValueChange={(theme) =>
               void run("configure", { theme: theme as Theme })
             }
@@ -416,6 +441,7 @@ function Settings({ state, run }: { state: State | null; run: Run }) {
               </Label>
             ))}
           </RadioGroup>
+          <AppUpdates updater={updater} />
           <div className="about-copy">
             <img src={appIcon} alt="" width={28} height={28} />
             <div>

@@ -1,6 +1,12 @@
 const assert = require("node:assert/strict");
 
 const marker = "<!-- grim-dawn-build";
+const payloadNames = (version) => [
+  `GrimDawnOptimizer-${version}-win-x64.exe`,
+  `GrimDawnOptimizer-${version}-win-x64-setup.exe`,
+  `GrimDawnOptimizer-${version}-win-x64-setup.exe.sig`,
+  "latest.json",
+];
 
 function validateManifest(manifest) {
   assert.ok(
@@ -14,7 +20,7 @@ function validateManifest(manifest) {
   );
   assert.equal(
     manifest.schemaVersion,
-    1,
+    2,
     "Unsupported release manifest schema",
   );
   assert.match(
@@ -33,30 +39,31 @@ function validateManifest(manifest) {
     "Invalid source build run ID",
   );
   assert.ok(
-    Array.isArray(manifest.files) && manifest.files.length === 1,
-    "Expected one portable EXE",
+    Array.isArray(manifest.files) && manifest.files.length === 4,
+    "Expected portable EXE, installer, signature and update metadata",
   );
-  const file = manifest.files[0];
-  assert.ok(file && typeof file === "object", "Missing release payload");
   assert.deepEqual(
-    Object.keys(file).sort(),
-    ["name", "sha256", "size"],
-    "Unexpected release payload fields",
+    manifest.files.map((file) => file.name),
+    payloadNames(manifest.version),
+    "Unexpected release payloads",
   );
-  assert.equal(
-    file.name,
-    `GrimDawnOptimizer-${manifest.version}-win-x64.exe`,
-    "Unexpected portable EXE name",
-  );
-  assert.ok(
-    Number.isSafeInteger(file.size) && file.size > 0,
-    "Invalid release payload size",
-  );
-  assert.match(
-    file.sha256 ?? "",
-    /^[a-f0-9]{64}$/,
-    "Invalid release payload SHA-256",
-  );
+  for (const file of manifest.files) {
+    assert.ok(file && typeof file === "object", "Missing release payload");
+    assert.deepEqual(
+      Object.keys(file).sort(),
+      ["name", "sha256", "size"],
+      "Unexpected release payload fields",
+    );
+    assert.ok(
+      Number.isSafeInteger(file.size) && file.size > 0,
+      "Invalid release payload size",
+    );
+    assert.match(
+      file.sha256 ?? "",
+      /^[a-f0-9]{64}$/,
+      "Invalid release payload SHA-256",
+    );
+  }
   return manifest;
 }
 
@@ -78,4 +85,9 @@ function parseDraftBody(body) {
   return validateManifest(JSON.parse(matches[0][1]));
 }
 
-module.exports = { formatDraftBody, parseDraftBody };
+module.exports = {
+  formatDraftBody,
+  parseDraftBody,
+  validateManifest,
+  payloadNames,
+};

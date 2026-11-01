@@ -2,7 +2,11 @@ const { readFile, lstat } = require("node:fs/promises");
 const { resolve, join, basename } = require("node:path");
 const { createHash } = require("node:crypto");
 const assert = require("node:assert/strict");
-const { formatDraftBody, parseDraftBody } = require("./release-draft.cjs");
+const {
+  formatDraftBody,
+  parseDraftBody,
+  validateManifest,
+} = require("./release-draft.cjs");
 
 const digest = (data) =>
   `sha256:${createHash("sha256").update(data).digest("hex")}`;
@@ -46,7 +50,7 @@ async function localAssets(directory, context, stageOnly) {
     : context.ref.slice("refs/tags/".length);
   const buildRunId = process.env.RELEASE_BUILD_RUN_ID;
   if (
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     tag !== `v${manifest.version}` ||
     manifest.commit !== context.sha ||
     !buildRunId ||
@@ -56,18 +60,7 @@ async function localAssets(directory, context, stageOnly) {
     throw new Error(
       "Release manifest does not match this tag, commit, and source build run.",
     );
-  if (!Array.isArray(manifest.files) || manifest.files.length !== 1)
-    throw new Error(
-      "Expected exactly one portable EXE in the release manifest.",
-    );
-  const name = safeName(manifest.files[0].name);
-  if (
-    !/^\d+\.\d+\.\d+$/.test(manifest.version) ||
-    name !== `GrimDawnOptimizer-${manifest.version}-win-x64.exe`
-  )
-    throw new Error(
-      "Expected the versioned portable EXE, not a ZIP or installer.",
-    );
+  validateManifest(manifest);
   const assets = [];
   for (const file of manifest.files) {
     const asset = await read(file.name);
@@ -90,8 +83,8 @@ async function localAssets(directory, context, stageOnly) {
     .join("");
   if (checksumAsset.data.toString("utf8") !== expectedChecksum)
     throw new Error("Checksum list does not match the release manifest.");
-  // Build identity and checksums are internal CI evidence. Only the portable
-  // executable belongs in the public release's downloadable assets.
+  // Build provenance stays in the body; both packages and the signed updater
+  // metadata are public assets, verified together before draft promotion.
   formatDraftBody(manifest); // Validate the shared provenance schema before any API call.
   return { tag, assets, manifest };
 }
@@ -201,7 +194,7 @@ module.exports = async function publishRelease({
   if (!release.draft) {
     verifyAssets(remote, assets);
     core.info(
-      `Release ${tag} is already public and its portable EXE matches. No changes made.`,
+      `Release ${tag} is already public and all assets match. No changes made.`,
     );
     return release;
   }
@@ -267,7 +260,7 @@ module.exports = async function publishRelease({
       "GitHub did not retain the staged version tag.",
     );
     core.info(
-      `Staged ${tag} from main build ${manifest.runId} with one verified portable EXE.`,
+      `Staged ${tag} from main build ${manifest.runId} with both packages and signed update metadata.`,
     );
     return staged;
   }
@@ -283,7 +276,7 @@ module.exports = async function publishRelease({
     "string",
     "GitHub did not return generated release notes.",
   );
-  const body = `${notes.body}\n\n${formatDraftBody(manifest)}`;
+  const body = `${notes.body}\n\n下载说明：\n- 安装版：下载以 \`-setup.exe\` 结尾的文件，支持自动检查、下载并安装更新。\n- 便携版：下载 \`-win-x64.exe\`，直接运行。\n- \`latest.json\` 和 \`.sig\` 供安装版校验更新使用。\n\n${formatDraftBody(manifest)}`;
   assert.deepEqual(
     parseDraftBody(body),
     manifest,
@@ -306,6 +299,8 @@ module.exports = async function publishRelease({
     "GitHub did not retain the published version tag.",
   );
   assert.equal(published.draft, false, "GitHub did not publish the release.");
-  core.info(`Published ${tag} with its one verified portable EXE.`);
+  core.info(
+    `Published ${tag} with installer, portable EXE and signed update metadata.`,
+  );
   return published;
 };

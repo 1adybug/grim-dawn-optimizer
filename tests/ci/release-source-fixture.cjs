@@ -2,7 +2,10 @@
 
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { formatDraftBody } = require("../../.github/scripts/release-draft.cjs");
+const {
+  formatDraftBody,
+  payloadNames,
+} = require("../../.github/scripts/release-draft.cjs");
 const SHA = "a".repeat(40);
 const OTHER_SHA = "b".repeat(40);
 const PAYLOAD = Buffer.from("portable EXE fixture; never executable");
@@ -26,17 +29,15 @@ function run(overrides = {}) {
 
 function harness(options = {}) {
   const manifest = options.manifest ?? {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version: "1.0.21",
     commit: SHA,
     runId: "101",
-    files: [
-      {
-        name: "GrimDawnOptimizer-1.0.21-win-x64.exe",
-        size: PAYLOAD.length,
-        sha256: HASH,
-      },
-    ],
+    files: payloadNames("1.0.21").map((name) => ({
+      name,
+      size: PAYLOAD.length,
+      sha256: HASH,
+    })),
   };
   const release = {
     id: 201,
@@ -46,15 +47,15 @@ function harness(options = {}) {
     body: formatDraftBody(manifest),
     ...options.release,
   };
-  const assets = options.assets ?? [
-    {
-      id: 301,
-      name: manifest.files[0].name,
+  const assets =
+    options.assets ??
+    manifest.files.map((file, index) => ({
+      id: 301 + index,
+      name: file.name,
       size: PAYLOAD.length,
       state: "uploaded",
       digest: `sha256:${HASH}`,
-    },
-  ];
+    }));
   const calls = [];
   const outputs = {};
   const actions = { listWorkflowRuns() {} };

@@ -14,6 +14,7 @@ export interface TrainerFeature {
   title: string;
   description: string;
   shortcut: string;
+  enabled: boolean;
   requested: boolean;
   applied: boolean;
   pending: boolean;
@@ -23,6 +24,8 @@ export interface TrainerState {
   sessionId: string;
   revision: number;
   configuredExecutable: string | null;
+  autoConnect: boolean;
+  autoConnectPaused: boolean;
   connected: boolean;
   connecting: boolean;
   available: boolean;
@@ -52,6 +55,7 @@ export type TrainerCommand =
   | "trainerState"
   | "trainerSelectExecutable"
   | "trainerConnect"
+  | "trainerSetAutoConnect"
   | "trainerDisconnect"
   | "trainerSetFeature"
   | "trainerSetMovementMultiplier"

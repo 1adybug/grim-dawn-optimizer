@@ -19,14 +19,16 @@ public sealed class TrainerControllerTests
         Assert.All(before.Features, item => Assert.False(item.Requested || item.Applied || item.Pending));
         await controller.ExecuteAsync("trainerSetMovementMultiplier", Payload(new { value = 4 }));
         await Assert.ThrowsAsync<ArgumentException>(() => controller.ExecuteAsync("trainerSetMovementMultiplier", Payload(new { value = 3 })));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "life", enabled = true })));
+        await controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "life", enabled = true }));
         await Assert.ThrowsAsync<ArgumentException>(() => controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "retiredArmor", enabled = true })));
         var after = controller.Snapshot();
         Assert.Equal(4, after.MovementMultiplier);
         Assert.Equal(before.SessionId, after.SessionId);
         Assert.True(after.Revision > before.Revision);
         Assert.Equal(0, fixture.CreatedSessions);
-        Assert.False(File.Exists(fixture.PreferencePath));
+        Assert.True(File.Exists(fixture.PreferencePath));
+        Assert.True(after.Features[0].Enabled);
+        Assert.False(after.Features[0].Requested);
         var json = JsonSerializer.SerializeToElement(after, Program.JsonOptions);
         Assert.False(json.TryGetProperty("results", out _));
         Assert.Equal(JsonValueKind.Null, json.GetProperty("health").ValueKind);
@@ -95,7 +97,7 @@ public sealed class TrainerControllerTests
     [InlineData(1, "waiting")]
     [InlineData(2, "stale")]
     [InlineData(-1, "fault")]
-    public async Task UnavailableSessionClearsRequestsAndDoesNotResumeThem(int nativeStatus, string status)
+    public async Task UnavailableSessionPausesRequestsAndRestoresRememberedPreferences(int nativeStatus, string status)
     {
         using var fixture = new Fixture();
         fixture.SelectPath();
@@ -117,7 +119,7 @@ public sealed class TrainerControllerTests
         session.Runtime = session.Runtime with { Status = 2, Applied = 0, Tick = fixture.Now };
         controller.Poll();
         Assert.True(controller.Snapshot().Available);
-        Assert.All(controller.Snapshot().Features, feature => Assert.False(feature.Requested));
+        Assert.True(controller.Snapshot().Features.Single(feature => feature.Id == "moveSpeed").Requested);
     }
 
     [Fact]
@@ -313,6 +315,127 @@ public sealed class TrainerControllerTests
         Assert.Equal(9, TrainerFeatures.All.Select(x => x.Id).Distinct().Count());
     }
 
+    [Fact]
+    public async Task PreferencesSurviveRestartAndRestoreOnlyWhenSinglePlayerIsReady()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath();
+        using (var first = fixture.Controller())
+        {
+            await first.ExecuteAsync("trainerSetAutoConnect", Payload(new { enabled = false }));
+            await first.ExecuteAsync("trainerSetFeature", Payload(new { id = "life", enabled = true }));
+            await first.ExecuteAsync("trainerSetFeature", Payload(new { id = "moveSpeed", enabled = true }));
+            await first.ExecuteAsync("trainerSetMovementMultiplier", Payload(new { value = 8 }));
+        }
+        var saved = new TrainerSettings(fixture.PreferencePath, false);
+        Assert.False(saved.AutoConnect);
+        Assert.Equal(9, saved.EnabledFeatures);
+        Assert.Equal(8, saved.MovementMultiplier);
+        var session = new FakeSession { Runtime = Ready() with { Status = 1 } };
+        using var controller = new TrainerController(saved, action => action(), () => session, fixture.Hotkeys, clock: () => fixture.Now);
+        controller.Poll();
+        Assert.False(controller.Snapshot().Connected);
+        await controller.ExecuteAsync("trainerConnect", default);
+        Assert.Equal(0, session.Requested);
+        Assert.Equal(8, session.Multiplier);
+        Assert.True(controller.Snapshot().Features[0].Enabled);
+        session.Runtime = Ready();
+        controller.Poll();
+        Assert.Equal(9, session.Requested);
+        await controller.ExecuteAsync("trainerDisconnect", default);
+        Assert.Equal(9, new TrainerSettings(fixture.PreferencePath, false).EnabledFeatures);
+        await controller.ExecuteAsync("trainerDisableAll", default);
+        Assert.Equal(0, new TrainerSettings(fixture.PreferencePath, false).EnabledFeatures);
+    }
+
+    [Fact]
+    public async Task AutoConnectWaitsForGameReconnectsAfterExitAndRespectsManualPauseAndDisabledPreference()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath();
+        var sessions = new List<FakeSession>();
+        using var controller = fixture.Controller(() => { var next = new FakeSession { Runtime = Ready() with { Tick = fixture.Now } }; sessions.Add(next); return next; });
+        controller.Poll();
+        Assert.Empty(sessions);
+        fixture.RunningPid = 42;
+        fixture.Now += 3000;
+        controller.Poll();
+        Assert.True(controller.Snapshot().Connected);
+        await controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "mana", enabled = true }));
+        sessions[0].Connected = false;
+        controller.Poll();
+        fixture.Now += 3000;
+        controller.Poll();
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal(2, sessions[1].Requested);
+        await controller.ExecuteAsync("trainerDisconnect", default);
+        fixture.Now += 3000;
+        controller.Poll();
+        Assert.True(controller.Snapshot().AutoConnectPaused);
+        Assert.Equal(2, sessions.Count);
+        await controller.ExecuteAsync("trainerSetAutoConnect", Payload(new { enabled = false }));
+        controller.Poll();
+        Assert.Equal(2, sessions.Count);
+        await controller.ExecuteAsync("trainerSetAutoConnect", Payload(new { enabled = true }));
+        controller.Poll();
+        Assert.Equal(3, sessions.Count);
+        Assert.True(new TrainerSettings(fixture.PreferencePath, false).AutoConnect);
+    }
+
+    [Fact]
+    public async Task DisablingAutoConnectCancelsPendingAttemptAndFencesLateSuccess()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath(); fixture.RunningPid = 42;
+        var session = new FakeSession { PendingConnect = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        using var controller = fixture.Controller(() => session);
+        controller.Poll();
+        Assert.True(controller.Snapshot().Connecting);
+        await controller.ExecuteAsync("trainerSetAutoConnect", Payload(new { enabled = false }));
+        Assert.True(session.Cancellation.IsCancellationRequested);
+        session.PendingConnect.SetResult();
+        // Await the controller's asynchronous continuation, without game memory.
+        for (var attempt = 0; attempt < 100 && session.Disposals < 2; attempt++) await Task.Delay(5);
+        Assert.False(controller.Snapshot().Connected || controller.Snapshot().Connecting);
+        Assert.Equal(0, fixture.Hotkeys.Starts);
+        Assert.False(new TrainerSettings(fixture.PreferencePath, false).AutoConnect);
+    }
+
+    [Fact]
+    public async Task FailedAutoConnectionDoesNotRetryTheSameProcessButManualRetryIsAllowed()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath(); fixture.RunningPid = 42;
+        using var controller = fixture.Controller(() => new FakeSession { ConnectError = new IOException("Unsupported test build") });
+        controller.Poll();
+        Assert.Equal(1, fixture.CreatedSessions);
+        fixture.Now += 30000;
+        controller.Poll();
+        Assert.Equal(1, fixture.CreatedSessions);
+        await Assert.ThrowsAsync<IOException>(() => controller.ExecuteAsync("trainerConnect", default));
+        Assert.Equal(2, fixture.CreatedSessions);
+        fixture.RunningPid = 43; fixture.Now += 3000;
+        controller.Poll();
+        Assert.Equal(3, fixture.CreatedSessions);
+    }
+
+    [Fact]
+    public async Task EmergencyOffRemainsOffWhenPreferenceFileCannotBeReplaced()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath();
+        var session = new FakeSession();
+        using var controller = fixture.Controller(() => session);
+        await controller.ExecuteAsync("trainerConnect", default);
+        await controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "life", enabled = true }));
+        using var locked = File.Open(fixture.PreferencePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var error = await Record.ExceptionAsync(() => controller.ExecuteAsync("trainerDisableAll", default));
+        Assert.True(error is IOException or UnauthorizedAccessException);
+        controller.Poll();
+        Assert.Equal(0, session.Requested);
+        Assert.All(controller.Snapshot().Features, feature => Assert.False(feature.Enabled || feature.Requested));
+    }
+
     private static JsonElement Payload(object value) => JsonSerializer.SerializeToElement(value);
     private static TrainerRuntimeSnapshot Ready() => new(2, 0, 0, 1000, 500, 1000, 100, 250, 200, 80, 0, 0);
 
@@ -330,8 +453,10 @@ public sealed class TrainerControllerTests
         public TrainerRuntimeSnapshot Runtime { get; set; } = Ready();
         public TaskCompletionSource? PendingConnect { get; init; }
         public CancellationToken Cancellation { get; private set; }
+        public Exception? ConnectError { get; init; }
         public async Task ConnectAsync(string executable, CancellationToken cancellationToken)
         {
+            if (ConnectError is not null) throw ConnectError;
             Cancellation = cancellationToken;
             if (PendingConnect is not null) await PendingConnect.Task;
             Connected = true;
@@ -371,6 +496,7 @@ public sealed class TrainerControllerTests
         public TrainerSettings Settings { get; }
         public FakeHotkeys Hotkeys { get; } = new();
         public ulong Now { get; set; } = 1000;
+        public int? RunningPid { get; set; }
         public int CreatedSessions { get; private set; }
         public Fixture()
         {
@@ -382,7 +508,7 @@ public sealed class TrainerControllerTests
         public void SelectPath() => Settings.SaveExecutable(Executable);
         public TrainerController Controller(Func<ITrainerSession>? factory = null) => new(Settings, action => action(),
             () => { ++CreatedSessions; return factory?.Invoke() ?? new FakeSession(); }, Hotkeys,
-            _ => throw new InvalidOperationException("Tests must not launch a process."), () => Now);
+            _ => throw new InvalidOperationException("Tests must not launch a process."), () => Now, _ => RunningPid);
         public void Dispose() => System.IO.Directory.Delete(Directory, recursive: true);
     }
 }

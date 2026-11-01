@@ -17,6 +17,7 @@ test("selects the exact successful main build and its verified release EXE", asy
     runId: 101,
     releaseId: 201,
     assetId: 301,
+    assets: fixture.assets.map(({ id, name }) => ({ id, name })),
     alreadyPublished: false,
     manifest: fixture.manifest,
   });
@@ -124,12 +125,10 @@ for (const [field, value] of [
     const fixture = harness();
     const manifest = { ...fixture.manifest, [field]: value };
     if (field === "version")
-      manifest.files = [
-        {
-          ...manifest.files[0],
-          name: `GrimDawnOptimizer-${value}-win-x64.exe`,
-        },
-      ];
+      manifest.files = manifest.files.map((file) => ({
+        ...file,
+        name: file.name.replace("1.0.21", value),
+      }));
     fixture.release.body = formatDraftBody(manifest);
     await assert.rejects(findReleaseBuild(fixture.input), /manifest does not/);
     assert.deepEqual(fixture.outputs, {});
@@ -147,10 +146,7 @@ for (const [field, value] of [
   test(`rejects mismatching asset ${field}=${value}`, async () => {
     const fixture = harness();
     fixture.assets[0][field] = value;
-    await assert.rejects(
-      findReleaseBuild(fixture.input),
-      /exactly the verified portable EXE/,
-    );
+    await assert.rejects(findReleaseBuild(fixture.input), /verified packages/);
   });
 }
 
@@ -159,10 +155,7 @@ test("rejects missing or additional release assets", async () => {
     const fixture = harness();
     if (!count) fixture.assets.length = 0;
     else fixture.assets.push({ ...fixture.assets[0], id: 302 });
-    await assert.rejects(
-      findReleaseBuild(fixture.input),
-      /exactly the verified portable EXE/,
-    );
+    await assert.rejects(findReleaseBuild(fixture.input), /verified packages/);
   }
 });
 

@@ -48,6 +48,7 @@ def main():
         "trainer-native/CairnInject.x86.exe", "trainer-native/CairnInject.x64.exe",
     }
     assert required <= expected.keys(), f"Missing staged runtime files: {required - expected.keys()}"
+    assert "installation.json" not in expected, "Portable packages must never enable installed-channel updates"
     assert any(name.startswith("LICENSES/") for name in expected), "Dependency licenses are missing"
     run([str(executable), "--verify-only"])
     with tempfile.TemporaryDirectory(prefix="grim-dawn-portable-") as temporary:

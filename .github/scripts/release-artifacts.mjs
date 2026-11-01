@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import draft from "./release-draft.cjs";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -16,7 +17,9 @@ const repositoryRoot = resolve(
 );
 const defaultDirectory = join(repositoryRoot, "artifacts/release");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const payloadNames = (version) => [`GrimDawnOptimizer-${version}-win-x64.exe`];
+const { payloadNames, validateManifest } = draft;
+const updateUrl = (version) =>
+  `https://github.com/1adybug/grim-dawn-optimizer/releases/download/v${version}/GrimDawnOptimizer-${version}-win-x64-setup.exe`;
 const checksumText = (files) =>
   files.map((file) => `${file.sha256}  ${file.name}\n`).join("");
 
@@ -29,7 +32,7 @@ export async function verifyRelease({
   const manifest = JSON.parse(
     await readFile(join(directory, "release-manifest.json"), "utf8"),
   );
-  assert.equal(manifest.schemaVersion, 1, "Unsupported release manifest");
+  validateManifest(manifest);
   assert.match(commit ?? "", /^[a-f0-9]{40}$/, "Expected a full commit SHA");
   assert.equal(
     manifest.commit,
@@ -81,6 +84,33 @@ export async function verifyRelease({
     assert.equal(bytes.length, file.size, `Size mismatch: ${file.name}`);
     assert.equal(sha256(bytes), file.sha256, `Checksum mismatch: ${file.name}`);
   }
+  const latest = JSON.parse(
+    await readFile(join(directory, "latest.json"), "utf8"),
+  );
+  assert.equal(
+    latest.version,
+    manifest.version,
+    "Updater version does not match the installer",
+  );
+  assert.deepEqual(
+    Object.keys(latest.platforms ?? {}),
+    ["windows-x86_64"],
+    "Unexpected updater platforms",
+  );
+  const platform = latest.platforms["windows-x86_64"];
+  assert.equal(
+    platform.url,
+    updateUrl(manifest.version),
+    "Updater URL must point to this release's installer",
+  );
+  assert.equal(
+    platform.signature,
+    (
+      await readFile(join(directory, payloadNames(manifest.version)[2]), "utf8")
+    ).trim(),
+    "Updater signature does not match the signed installer",
+  );
+  assert.ok(platform.signature.length > 0, "Missing updater signature");
   assert.equal(
     await readFile(join(directory, "SHA256SUMS.txt"), "utf8"),
     checksumText(manifest.files),
@@ -116,6 +146,23 @@ export async function stageRelease({
     "Frontend and portable application versions differ",
   );
   const names = payloadNames(version);
+  const signature = (
+    await readFile(join(root, "artifacts", names[2]), "utf8")
+  ).trim();
+  assert.ok(signature.length > 0, "Missing updater signature");
+  await writeFile(
+    join(root, "artifacts/latest.json"),
+    JSON.stringify(
+      {
+        version,
+        notes: "Grim Dawn Optimizer 安装版更新。",
+        pub_date: new Date().toISOString(),
+        platforms: { "windows-x86_64": { url: updateUrl(version), signature } },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
   const sources = names.map((name) => join(root, "artifacts", name));
   await mkdir(directory, { recursive: true });
   const files = [];
@@ -125,7 +172,7 @@ export async function stageRelease({
     files.push({ name, size: bytes.length, sha256: sha256(bytes) });
   }
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version,
     commit,
     runId: String(runId),

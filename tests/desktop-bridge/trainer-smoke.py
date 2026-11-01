@@ -1,6 +1,6 @@
 """Verify the real JSONL trainer protocol entirely offline.
 
-Only state, preference, rejected-enable and disable/disconnect commands are
+Only state, preference and disable/disconnect commands are
 allowed. This test never launches, connects to or injects into a game. Fixture
 executables/DLLs contain marker text and are only used for path validation.
 """
@@ -22,6 +22,7 @@ class OfflineBridge(Bridge):
         "trainerSelectExecutable", "trainerSetMovementMultiplier",
         "trainerSetFeature", "trainerDisableAll", "trainerDisconnect",
         "trainerUnknown",
+        "trainerSetAutoConnect",
     }
 
     def request(self, command: str, payload: dict | None = None, *, ok=True):
@@ -81,6 +82,8 @@ def exercise(executable: Path):
             all_off(first)
             assert first["configuredExecutable"] is None, "Isolated storage must not import legacy paths"
             assert first["movementMultiplier"] == 2
+            assert first["autoConnect"]
+            bridge.request("trainerSetAutoConnect", {"enabled": False})
             expected = ["life", "mana", "kill", "moveSpeed", "attackSpeed", "castSpeed", "cooldown", "autoHealth", "autoMana"]
             assert [feature["id"] for feature in first["features"]] == expected
             assert [feature["shortcut"] for feature in first["features"]] == [f"Ctrl+Alt+F{i}" for i in range(1, 10)]
@@ -96,7 +99,10 @@ def exercise(executable: Path):
                 invalid = bridge.request("trainerSetMovementMultiplier", {"value": value}, ok=False)["state"]
                 all_off(invalid)
                 assert invalid["movementMultiplier"] == 16
-            for payload in ({"id": "life", "enabled": True}, {"id": "quest", "enabled": True}, {"id": "mana", "enabled": "yes"}):
+            enabled = bridge.request("trainerSetFeature", {"id": "life", "enabled": True})["state"]
+            all_off(enabled)
+            assert enabled["features"][0]["enabled"]
+            for payload in ({"id": "quest", "enabled": True}, {"id": "mana", "enabled": "yes"}):
                 all_off(bridge.request("trainerSetFeature", payload, ok=False)["state"])
             all_off(bridge.request("trainerUnknown", ok=False)["state"])
             assert fingerprint(bridge.request("state")["state"]) == before, "Trainer errors must not replace/invalidate analysis"
@@ -122,6 +128,7 @@ def exercise(executable: Path):
             bridge.wait_state(lambda state: not state.get("isBusy"))
             assert bridge.state["selectedCharacterId"] == analysis["selectedCharacterId"]
             assert bridge.state["canOptimize"]
+            bridge.request("trainerSetFeature", {"id": "mana", "enabled": True})
         finally:
             bridge.close()
 
@@ -130,7 +137,9 @@ def exercise(executable: Path):
             state = reopened.request("trainerState")["state"]
             all_off(state)
             assert_same_file(state["configuredExecutable"], files[0])
-            assert state["movementMultiplier"] == 2, "Only path persists; effect choices/multiplier reset"
+            assert state["movementMultiplier"] == 16
+            assert not state["autoConnect"]
+            assert state["features"][1]["enabled"], "Offline choices must persist without requesting game effects"
             assert state["sessionId"] != first["sessionId"]
         finally:
             reopened.close()

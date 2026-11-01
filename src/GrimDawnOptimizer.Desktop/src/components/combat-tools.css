@@ -47,6 +47,21 @@
 .combat-path-row {
   padding: 0 var(--page-inset) 14px;
 }
+.combat-preferences {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 0 var(--page-inset) 12px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.combat-auto-connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+}
 .combat-notices {
   display: grid;
   gap: 8px;

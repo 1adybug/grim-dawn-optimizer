@@ -134,6 +134,26 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
             </Button>
           </div>
         </div>
+        <div className="combat-preferences">
+          <div className="combat-auto-connect">
+            <Switch
+              id="trainer-auto-connect"
+              checked={state?.autoConnect ?? true}
+              disabled={!state || busy || !!transportError}
+              onCheckedChange={(enabled) =>
+                void run("trainerSetAutoConnect", { enabled })
+              }
+            />
+            <Label htmlFor="trainer-auto-connect">自动连接</Label>
+          </div>
+          <span>
+            {state?.autoConnectPaused
+              ? "自动连接已暂停，点击连接恢复。"
+              : state?.autoConnect
+                ? "游戏运行后自动连接；功能与倍率自动保存，在单人角色可用时恢复。"
+                : "自动连接已关闭；功能与倍率自动保存，手动连接后恢复。"}
+          </span>
+        </div>
         <PathInput
           className="combat-path-row"
           label="游戏程序"
@@ -176,7 +196,7 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
               <div
                 key={id}
                 className="combat-feature"
-                data-requested={feature.requested}
+                data-requested={feature.enabled}
               >
                 <div className="combat-feature-label">
                   <Label htmlFor={`trainer-${id}`}>{feature.title}</Label>
@@ -202,8 +222,8 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
                 </div>
                 <Switch
                   id={`trainer-${id}`}
-                  checked={feature.requested}
-                  disabled={!available || busy}
+                  checked={feature.enabled}
+                  disabled={busy || connecting || !!transportError}
                   aria-describedby={`trainer-${id}-description`}
                   onCheckedChange={(enabled) =>
                     void run("trainerSetFeature", { id, enabled })
@@ -222,6 +242,9 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
                   )}
                   {feature.applied && !feature.pending && (
                     <span className="combat-applied">已生效</span>
+                  )}
+                  {feature.enabled && !available && (
+                    <span>已记住，等待单人角色</span>
                   )}
                 </div>
                 {id === "moveSpeed" && (

@@ -46,7 +46,11 @@ test("downloads binary bytes and recreates internal evidence without executing a
   const file = f.manifest.files[0];
   assert.deepEqual(
     (await readdir(f.directory)).sort(),
-    [file.name, "SHA256SUMS.txt", "release-manifest.json"].sort(),
+    [
+      ...f.manifest.files.map((file) => file.name),
+      "SHA256SUMS.txt",
+      "release-manifest.json",
+    ].sort(),
   );
   assert.deepEqual(await readFile(join(f.directory, file.name)), PAYLOAD);
   assert.deepEqual(
@@ -57,12 +61,12 @@ test("downloads binary bytes and recreates internal evidence without executing a
   );
   assert.equal(
     await readFile(join(f.directory, "SHA256SUMS.txt"), "utf8"),
-    `${file.sha256}  ${file.name}\n`,
+    f.manifest.files.map((file) => `${file.sha256}  ${file.name}\n`).join(""),
   );
   assert.deepEqual(f.calls.at(-1).parameters, {
     owner: "owner",
     repo: "project",
-    asset_id: 301,
+    asset_id: 304,
     headers: { accept: "application/octet-stream" },
   });
 });

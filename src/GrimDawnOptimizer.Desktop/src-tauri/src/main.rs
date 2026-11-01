@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod bridge;
+mod updates;
 
 use bridge::Bridge;
 use serde_json::Value;
@@ -21,8 +22,16 @@ async fn bridge_request(
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Bridge::default())
-        .invoke_handler(tauri::generate_handler![bridge_request])
+        .manage(updates::Updates::default())
+        .invoke_handler(tauri::generate_handler![
+            bridge_request,
+            updates::update_state,
+            updates::update_preferences,
+            updates::check_update,
+            updates::install_update
+        ])
         .build(tauri::generate_context!())
         .expect("无法启动 Grim Dawn Optimizer")
         .run(|app, event| {

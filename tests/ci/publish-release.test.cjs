@@ -8,6 +8,7 @@ const publish = require("../../.github/scripts/publish-release.cjs");
 const {
   formatDraftBody,
   parseDraftBody,
+  payloadNames,
 } = require("../../.github/scripts/release-draft.cjs");
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
@@ -21,17 +22,14 @@ const context = {
 const portableName = "GrimDawnOptimizer-1.0.21-win-x64.exe";
 const portableData = Buffer.from(`test payload ${portableName}`);
 const sourceManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   version: "1.0.21",
   commit: context.sha,
   runId: "123",
-  files: [
-    {
-      name: portableName,
-      size: portableData.length,
-      sha256: sha256(portableData),
-    },
-  ],
+  files: payloadNames("1.0.21").map((name) => {
+    const data = Buffer.from(`test payload ${name}`);
+    return { name, size: data.length, sha256: sha256(data) };
+  }),
 };
 const stageOptions = {
   stageOnly: true,
@@ -48,13 +46,13 @@ async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "gd-release-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const files = [];
-  for (const name of ["GrimDawnOptimizer-1.0.21-win-x64.exe"]) {
+  for (const name of payloadNames("1.0.21")) {
     const data = Buffer.from(`test payload ${name}`);
     await writeFile(join(directory, name), data);
     files.push({ name, size: data.length, sha256: sha256(data) });
   }
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     version: "1.0.21",
     commit: context.sha,
     runId: "123",
@@ -193,13 +191,13 @@ const run = (f, api, override = {}) =>
     ...override,
   });
 
-test("main stages one verified EXE and tag publishes notes with hidden provenance", async (t) => {
+test("main stages both packages and updater metadata and tag publishes notes with hidden provenance", async (t) => {
   const f = await fixture(t);
   const api = mock();
   await run(f, api, stageOptions);
   assert.deepEqual(
     api.writes.map(([name]) => name),
-    ["createRelease", "uploadReleaseAsset", "updateRelease"],
+    ["createRelease", ...Array(4).fill("uploadReleaseAsset"), "updateRelease"],
   );
   const create = api.writes[0][1];
   assert.equal(create.draft, true);
@@ -213,7 +211,7 @@ test("main stages one verified EXE and tag publishes notes with hidden provenanc
     api.reads.some(([name]) => name === "generateReleaseNotes"),
     false,
   );
-  assert.equal(api.assets.length, 1);
+  assert.equal(api.assets.length, 4);
   assert.equal(api.assets[0].name, "GrimDawnOptimizer-1.0.21-win-x64.exe");
   await run(f, api);
   assert.equal(api.release.draft, false);
@@ -224,7 +222,7 @@ test("main stages one verified EXE and tag publishes notes with hidden provenanc
   assert.deepEqual(parseDraftBody(api.release.body), f.manifest);
   assert.equal(
     api.writes.filter(([name]) => name === "uploadReleaseAsset").length,
-    1,
+    4,
   );
 });
 
@@ -250,7 +248,10 @@ test("staging rejects a GitHub response that lost the version tag", async (t) =>
     response.data.tag_name = "untagged-github-placeholder";
     return response;
   };
-  await assert.rejects(run(f, api, stageOptions), /retain the staged version tag/);
+  await assert.rejects(
+    run(f, api, stageOptions),
+    /retain the staged version tag/,
+  );
 });
 
 test("upload failure leaves a recoverable draft and never publishes", async (t) => {
@@ -332,9 +333,11 @@ test("draft rerun retains a verified EXE or uploads the missing EXE", async (t) 
     await run(f, api);
     assert.deepEqual(
       api.writes.map(([name]) => name),
-      present ? ["updateRelease"] : ["uploadReleaseAsset", "updateRelease"],
+      present
+        ? ["updateRelease"]
+        : [...Array(4).fill("uploadReleaseAsset"), "updateRelease"],
     );
-    assert.equal(api.assets.length, 1);
+    assert.equal(api.assets.length, 4);
     if (present) assert.equal(api.assets[0].id, f.assets[0].id);
     assert.equal(api.release.draft, false);
   }
@@ -362,13 +365,16 @@ test("unsafe manifest filenames fail before any GitHub request", async (t) => {
       }),
     );
     const api = mock();
-    await assert.rejects(run(f, api), /Unsafe release asset name/);
+    await assert.rejects(
+      run(f, api),
+      /Unexpected release payloads|Expected portable EXE/,
+    );
     assert.deepEqual(api.reads, []);
     assert.deepEqual(api.writes, []);
   }
 });
 
-test("ZIP, installer, multiple payloads and modified checksums fail before any GitHub request", async (t) => {
+test("ZIP, incomplete packages, extra payloads and modified checksums fail before any GitHub request", async (t) => {
   const f = await fixture(t);
   for (const files of [
     [{ ...f.manifest.files[0], name: "GrimDawnOptimizer-1.0.21-win-x64.zip" }],
@@ -447,7 +453,11 @@ test("a newer main build can replace a prior draft payload and then update its p
   await run(f, api, stageOptions);
   assert.deepEqual(
     api.writes.map(([name]) => name),
-    ["deleteReleaseAsset", "uploadReleaseAsset", "updateRelease"],
+    [
+      "deleteReleaseAsset",
+      ...Array(4).fill("uploadReleaseAsset"),
+      "updateRelease",
+    ],
   );
   assert.equal(api.release.draft, true);
   assert.equal(api.release.target_commitish, context.sha);
