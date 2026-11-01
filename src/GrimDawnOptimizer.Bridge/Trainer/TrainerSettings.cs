@@ -11,6 +11,7 @@ public sealed class TrainerSettings
     public bool AutoConnect { get; private set; } = true;
     public int EnabledFeatures { get; private set; }
     public int MovementMultiplier { get; private set; } = 2;
+    public string LifeMode { get; private set; } = "infinite";
     public string? LoadWarning { get; private set; }
 
     public TrainerSettings(string? storage = null, bool importLegacyDefault = true, string? legacyStorage = null)
@@ -34,6 +35,7 @@ public sealed class TrainerSettings
                 EnabledFeatures = preference.EnabledFeatures & TrainerFeatures.Mask;
                 MovementMultiplier = TrainerFeatures.MovementMultipliers.Contains(preference.MovementMultiplier)
                     ? preference.MovementMultiplier : 2;
+                LifeMode = TrainerFeatures.LifeModes.Contains(preference.LifeMode) ? preference.LifeMode : "infinite";
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -46,15 +48,20 @@ public sealed class TrainerSettings
     public void SaveExecutable(string path)
     {
         var fullPath = Validate(path);
-        Save(new(fullPath, AutoConnect, EnabledFeatures, MovementMultiplier));
+        Save(new(fullPath, AutoConnect, EnabledFeatures, MovementMultiplier, LifeMode: LifeMode));
     }
 
-    public void SaveAutoConnect(bool enabled) => Save(new(Executable, enabled, EnabledFeatures, MovementMultiplier));
-    public void SaveFeatures(int flags) => Save(new(Executable, AutoConnect, flags & TrainerFeatures.Mask, MovementMultiplier));
+    public void SaveAutoConnect(bool enabled) => Save(new(Executable, enabled, EnabledFeatures, MovementMultiplier, LifeMode: LifeMode));
+    public void SaveFeatures(int flags) => Save(new(Executable, AutoConnect, flags & TrainerFeatures.Mask, MovementMultiplier, LifeMode: LifeMode));
+    public void SaveLifeMode(string value)
+    {
+        if (!TrainerFeatures.LifeModes.Contains(value)) throw new ArgumentException("生命模式只能为 infinite 或 lock。");
+        Save(new(Executable, AutoConnect, EnabledFeatures, MovementMultiplier, LifeMode: value));
+    }
     public void SaveMovementMultiplier(int value)
     {
         if (!TrainerFeatures.MovementMultipliers.Contains(value)) throw new ArgumentException("移动倍率只能为 2、4、8 或 16。");
-        Save(new(Executable, AutoConnect, EnabledFeatures, value));
+        Save(new(Executable, AutoConnect, EnabledFeatures, value, LifeMode: LifeMode));
     }
 
     private void Save(Preference preference)
@@ -71,6 +78,7 @@ public sealed class TrainerSettings
             AutoConnect = preference.AutoConnect;
             EnabledFeatures = preference.EnabledFeatures;
             MovementMultiplier = preference.MovementMultiplier;
+            LifeMode = preference.LifeMode;
             LoadWarning = null;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -104,5 +112,5 @@ public sealed class TrainerSettings
     }
 
     private sealed record Preference(string? GameExecutable = null, bool AutoConnect = true,
-        int EnabledFeatures = 0, int MovementMultiplier = 2, int SchemaVersion = 1);
+        int EnabledFeatures = 0, int MovementMultiplier = 2, int SchemaVersion = 1, string LifeMode = "infinite");
 }

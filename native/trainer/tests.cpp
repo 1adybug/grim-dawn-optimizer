@@ -1,4 +1,5 @@
 // Regression checks against mock engine functions. Never opens or injects into the game.
+#define TRAINER_SIMULATION
 #include "bridge.cpp"
 #include <cassert>
 #include <iostream>
@@ -138,6 +139,35 @@ int main(){
     at<float>(attr,Attr)=15;absHook(attr TEST_EDX,playerMemory,nullptr,nullptr,0);assert(at<float>(attr,Attr)==15);
     armorHook(cm TEST_EDX,1000,100,70,0);assert(armorArgs[1]==100 && armorArgs[2]==70);
 
+    // Death protection preserves normal damage/healing and never grants the
+    // infinite mode's armor/resistances. Only lethal local-player hits notify.
+    state.lifeMode=PreventDeath;state.requested=Life;
+    at<double>(playerMemory,Bio+0x20)=100;maintainPlayer();
+    assert(at<double>(playerMemory,Bio+0x20)==100);
+    LONG triggers=state.lifeTriggers;
+    lifeHook(playerMemory TEST_EDX,10,nullptr,false,false);assert(receivedDamage==10&&state.lifeTriggers==triggers);
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+1);
+    lifeHook(playerMemory TEST_EDX,99,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+2);
+    lifeHook(enemyMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&state.lifeTriggers==triggers+2);
+    lifeHook(playerMemory TEST_EDX,-20,nullptr,false,false);assert(receivedDamage==-20);
+    at<double>(playerMemory,Bio+0x20)=1;receivedDamage=-1;
+    lifeHook(playerMemory TEST_EDX,2,nullptr,false,false);assert(receivedDamage==-1&&state.lifeTriggers==triggers+3);
+    at<double>(playerMemory,Bio+0x20)=.5;
+    lifeHook(playerMemory TEST_EDX,2,nullptr,false,false);assert(at<double>(playerMemory,Bio+0x20)==1);
+    at<double>(playerMemory,Bio+0x20)=100.000001;
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(static_cast<double>(receivedDamage)<=99.000001);
+    at<float>(attr,Attr)=15;absHook(attr TEST_EDX,playerMemory,nullptr,nullptr,0);assert(at<float>(attr,Attr)==15);
+    armorHook(cm TEST_EDX,1000,100,70,0);assert(armorArgs[1]==100&&armorArgs[2]==70);
+    at<double>(playerMemory,Bio+0x20)=0;maintainPlayer();assert(at<double>(playerMemory,Bio+0x20)==0);
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
+    at<double>(playerMemory,Bio+0x20)=100;state.heartbeat=GetTickCount64()-4000;
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
+    state.heartbeat=GetTickCount64();multiplayer=true;maintainPlayer();
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
+    multiplayer=false;state.requested=0;maintainPlayer();
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
+    state.lifeMode=Infinite;
+
     assert(availableMana(300,40)==260 && availableMana(300,400)==0 && availableMana(300,-1)==300);
     assert(availableMana(300,std::numeric_limits<float>::quiet_NaN())==0);
     assert(!needsPotion(260,260,30) && !needsPotion(231,260,30) && needsPotion(230,260,30));
@@ -214,6 +244,11 @@ int main(){
     multiplayer=false;maintainPlayer();assert(cachedRun==3.2f);
     state.heartbeat=GetTickCount64()-4000;maintainPlayer();assert(state.applied==0 && cachedRun==.8f && !on(Life));
     state.heartbeat=GetTickCount64();state.requested=32|64;maintainPlayer();assert(state.applied==0); // Retired controls.
-    assert(speedRefreshes>0 && sizeof(SharedState)==720 && offsetof(SharedState,hits)==632 && Protocol==5);
-    std::cout<<"PASS: resources/reserved mana; 2/4/8/16x movement and live selection; no compounding; dynamic baseline; independent speeds; cache restore; finite movement; merged Life; auto potions: >= threshold, usable mana, cooldown, health/mana second charge during recharge, exhausted/replenished charges, unavailable states, pause, retry, dead/off; local-only/expiry/multiplayer; retired flags; v5 ABI ("<<sizeof(void*)*8<<" bit).\n";
+    assert(speedRefreshes>0 && sizeof(SharedState)==1132 && offsetof(SharedState,hits)==632 && Protocol==6);
+    state.uiWrite=state.uiRead=0;
+    for(int i=0;i<32;++i)assert(enqueueOverlayAction(&state,SetMovement,0,4));
+    assert(!enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiDropped==1);
+    assert(state.uiActions[0].type==SetMovement&&state.uiActions[31].value==4);
+    state.uiRead=32;assert(enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiActions[0].type==DisableAll);
+    std::cout<<"PASS: resources/reserved mana; movement multipliers; independent speeds/cache restore; infinite/lock life, lethal clamp and trigger counts; normal damage/healing; no revival; auto potions and charges; local-only/expiry/multiplayer; retired flags; v6 ABI ("<<sizeof(void*)*8<<" bit).\n";
 }

@@ -23,7 +23,7 @@ public sealed class TrainerHotkeys : ITrainerHotkeys
                 _threadId = GetCurrentThreadId();
                 PeekMessage(out _, IntPtr.Zero, 0, 0, 0); // Create the thread message queue.
                 var failed = new List<string>();
-                foreach (var id in Enumerable.Range(1, 9).Append(12))
+                foreach (var id in Enumerable.Range(1, 10).Append(12))
                 {
                     if (RegisterHotKey(IntPtr.Zero, id, 0x4003, (uint)(0x70 + id - 1))) registered.Add(id);
                     else failed.Add($"Ctrl+Alt+F{id}");

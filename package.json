@@ -1,7 +1,7 @@
 {
   "name": "grim-dawn-optimizer",
   "private": true,
-  "version": "1.0.24",
+  "version": "1.0.25",
   "scripts": {
     "setup": "npm --prefix src/GrimDawnOptimizer.Desktop ci",
     "dev": "npm --prefix src/GrimDawnOptimizer.Desktop run tauri:dev",

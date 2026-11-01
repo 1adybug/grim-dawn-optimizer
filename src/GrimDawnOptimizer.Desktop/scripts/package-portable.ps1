@@ -30,7 +30,7 @@ Assert-ArtifactChild $OutputFile
 $executable = Join-Path $releaseDirectory 'grim-dawn-optimizer.exe'
 $engine = Join-Path $projectRoot 'src-tauri/binaries/grim-dawn-engine-x86_64-pc-windows-msvc.exe'
 $trainerDirectory = Join-Path $projectRoot 'src-tauri/binaries/trainer-native'
-$trainerFiles = @('CairnBridge.v5.x86.dll', 'CairnBridge.v5.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
+$trainerFiles = @('CairnBridge.v6.x86.dll', 'CairnBridge.v6.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
 if (-not (Test-Path -LiteralPath $executable)) { throw 'Run npm run tauri:build -- --no-bundle first.' }
 if (-not (Test-Path -LiteralPath $engine)) { throw 'Run npm run engine:prepare first.' }
 foreach ($file in $trainerFiles) {

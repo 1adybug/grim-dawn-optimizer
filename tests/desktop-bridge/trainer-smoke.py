@@ -20,6 +20,7 @@ class OfflineBridge(Bridge):
     ALLOWED = {
         "state", "demo", "optimize", "cancel", "trainerState",
         "trainerSelectExecutable", "trainerSetMovementMultiplier",
+        "trainerSetLifeMode", "trainerToggleOverlay",
         "trainerSetFeature", "trainerDisableAll", "trainerDisconnect",
         "trainerUnknown",
         "trainerSetAutoConnect",
@@ -82,6 +83,10 @@ def exercise(executable: Path):
             all_off(first)
             assert first["configuredExecutable"] is None, "Isolated storage must not import legacy paths"
             assert first["movementMultiplier"] == 2
+            assert first["lifeMode"] == "infinite" and first["lifeTriggers"] == 0
+            all_off(bridge.request("trainerSetLifeMode", {"value": "lock"})["state"])
+            assert bridge.request("trainerSetLifeMode", {"value": "bad"}, ok=False)["state"]["lifeMode"] == "lock"
+            all_off(bridge.request("trainerToggleOverlay", ok=False)["state"])
             assert first["autoConnect"]
             bridge.request("trainerSetAutoConnect", {"enabled": False})
             expected = ["life", "mana", "kill", "moveSpeed", "attackSpeed", "castSpeed", "cooldown", "autoHealth", "autoMana"]
@@ -138,6 +143,7 @@ def exercise(executable: Path):
             all_off(state)
             assert_same_file(state["configuredExecutable"], files[0])
             assert state["movementMultiplier"] == 16
+            assert state["lifeMode"] == "lock"
             assert not state["autoConnect"]
             assert state["features"][1]["enabled"], "Offline choices must persist without requesting game effects"
             assert state["sessionId"] != first["sessionId"]

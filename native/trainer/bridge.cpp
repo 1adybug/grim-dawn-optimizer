@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "protocol.h"
 #include "potion_policy.h"
+#include "overlay.h"
 #pragma comment(lib,"user32.lib")
 #include "../../vendor/minhook/include/MinHook.h"
 #include <algorithm>
@@ -31,7 +32,7 @@ static HMODULE game=nullptr, engine=nullptr;
 static void** gameEngine=nullptr;
 static void** rootEngine=nullptr;
 static void* localPlayer=nullptr;
-static LONG effects=0,movementMultiplier=2;
+static LONG effects=0,movementMultiplier=2,lifeMode=Infinite;
 template<class T> T sym(HMODULE m,const char* name){
 #ifndef _WIN64
     for(auto& pair:ExportNames32)if(strcmp(pair.x64,name)==0){name=pair.x86;break;}
@@ -90,6 +91,7 @@ static uint64_t hits[9]{},lastPotionAttempt[2]{},lastPotionCheck=0;
 
 static bool live(){return shared && shared->heartbeat>0 && GetTickCount64()-static_cast<uint64_t>(shared->heartbeat)<3000;}
 static bool on(LONG flag){return live() && (effects&flag)!=0;}
+static bool infiniteLife(){return on(Life)&&lifeMode==Infinite;}
 static float movementResult(void* p,float normal){
     if(p!=localPlayer||!on(MoveSpeed)||!std::isfinite(normal)||normal<=0)return normal;
     float boosted=normal*movementMultiplier;
@@ -161,6 +163,7 @@ static void maintainPlayer(bool allowActions=true){
     void* active=e?getMain(e):nullptr;
     void* player=multi?nullptr:active;
     LONG old=effects;
+    lifeMode=shared->lifeMode==PreventDeath?PreventDeath:Infinite;
     LONG oldMultiplier=movementMultiplier;movementMultiplier=validMultiplier(shared->movementMultiplier);
     bool changedPlayer=localPlayer!=player;
     effects=(player&&live()&&!shared->fault)?(shared->requested&AllFeatures):0;
@@ -173,7 +176,7 @@ static void maintainPlayer(bool allowActions=true){
     if(!player){shared->player=0;return;}
     // Only current resource fields change. Base attributes and save data are never written.
     float hp=maxLife(player),mp=availableMana(maxMana(player),reserveMana(player));
-    if(on(Life) && hp>0 && at<double>(player,Bio+0x20)>0){
+    if(infiniteLife() && hp>0 && at<double>(player,Bio+0x20)>0){
         at<double>(player,Bio+0x20)=hp;at<float>(player,Bio+0x2c)=0;
     }
     if(on(Mana) && mp>0){at<float>(player,Bio+0x3c)=mp;at<float>(player,Bio+0x44)=0;}
@@ -215,7 +218,20 @@ static float DETOUR getRunHook(void* p DUMMY,bool raw){
 static float DETOUR attackHook(void* p DUMMY,float v){if(p==localPlayer&&on(AttackSpeed)){++hits[4];v=1000000.f;}return originalAttack(p,v);}
 static float DETOUR castHook(void* p DUMMY,float v){if(p==localPlayer&&on(CastSpeed)){++hits[5];v=1000000.f;}return originalCast(p,v);}
 static void DETOUR lifeHook(void* p DUMMY,float damage,const void* type,bool a,bool b){
-    if(p==localPlayer&&on(Life)&&damage>0){++hits[0];return;}
+    if(p==localPlayer&&on(Life)&&damage>0){
+        if(lifeMode==Infinite){++hits[0];return;}
+        double current=at<double>(p,Bio+0x20);
+        if(std::isfinite(current)&&current>0&&std::isfinite(damage)&&damage>=current-1.0){
+            // Round down so a float conversion cannot cross the one-health floor.
+            double allowed=std::max(0.0,current-1.0);
+            float reduced=static_cast<float>(allowed);
+            if(reduced>allowed)reduced=std::nextafter(reduced,0.f);
+            InterlockedIncrement(&shared->lifeTriggers);++hits[0];
+            if(current<1.0)at<double>(p,Bio+0x20)=1.0;
+            if(reduced<=0)return;
+            damage=reduced;
+        }
+    }
     if(p!=localPlayer&&localPlayer&&on(Kill)&&damage>0){
         void* e=gameEngine?*gameEngine:nullptr;
         void* fm=e?getFactionMgr(e):nullptr;
@@ -236,20 +252,20 @@ static void DETOUR cooldownHook(void* s DUMMY,bool b){
 }
 static void DETOUR absHook(void* attr DUMMY,void* owner,void* reduction,void* scale,float arg){
     originalAbs(attr,owner,reduction,scale,arg);
-    if(owner==localPlayer&&on(Life)){
+    if(owner==localPlayer&&infiniteLife()){
         float cap=defenseCap(owner)+at<float>(attr,Attr+0xc);
         if(cap>0&&std::isfinite(cap)){at<float>(attr,Attr)=std::min(100.f,cap);++hits[0];}
     }
 }
 static void DETOUR durHook(void* attr DUMMY,void* owner,void* reduction,void* scale,float arg){
     originalDur(attr,owner,reduction,scale,arg);
-    if(owner==localPlayer&&on(Life)){
+    if(owner==localPlayer&&infiniteLife()){
         float cap=defenseCap(owner)+at<float>(attr,Attr+8);
         if(cap>0&&std::isfinite(cap))at<float>(attr,Attr)=std::min(100.f,cap);
     }
 }
 static float DETOUR armorHook(void* cm DUMMY,float damage,float armor,float absorbed,float bonus){
-    if(localPlayer&&on(Life)&&at<void*>(cm,Parent)==localPlayer&&damage>0){
+    if(localPlayer&&infiniteLife()&&at<void*>(cm,Parent)==localPlayer&&damage>0){
         armor=std::max(armor,damage);absorbed=armor;bonus=std::max(0.f,bonus);
     }
     return originalArmor(cm,damage,armor,absorbed,bonus);
@@ -325,13 +341,18 @@ static bool install(){
     return true;
 }
 static DWORD WINAPI start(void*){
-    wchar_t name[96];swprintf_s(name,L"Local\\GrimDawnCompanion.v5.%lu",GetCurrentProcessId());
+    wchar_t name[96];swprintf_s(name,L"Local\\GrimDawnCompanion.v%u.%lu",Protocol,GetCurrentProcessId());
     HANDLE mapping=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,name);
     if(!mapping)return 1;
     shared=static_cast<SharedState*>(MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,MappingSize));
     if(!shared || shared->magic!=Magic || shared->version!=Protocol)return 2;
     if(!install()){shared->status=-1;message(L"当前 Game.dll 不匹配，未安装任何效果。");return 3;}
     shared->status=1;message(L"已连接。进入单人游戏后可启用开关。");
+#ifndef TRAINER_SIMULATION
+    // Graphics/input hooks are independent of the combat update ABI. A renderer
+    // failure is reported separately and must not break existing effects.
+    installOverlay(shared);
+#endif
     // The bridge stays loaded until game exit. Hooks become pass-through when heartbeat expires.
     // Retaining trampolines avoids unloading code while an engine stack is executing inside it.
     return 0;

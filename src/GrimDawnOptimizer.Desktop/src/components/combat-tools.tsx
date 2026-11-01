@@ -130,7 +130,8 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
               onClick={() => void run("trainerDisableAll")}
             >
               <Power />
-              全部关闭<span className="combat-off-shortcut">Ctrl+Alt+F12</span>
+              全部关闭
+              <span className="combat-off-shortcut">Ctrl+Alt+F12</span>
             </Button>
           </div>
         </div>
@@ -183,6 +184,13 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
           </div>
         )}
       </section>
+      {state?.connected && state.overlayStatus < 0 && (
+        <Notice tone="error">
+          {state.overlayStatus === -3
+            ? "游戏内弹窗无法接管输入，已停用弹窗交互。请重启游戏后重新连接。"
+            : "游戏内绘制初始化失败，弹窗和锁血提示暂不可用。请重启游戏后重新连接。"}
+        </Notice>
+      )}
       {!state ? (
         <div className="combat-loading" role="status">
           正在准备功能开关…
@@ -274,6 +282,36 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
                     ))}
                   </RadioGroup>
                 )}
+                {id === "life" && (
+                  <RadioGroup
+                    className="combat-speed-options"
+                    aria-label="生命保护模式"
+                    value={state.lifeMode}
+                    disabled={busy || connecting || !!transportError}
+                    onValueChange={(value) =>
+                      void run("trainerSetLifeMode", { value })
+                    }
+                  >
+                    {(
+                      [
+                        ["infinite", "无限"],
+                        ["lock", "锁血"],
+                      ] as const
+                    ).map(([value, title]) => (
+                      <Label
+                        key={value}
+                        className="combat-speed-option"
+                        htmlFor={`trainer-life-${value}`}
+                      >
+                        <RadioGroupItem
+                          id={`trainer-life-${value}`}
+                          value={value}
+                        />
+                        {title}
+                      </Label>
+                    ))}
+                  </RadioGroup>
+                )}
               </div>
             );
           })}
@@ -281,7 +319,7 @@ export function CombatTools({ controller }: { controller: TrainerController }) {
       )}
       <div className="combat-footnote">
         <span>仅单人模式 · 适配 1.3.1.1</span>
-        <span>连接后使用全局快捷键，效果仅作用于当前会话。</span>
+        <span>Ctrl+Alt+F10 呼出游戏弹窗 · 支持全屏 / 无边框 / 窗口化</span>
       </div>
       <Dialog
         open={!!help}

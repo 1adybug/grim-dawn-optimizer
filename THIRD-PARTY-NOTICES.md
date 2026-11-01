@@ -21,3 +21,5 @@
 实战原生组件使用 [MinHook](https://github.com/TsudaKageyu/minhook)，来源提交为 `c3fcafdc10146beb5919319d0683e44e3c30d537`。`vendor/minhook/include`、`vendor/minhook/src` 与原始 `LICENSE.txt` 从已有实战工具的该提交原样迁入，未修改上游内容；来源记录见 `vendor/minhook/SOURCE.md`。完整 BSD 许可及随附版权声明见 [`LICENSES/MinHook-BSD.txt`](LICENSES/MinHook-BSD.txt)。
 
 《恐怖黎明》及其名称、数据和商标归 Crate Entertainment 所有；本项目是非官方、离线的个人工具。配装分析只读游戏文件；独立实战功能修改当前游戏会话内存，不直接编辑存档文件。
+
+全屏游戏弹窗使用 [Dear ImGui](https://github.com/ocornut/imgui) v1.91.9b，提交 `f5befd2d29e66809cd1110a152e375a7f1981f06`。核心代码及 Win32、DirectX 9、DirectX 11 后端从上游原样复制；MIT 许可全文见 [`LICENSES/Dear-ImGui-MIT.txt`](LICENSES/Dear-ImGui-MIT.txt)，来源记录见 `vendor/imgui/SOURCE.md`。游戏内中文字体读取本机 Windows 字体，不随软件分发。

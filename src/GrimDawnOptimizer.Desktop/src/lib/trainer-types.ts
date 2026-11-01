@@ -44,6 +44,10 @@ export interface TrainerState {
   pid: number | null;
   architecture: string | null;
   movementMultiplier: number;
+  lifeMode: "infinite" | "lock";
+  lifeTriggers: number;
+  overlayRevision: number;
+  overlayStatus: number;
   features: TrainerFeature[];
   health: number | null;
   maxHealth: number | null;
@@ -59,5 +63,7 @@ export type TrainerCommand =
   | "trainerDisconnect"
   | "trainerSetFeature"
   | "trainerSetMovementMultiplier"
+  | "trainerSetLifeMode"
+  | "trainerToggleOverlay"
   | "trainerDisableAll"
   | "trainerLaunch";

@@ -4,7 +4,7 @@
 
 ## 构建产物
 
-Windows CI 保留 .NET 全套测试、x86/x64 原生组件模拟、Rust 通信协议测试、前端表格与状态顺序、HTTP/SSE 传输，以及最终打包引擎的计算和离线实战协议 smoke。Tauri 只编译一次并生成 NSIS 安装器，再将同一主程序封装为单文件便携 EXE。主分支发布构建生成签名；PR/普通手动构建使用 `tauri.unsigned.conf.json` 生成不签名的安装器，不读取发布私钥、不暂存 Release。
+Windows CI 保留 .NET 全套测试、x86/x64 原生组件模拟与隐藏窗口输入回归、Rust 通信协议测试、前端表格与状态顺序、HTTP/SSE 传输，以及最终打包引擎的计算和离线实战协议 smoke。Tauri 只编译一次并生成 NSIS 安装器，再将同一主程序封装为单文件便携 EXE。主分支发布构建生成签名；PR/普通手动构建使用 `tauri.unsigned.conf.json` 生成不签名的安装器，不读取发布私钥、不暂存 Release。
 
 本地构建目录生成：
 

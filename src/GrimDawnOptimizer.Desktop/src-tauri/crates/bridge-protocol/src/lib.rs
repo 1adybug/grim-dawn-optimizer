@@ -25,6 +25,8 @@ fn is_trainer_command(command: &str) -> bool {
             | "trainerDisconnect"
             | "trainerSetFeature"
             | "trainerSetMovementMultiplier"
+            | "trainerSetLifeMode"
+            | "trainerToggleOverlay"
             | "trainerDisableAll"
             | "trainerLaunch"
     )

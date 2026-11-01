@@ -19,6 +19,7 @@ public sealed class TrainerController : IDisposable
     private TrainerRuntimeSnapshot? _runtime;
     private long _revision, _connectionGeneration;
     private int _movementMultiplier = 2;
+    private long _overlayRevision;
     private int _enabledFeatures;
     private bool _connecting, _available, _disposed;
     private bool _autoConnectPaused;
@@ -81,6 +82,16 @@ public sealed class TrainerController : IDisposable
                 _movementMultiplier = multiplier;
                 ClearError();
                 break;
+            case "trainerSetLifeMode":
+                _settings.SaveLifeMode(RequiredString(payload, "value"));
+                _session?.SetLifeMode(_settings.LifeMode);
+                ClearError();
+                break;
+            case "trainerToggleOverlay":
+                if (_session is null || _connecting) throw new InvalidOperationException("请先连接游戏，再打开游戏弹窗。");
+                _session.ToggleOverlay();
+                ++_overlayRevision;
+                break;
             case "trainerSetFeature":
                 var feature = TrainerFeatures.All.FirstOrDefault(x => x.Id == RequiredString(payload, "id"))
                     ?? throw new ArgumentException("未知的实战功能。");
@@ -120,6 +131,7 @@ public sealed class TrainerController : IDisposable
         try
         {
             session.SetMovementMultiplier(_movementMultiplier);
+            session.SetLifeMode(_settings.LifeMode);
             session.SetFlags(0);
             await session.ConnectAsync(executable, cancellation.Token);
             if (_disposed || generation != _connectionGeneration)
@@ -168,6 +180,7 @@ public sealed class TrainerController : IDisposable
         try
         {
             if (!_session.Connected) { Disconnect("游戏已退出，所有效果关闭"); return; }
+            foreach (var action in _session.ReadOverlayActions()) ApplyOverlayAction(action);
             var fresh = _session.Read();
             if (fresh is not null) _runtime = fresh;
             var alive = _runtime is not null && _clock() >= _runtime.Tick && _clock() - _runtime.Tick < 3000;
@@ -225,6 +238,7 @@ public sealed class TrainerController : IDisposable
         try
         {
             if (id == 12) { DisableAll(); return; }
+            if (id == 10) { _session.ToggleOverlay(); ++_overlayRevision; Dirty = true; return; }
             Poll();
             if (!_available || _session is null || id < 1 || id > TrainerFeatures.All.Length) return;
             _settings.SaveFeatures(_enabledFeatures ^ TrainerFeatures.All[id - 1].Flag);
@@ -248,6 +262,33 @@ public sealed class TrainerController : IDisposable
             else _session?.SetFlags(0);
             Dirty = true;
         }
+    }
+
+    private void ApplyOverlayAction(TrainerOverlayAction action)
+    {
+        switch (action.Type)
+        {
+            case 1:
+                var feature = TrainerFeatures.All.FirstOrDefault(feature => feature.Flag == action.Key)
+                    ?? throw new ArgumentException("未知的游戏弹窗功能。");
+                if (action.Value is not (0 or 1)) throw new ArgumentException("游戏弹窗开关值无效。");
+                _settings.SaveFeatures(action.Value == 1 ? _enabledFeatures | feature.Flag : _enabledFeatures & ~feature.Flag);
+                _enabledFeatures = _settings.EnabledFeatures;
+                break;
+            case 2:
+                if (action.Value is not (0 or 1)) throw new ArgumentException("游戏弹窗生命模式无效。");
+                _settings.SaveLifeMode(action.Value == 1 ? "lock" : "infinite");
+                _session?.SetLifeMode(_settings.LifeMode);
+                break;
+            case 3:
+                _settings.SaveMovementMultiplier(action.Value);
+                _movementMultiplier = _settings.MovementMultiplier;
+                _session?.SetMovementMultiplier(_movementMultiplier);
+                break;
+            case 4: DisableAll(); break;
+            default: throw new ArgumentException("游戏弹窗操作无效。");
+        }
+        Dirty = true;
     }
 
     public void ReportError(Exception error)
@@ -309,7 +350,8 @@ public sealed class TrainerController : IDisposable
                 ((requested & feature.Flag) != 0) != ((applied & feature.Flag) != 0))).ToArray(),
             Finite(telemetry?.Health), Finite(telemetry?.MaxHealth), Finite(telemetry?.Mana), Finite(telemetry?.MaxMana),
             Finite(telemetry?.HealthPotionRecovery), Finite(telemetry?.ManaPotionRecovery),
-            telemetry?.HealthPotionCooldown, telemetry?.ManaPotionCooldown);
+            telemetry?.HealthPotionCooldown, telemetry?.ManaPotionCooldown,
+            _settings.LifeMode, _runtime?.LifeTriggers ?? 0, _overlayRevision, _runtime?.OverlayStatus ?? 0);
     }
 
     public void Dispose()

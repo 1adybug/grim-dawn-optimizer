@@ -7,12 +7,12 @@ using System.Text;
 
 namespace GrimDawnOptimizer.Bridge.Trainer;
 
-/// <summary>Port of Cairn Companion's v5 session. Connecting opens game memory;
+/// <summary>Versioned native session. Connecting opens game memory;
 /// process discovery and construction do not load the trainer.</summary>
 public sealed class NativeTrainerSession : ITrainerSession
 {
-    public const int Capacity = 4096, StateSize = 720;
-    public const uint Magic = 0x43444731, ProtocolVersion = 5;
+    public const int Capacity = 4096, StateSize = 1132;
+    public const uint Magic = 0x43444731, ProtocolVersion = 6;
     public static readonly string[] SupportedHashes =
     [
         "580ad41cc1c3e4cab6d29e71cb60d3a638079582eb3b5da6eec5ffea54627b7d",
@@ -27,6 +27,7 @@ public sealed class NativeTrainerSession : ITrainerSession
     private Timer? _heartbeat;
     private bool _disposed;
     private int _requested, _movementMultiplier = 2;
+    private string _lifeMode = "infinite";
     public int Requested { get { lock (_gate) return _requested; } }
     public int ProcessId { get { lock (_gate) return _process?.Id ?? 0; } }
     public string Architecture { get; private set; } = "";
@@ -113,6 +114,9 @@ public sealed class NativeTrainerSession : ITrainerSession
                 _requested = 0;
                 _view.Write(8, 0);
                 _view.Write(36, _movementMultiplier);
+                _view.Write(40, _lifeMode == "lock" ? 1 : 0);
+                _view.Write(736, _view.ReadUInt32(732));
+                _view.Write(1128, 0);
                 _view.Write(16, Environment.TickCount64);
                 // Independent of browser scheduling, active tab and optimizer work.
                 _heartbeat = new Timer(_ => Heartbeat(), null, 250, 250);
@@ -188,6 +192,53 @@ public sealed class NativeTrainerSession : ITrainerSession
         }
     }
 
+    public void SetLifeMode(string value)
+    {
+        if (!TrainerFeatures.LifeModes.Contains(value)) throw new ArgumentOutOfRangeException(nameof(value));
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _lifeMode = value;
+            _view?.Write(40, value == "lock" ? 1 : 0);
+        }
+    }
+
+    public void ToggleOverlay()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _view is null) return;
+            _view.Write(720, unchecked(_view.ReadInt32(720) + 1));
+        }
+    }
+
+    public IReadOnlyList<TrainerOverlayAction> ReadOverlayActions()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _view is null) return [];
+            var read = _view.ReadUInt32(736);
+            var write = _view.ReadUInt32(732);
+            Thread.MemoryBarrier();
+            if (_view.ReadInt32(1128) != 0)
+            {
+                _view.Write(736, write); _view.Write(1128, 0);
+                return [new(4, 0, 0)];
+            }
+            var count = unchecked(write - read);
+            if (count > 32) throw new InvalidDataException("游戏弹窗操作队列无效，请重新连接。");
+            var actions = new List<TrainerOverlayAction>();
+            for (uint index = 0; index < count; ++index)
+            {
+                var offset = 744 + ((read + index) % 32) * 12;
+                actions.Add(new(_view.ReadInt32(offset), _view.ReadInt32(offset + 4), _view.ReadInt32(offset + 8)));
+            }
+            Thread.MemoryBarrier();
+            _view.Write(736, write);
+            return actions;
+        }
+    }
+
     public TrainerRuntimeSnapshot? Read()
     {
         lock (_gate)
@@ -213,7 +264,7 @@ public sealed class NativeTrainerSession : ITrainerSession
             BitConverter.ToUInt32(data[28..]), BitConverter.ToUInt64(data[48..]),
             BitConverter.ToDouble(data[56..]), BitConverter.ToSingle(data[64..]), BitConverter.ToSingle(data[68..]), BitConverter.ToSingle(data[72..]),
             BitConverter.ToSingle(data[704..]), BitConverter.ToSingle(data[708..]), BitConverter.ToInt32(data[712..]), BitConverter.ToInt32(data[716..]),
-            Encoding.Unicode.GetString(data.Slice(120, 512)).Split('\0')[0]);
+            Encoding.Unicode.GetString(data.Slice(120, 512)).Split('\0')[0], BitConverter.ToUInt32(data[44..]), BitConverter.ToInt32(data[724..]));
     }
 
     private static string ReadMessage(MemoryMappedViewAccessor view)

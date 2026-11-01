@@ -6,9 +6,10 @@ public static class TrainerFeatures
 {
     public const int Mask = 1951;
     public static readonly int[] MovementMultipliers = [2, 4, 8, 16];
+    public static readonly string[] LifeModes = ["infinite", "lock"];
     public static readonly TrainerFeatureDefinition[] All =
     [
-        new("life", 1, "无限生命", "锁定可用生命，并同时启用护甲与抗性防护；仅作用于当前游戏状态。", "Ctrl+Alt+F1"),
+        new("life", 1, "无限生命", "无限：持续补满生命，并启用护甲与抗性防护。锁血：正常扣血，致命伤害保留至少 1 点生命，并在游戏中提醒。选择模式不会自动开启。", "Ctrl+Alt+F1"),
         new("mana", 2, "无限蓝量", "锁定可用蓝量；保留光环等技能的预留。", "Ctrl+Alt+F2"),
         new("kill", 4, "一击必杀", "当前角色命中敌人时造成致命伤害。", "Ctrl+Alt+F3"),
         new("moveSpeed", 8, "移动速度", "按所选倍率提高当前角色的移动速度；选择倍率不会自动开启。", "Ctrl+Alt+F4"),
@@ -29,13 +30,16 @@ public sealed record TrainerState(
     IReadOnlyList<TrainerFeatureState> Features,
     double? Health, double? MaxHealth, double? Mana, double? MaxMana,
     double? HealthPotionRecovery, double? ManaPotionRecovery,
-    int? HealthPotionCooldown, int? ManaPotionCooldown);
+    int? HealthPotionCooldown, int? ManaPotionCooldown,
+    string LifeMode, uint LifeTriggers, long OverlayRevision, int OverlayStatus);
 
 public sealed record TrainerRuntimeSnapshot(
     int Status, int Applied, uint Fault, ulong Tick,
     double Health, float MaxHealth, float Mana, float MaxMana,
     float HealthPotionRecovery, float ManaPotionRecovery,
-    int HealthPotionCooldown, int ManaPotionCooldown, string Message = "");
+    int HealthPotionCooldown, int ManaPotionCooldown, string Message = "", uint LifeTriggers = 0, int OverlayStatus = 0);
+
+public sealed record TrainerOverlayAction(int Type, int Key, int Value);
 
 public interface ITrainerSession : IDisposable
 {
@@ -46,6 +50,9 @@ public interface ITrainerSession : IDisposable
     Task ConnectAsync(string executable, CancellationToken cancellationToken);
     void SetFlags(int flags);
     void SetMovementMultiplier(int value);
+    void SetLifeMode(string value);
+    void ToggleOverlay();
+    IReadOnlyList<TrainerOverlayAction> ReadOverlayActions();
     TrainerRuntimeSnapshot? Read();
 }
 

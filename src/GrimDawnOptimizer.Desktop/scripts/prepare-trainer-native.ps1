@@ -1,9 +1,10 @@
-param([switch] $RunTests)
+param([switch] $RunTests, [switch] $RunOverlayTests, [switch] $RunInputTests)
 $ErrorActionPreference = 'Stop'
 $desktopRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $repositoryRoot = (Resolve-Path (Join-Path $desktopRoot '../..')).Path
 $nativeRoot = Join-Path $repositoryRoot 'native/trainer'
 $minhookRoot = Join-Path $repositoryRoot 'vendor/minhook'
+$imguiRoot = Join-Path $repositoryRoot 'vendor/imgui'
 $buildRoot = Join-Path $repositoryRoot 'artifacts/trainer-native-build'
 $outputDirectory = Join-Path $desktopRoot 'src-tauri/binaries/trainer-native'
 
@@ -29,10 +30,11 @@ function Get-NativeHash([string] $Path) {
 $manifestPath = Join-Path $buildRoot 'manifest.json'
 $inputs = @(Get-ChildItem -LiteralPath $nativeRoot -File) +
     @(Get-ChildItem -LiteralPath (Join-Path $minhookRoot 'src'),(Join-Path $minhookRoot 'include') -File -Recurse) +
+    @(Get-ChildItem -LiteralPath $imguiRoot -File -Recurse) +
     @(Get-Item -LiteralPath $PSCommandPath,$vcvars)
 $inputFingerprint = (($inputs | Sort-Object FullName | ForEach-Object { $_.FullName + ':' + (Get-NativeHash $_.FullName) }) -join "`n")
-$expectedFiles = @('CairnBridge.v5.x86.dll', 'CairnBridge.v5.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
-if (-not $RunTests -and (Test-Path -LiteralPath $manifestPath)) {
+$expectedFiles = @('CairnBridge.v6.x86.dll', 'CairnBridge.v6.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
+if (-not $RunTests -and -not $RunOverlayTests -and -not $RunInputTests -and (Test-Path -LiteralPath $manifestPath)) {
     try {
         $previous = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
         $current = $previous.inputs -eq $inputFingerprint
@@ -49,15 +51,17 @@ if (-not $RunTests -and (Test-Path -LiteralPath $manifestPath)) {
 foreach ($architecture in @('x86', 'x64')) {
     $architectureDirectory = Join-Path $buildRoot $architecture
     New-Item -ItemType Directory -Force -Path $architectureDirectory | Out-Null
-    $bridgeName = "CairnBridge.v5.$architecture.dll"
+    $bridgeName = "CairnBridge.v6.$architecture.dll"
     $injectorName = "CairnInject.$architecture.exe"
     $hookSources = @('buffer.c', 'hook.c', 'trampoline.c', 'hde/hde32.c', 'hde/hde64.c') | ForEach-Object { '"' + (Join-Path $minhookRoot "src/$_") + '"' }
     $hookArguments = $hookSources -join ' '
+    $imguiSources = @('imgui.cpp','imgui_draw.cpp','imgui_tables.cpp','imgui_widgets.cpp','backends/imgui_impl_win32.cpp','backends/imgui_impl_dx9.cpp','backends/imgui_impl_dx11.cpp') | ForEach-Object { '"' + (Join-Path $imguiRoot $_) + '"' }
+    $imguiArguments = $imguiSources -join ' '
     $commands = @"
 @echo off
 call "$vcvars" $architecture >nul
 if not "%errorlevel%"=="0" exit /b 1
-cl /nologo /O2 /MT /EHsc /std:c++17 /utf-8 /W3 /LD "$nativeRoot\bridge.cpp" $hookArguments /link /OUT:"$architectureDirectory\$bridgeName"
+cl /nologo /O2 /MT /EHsc /std:c++17 /utf-8 /W3 /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /I"$imguiRoot" /LD "$nativeRoot\bridge.cpp" "$nativeRoot\overlay.cpp" $hookArguments $imguiArguments /link /OUT:"$architectureDirectory\$bridgeName"
 if not "%errorlevel%"=="0" exit /b 1
 cl /nologo /O2 /MT /EHsc /std:c++17 /utf-8 /W3 "$nativeRoot\injector.cpp" /link /OUT:"$architectureDirectory\$injectorName"
 if not "%errorlevel%"=="0" exit /b 1
@@ -68,6 +72,30 @@ if not "%errorlevel%"=="0" exit /b 1
 cl /nologo /O1 /MT /EHsc /std:c++17 /utf-8 /W3 "$nativeRoot\tests.cpp" $hookArguments /link /OUT:"$architectureDirectory\native-tests.exe"
 if not "%errorlevel%"=="0" exit /b 1
 "$architectureDirectory\native-tests.exe"
+if not "%errorlevel%"=="0" exit /b 1
+"@
+    }
+    if ($RunInputTests) {
+        $commands += @"
+
+cl /nologo /O1 /MT /EHsc /std:c++17 /utf-8 /W3 /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /I"$imguiRoot" "$nativeRoot\overlay-input-tests.cpp" $hookArguments $imguiArguments /link /OUT:"$architectureDirectory\input-tests.exe"
+if not "%errorlevel%"=="0" exit /b 1
+"$architectureDirectory\input-tests.exe"
+if not "%errorlevel%"=="0" exit /b 1
+"@
+    }
+    if ($RunOverlayTests) {
+        $commands += @"
+
+cl /nologo /O1 /MT /EHsc /std:c++17 /utf-8 /W3 /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /I"$imguiRoot" "$nativeRoot\overlay-smoke.cpp" $hookArguments $imguiArguments /link /OUT:"$architectureDirectory\overlay-tests.exe"
+if not "%errorlevel%"=="0" exit /b 1
+"$architectureDirectory\overlay-tests.exe" 9 windowed "$architectureDirectory\overlay-dx9-windowed.bmp"
+if not "%errorlevel%"=="0" exit /b 1
+"$architectureDirectory\overlay-tests.exe" 9 fullscreen "$architectureDirectory\overlay-dx9-fullscreen.bmp"
+if not "%errorlevel%"=="0" exit /b 1
+"$architectureDirectory\overlay-tests.exe" 11 windowed "$architectureDirectory\overlay-dx11-windowed.bmp"
+if not "%errorlevel%"=="0" exit /b 1
+"$architectureDirectory\overlay-tests.exe" 11 fullscreen "$architectureDirectory\overlay-dx11-fullscreen.bmp"
 if not "%errorlevel%"=="0" exit /b 1
 "@
     }

@@ -7,6 +7,58 @@ namespace GrimDawnOptimizer.Bridge.Tests;
 public sealed class TrainerControllerTests
 {
     [Fact]
+    public async Task LifeModePersistsWithoutEnablingAndIsRestoredBeforeConnection()
+    {
+        using var fixture = new Fixture();
+        fixture.SelectPath();
+        using (var first = fixture.Controller())
+        {
+            Assert.Equal("infinite", first.Snapshot().LifeMode);
+            await first.ExecuteAsync("trainerSetLifeMode", Payload(new { value = "lock" }));
+            Assert.False(first.Snapshot().Features[0].Enabled);
+            await Assert.ThrowsAsync<ArgumentException>(() => first.ExecuteAsync("trainerSetLifeMode", Payload(new { value = "unknown" })));
+            await first.ExecuteAsync("trainerSetMovementMultiplier", Payload(new { value = 4 }));
+            Assert.Equal("lock", first.Snapshot().LifeMode);
+            Assert.Equal(0, fixture.CreatedSessions);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => first.ExecuteAsync("trainerToggleOverlay", Payload(new { })));
+        }
+        var saved = new TrainerSettings(fixture.PreferencePath, false);
+        Assert.Equal("lock", saved.LifeMode);
+        var session = new FakeSession { Runtime = Ready() with { LifeTriggers = 7 } };
+        using var controller = new TrainerController(saved, action => action(), () => session, fixture.Hotkeys, clock: () => fixture.Now);
+        await controller.ExecuteAsync("trainerConnect", Payload(new { }));
+        Assert.Equal("lock", session.LifeMode);
+        Assert.Equal(7u, controller.Snapshot().LifeTriggers);
+        fixture.Hotkeys.Trigger(10);
+        var opened = controller.Snapshot();
+        Assert.Equal(1, opened.OverlayRevision);
+        Assert.False(opened.Features[0].Enabled);
+        await controller.ExecuteAsync("trainerToggleOverlay", Payload(new { }));
+        Assert.Equal(2, controller.Snapshot().OverlayRevision);
+        await controller.ExecuteAsync("trainerDisconnect", Payload(new { }));
+        fixture.Hotkeys.Trigger(10);
+        Assert.Equal(2, controller.Snapshot().OverlayRevision);
+    }
+
+    [Fact]
+    public async Task GameOverlayActionsUseTheSamePersistentPreferencesAndEmergencyOff()
+    {
+        using var fixture = new Fixture(); fixture.SelectPath();
+        var session = new FakeSession();
+        using var controller = fixture.Controller(() => session);
+        await controller.ExecuteAsync("trainerConnect", Payload(new { }));
+        session.OverlayActions.AddRange([new(2, 0, 1), new(3, 0, 8), new(1, 1, 1)]);
+        controller.Poll();
+        Assert.Equal("lock", session.LifeMode);
+        Assert.Equal(8, session.Multiplier);
+        Assert.Equal(1, session.Requested);
+        var saved = new TrainerSettings(fixture.PreferencePath, false);
+        Assert.Equal("lock", saved.LifeMode); Assert.Equal(8, saved.MovementMultiplier); Assert.Equal(1, saved.EnabledFeatures);
+        session.OverlayActions.Add(new(4, 0, 0)); controller.Poll();
+        Assert.Equal(0, session.Requested); Assert.False(controller.Snapshot().Features[0].Enabled);
+    }
+
+    [Fact]
     public async Task DisconnectedCommandsHaveIndependentFiniteSnapshotsAndValidateBeforeMutation()
     {
         using var fixture = new Fixture();
@@ -268,13 +320,15 @@ public sealed class TrainerControllerTests
     {
         var bytes = new byte[NativeTrainerSession.StateSize];
         Put(0, NativeTrainerSession.Magic); Put(4, NativeTrainerSession.ProtocolVersion);
-        Put(12, TrainerFeatures.Mask | 32 | 64); Put(24, 2); Put(48, 1234UL);
+        Put(12, TrainerFeatures.Mask | 32 | 64); Put(24, 2); Put(44, 123u); Put(48, 1234UL);
         Put(56, 120.5); Put(64, 150f); Put(68, 50f); Put(72, 90f);
-        Put(704, 15f); Put(708, 20f); Put(712, 321); Put(716, 123);
+        Put(704, 15f); Put(708, 20f); Put(712, 321); Put(716, 123); Put(724, 11);
         var state = NativeTrainerSession.Decode(bytes);
         Assert.Equal(TrainerFeatures.Mask, state.Applied);
         Assert.Equal(120.5, state.Health);
         Assert.Equal(1234UL, state.Tick);
+        Assert.Equal(123u, state.LifeTriggers);
+        Assert.Equal(11, state.OverlayStatus);
         Assert.Equal(15f, state.HealthPotionRecovery);
         Assert.Equal(123, state.ManaPotionCooldown);
         bytes[4] = 4;
@@ -289,6 +343,26 @@ public sealed class TrainerControllerTests
             };
             data.CopyTo(bytes, offset);
         }
+    }
+
+    [Fact]
+    public void NativeOverlayRingAcknowledgesActionsAndEmergencyOffBypassesSaturation()
+    {
+        using var mapping = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateNew(null, NativeTrainerSession.Capacity);
+        using var view = mapping.CreateViewAccessor();
+        using var session = new NativeTrainerSession();
+        typeof(NativeTrainerSession).GetField("_view", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(session, view);
+        view.Write(744, 2); view.Write(748, 0); view.Write(752, 1);
+        view.Write(756, 3); view.Write(760, 0); view.Write(764, 8); view.Write(732, 2u);
+        Assert.Equal(new[] { new TrainerOverlayAction(2, 0, 1), new TrainerOverlayAction(3, 0, 8) }, session.ReadOverlayActions());
+        Assert.Equal(2u, view.ReadUInt32(736)); Assert.Empty(session.ReadOverlayActions());
+        view.Write(732, 35u);
+        Assert.Throws<InvalidDataException>(() => session.ReadOverlayActions());
+        view.Write(1128, 1);
+        Assert.Equal(new[] { new TrainerOverlayAction(4, 0, 0) }, session.ReadOverlayActions());
+        Assert.Equal(35u, view.ReadUInt32(736)); Assert.Equal(0, view.ReadInt32(1128));
+        session.ToggleOverlay(); session.ToggleOverlay(); Assert.Equal(2, view.ReadInt32(720));
+        session.SetLifeMode("lock"); Assert.Equal(1, view.ReadInt32(40));
     }
 
     [Fact]
@@ -467,6 +541,15 @@ public sealed class TrainerControllerTests
             Requested = flags;
         }
         public void SetMovementMultiplier(int value) => Multiplier = value;
+        public string LifeMode { get; private set; } = "infinite";
+        public void SetLifeMode(string value) => LifeMode = value;
+        public int OverlayToggles { get; private set; }
+        public void ToggleOverlay() => ++OverlayToggles;
+        public List<TrainerOverlayAction> OverlayActions { get; } = [];
+        public IReadOnlyList<TrainerOverlayAction> ReadOverlayActions()
+        {
+            var actions = OverlayActions.ToArray(); OverlayActions.Clear(); return actions;
+        }
         public TrainerRuntimeSnapshot? Read() => FailRead ? throw new IOException("fake read failure") : Runtime;
         public void Dispose()
         {

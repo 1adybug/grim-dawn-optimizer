@@ -88,8 +88,8 @@ jobs:
         working-directory: src/GrimDawnOptimizer.Desktop
         run: npm ci
 
-      - name: Build and simulate native trainer helpers
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Desktop/scripts/prepare-trainer-native.ps1 -RunTests
+      - name: Build and simulate native trainer helpers and popup input
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Desktop/scripts/prepare-trainer-native.ps1 -RunTests -RunInputTests
 
       # This is the only Tauri build: its binaries are tested and then published.
       - name: Build Tauri desktop application
