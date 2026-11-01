@@ -56,19 +56,19 @@ foreach ($architecture in @('x86', 'x64')) {
     $commands = @"
 @echo off
 call "$vcvars" $architecture >nul
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl /nologo /O2 /MT /EHsc /std:c++17 /utf-8 /W3 /LD "$nativeRoot\bridge.cpp" $hookArguments /link /OUT:"$architectureDirectory\$bridgeName"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 cl /nologo /O2 /MT /EHsc /std:c++17 /utf-8 /W3 "$nativeRoot\injector.cpp" /link /OUT:"$architectureDirectory\$injectorName"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 "@
     if ($RunTests) {
         $commands += @"
 
 cl /nologo /O1 /MT /EHsc /std:c++17 /utf-8 /W3 "$nativeRoot\tests.cpp" $hookArguments /link /OUT:"$architectureDirectory\native-tests.exe"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 "$architectureDirectory\native-tests.exe"
-if errorlevel 1 exit /b 1
+if not "%errorlevel%"=="0" exit /b 1
 "@
     }
     $commands += "`r`nexit /b 0`r`n"

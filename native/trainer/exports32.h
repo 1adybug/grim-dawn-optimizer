@@ -24,6 +24,7 @@ static const ExportNamePair ExportNames32[]={
     {"?GetSkillId@HotSlotOptionSkill@GAME@@UEBAIXZ","?GetSkillId@HotSlotOptionSkill@GAME@@UBEIXZ"},
     {"?GetCooldownRemaining@HotSlotOptionSkill@GAME@@UEAAHXZ","?GetCooldownRemaining@HotSlotOptionSkill@GAME@@UAEHXZ"},
     {"?GetStatus@HotSlotOptionSkill@GAME@@UEAA?AW4HotSlotOptionStatus@2@XZ","?GetStatus@HotSlotOptionSkill@GAME@@UAE?AW4HotSlotOptionStatus@2@XZ"},
+    {"?GetCooldownCharges@Skill@GAME@@UEBAHXZ","?GetCooldownCharges@Skill@GAME@@UBEHXZ"},
     {"?ActivateHealthPotionSlot@PlayerHotSlotCtrl@GAME@@QEAAXXZ","?ActivateHealthPotionSlot@PlayerHotSlotCtrl@GAME@@QAEXXZ"},
     {"?ActivateManaPotionSlot@PlayerHotSlotCtrl@GAME@@QEAAXXZ","?ActivateManaPotionSlot@PlayerHotSlotCtrl@GAME@@QAEXXZ"},
     {"?Get@?$Singleton@VObjectManager@GAME@@@GAME@@SAPEAVObjectManager@2@XZ","?Get@?$Singleton@VObjectManager@GAME@@@GAME@@SAPAVObjectManager@2@XZ"},

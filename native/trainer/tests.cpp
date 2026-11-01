@@ -18,12 +18,15 @@ static int refreshes=0,speedRefreshes=0;
 static int potionUses[2]{};
 static float potionAmounts[2]={500,30};
 static int potionCooldowns[2]{};
+static int potionCharges[2]={1,1};
 static bool potionReady[2]={true,true},potionSupported=true;
 static bool mockPotion(void* player,bool mana,PotionInfo& result){
-    int i=mana?1:0;result.controller=player;result.recovery=potionAmounts[i];result.cooldown=potionCooldowns[i];result.ready=potionReady[i]&&potionCooldowns[i]<=0;return potionSupported;
+    int i=mana?1:0;result.controller=player;result.recovery=potionAmounts[i];result.cooldown=potionCooldowns[i];
+    int status=!potionReady[i]?4:potionCharges[i]<=0?2:potionCooldowns[i]>0?3:1;
+    result.ready=potionChargeReady(status,potionCharges[i]);return potionSupported;
 }
-static void DETOUR mockUseHealth(void* self DUMMY){++potionUses[0];potionCooldowns[0]=1000;}
-static void DETOUR mockUseMana(void* self DUMMY){++potionUses[1];potionCooldowns[1]=1000;}
+static void DETOUR mockUseHealth(void* self DUMMY){assert(potionCharges[0]>0);--potionCharges[0];++potionUses[0];potionCooldowns[0]=1000;}
+static void DETOUR mockUseMana(void* self DUMMY){assert(potionCharges[1]>0);--potionCharges[1];++potionUses[1];potionCooldowns[1]=1000;}
 static void* DETOUR mockMain(void* self DUMMY){return playerMemory;}
 static void* DETOUR mockInfo(void* self DUMMY){return fakeEngine;}
 static bool DETOUR mockMultiplayer(void* self DUMMY){return multiplayer;}
@@ -152,6 +155,7 @@ int main(){
     servicePotions(playerMemory,10000,260,true,1300);assert(potionUses[0]==1&&potionUses[1]==1); // Exact >= boundary.
     servicePotions(playerMemory,10000,260,true,1600);assert(potionUses[0]==1&&potionUses[1]==1); // Native cooldown.
     potionCooldowns[0]=potionCooldowns[1]=0;
+    potionCharges[0]=potionCharges[1]=1;
     lastPotionCheck=0;
     servicePotions(playerMemory,10000,260,true,1700);assert(potionUses[0]==1&&potionUses[1]==1); // Rate limit.
     servicePotions(playerMemory,10000,260,false,2000);assert(potionUses[0]==1&&potionUses[1]==1); // Pause/background.
@@ -168,11 +172,48 @@ int main(){
     servicePotions(playerMemory,10000,260,true,3700);assert(potionUses[0]==1&&potionUses[1]==2); // Expired tool heartbeat.
     state.heartbeat=GetTickCount64();
 
+    // Both resources may consume a second charge while the first replenishes.
+    int healthUses=potionUses[0],manaUses=potionUses[1];
+    state.requested=AutoHealth|AutoMana;maintainPlayer(false);
+    at<double>(playerMemory,Bio+0x20)=9000;at<float>(playerMemory,Bio+0x3c)=200;
+    potionCharges[0]=potionCharges[1]=2;potionCooldowns[0]=potionCooldowns[1]=0;
+    lastPotionCheck=0;lastPotionAttempt[0]=lastPotionAttempt[1]=0;
+    servicePotions(playerMemory,10000,260,true,4000);
+    assert(potionUses[0]==healthUses+1&&potionUses[1]==manaUses+1);
+    assert(potionCharges[0]==1&&potionCharges[1]==1&&potionCooldowns[0]>0&&potionCooldowns[1]>0);
+    servicePotions(playerMemory,10000,260,true,4250);
+    assert(potionUses[0]==healthUses+1&&potionUses[1]==manaUses+1); // Retry limit still applies.
+    servicePotions(playerMemory,10000,260,true,4500);
+    assert(potionUses[0]==healthUses+2&&potionUses[1]==manaUses+2);
+    assert(potionCharges[0]==0&&potionCharges[1]==0);
+    servicePotions(playerMemory,10000,260,true,5000);
+    potionCooldowns[0]=potionCooldowns[1]=0;
+    servicePotions(playerMemory,10000,260,true,5500);
+    assert(potionUses[0]==healthUses+2&&potionUses[1]==manaUses+2); // No charge, even at zero CD.
+    potionCharges[0]=potionCharges[1]=1;potionCooldowns[0]=potionCooldowns[1]=1000;
+    at<double>(playerMemory,Bio+0x20)=9800;at<float>(playerMemory,Bio+0x3c)=250;
+    servicePotions(playerMemory,10000,260,true,6000);
+    assert(potionUses[0]==healthUses+2&&potionUses[1]==manaUses+2); // Recheck the deficit after healing.
+    at<double>(playerMemory,Bio+0x20)=9500;at<float>(playerMemory,Bio+0x3c)=230;
+    potionReady[0]=potionReady[1]=false;
+    servicePotions(playerMemory,10000,260,true,6500);
+    assert(potionUses[0]==healthUses+2&&potionUses[1]==manaUses+2); // Other unavailable states remain blocked.
+    potionReady[0]=potionReady[1]=true;
+    state.requested=AutoHealth;maintainPlayer(false);
+    servicePotions(playerMemory,10000,260,true,7000);
+    assert(potionUses[0]==healthUses+3&&potionUses[1]==manaUses+2);
+    state.requested=AutoMana;maintainPlayer(false);
+    servicePotions(playerMemory,10000,260,true,7500);
+    assert(potionUses[0]==healthUses+3&&potionUses[1]==manaUses+3); // Independently use a replenished charge.
+    assert(potionChargeReady(1,1)&&potionChargeReady(3,1)&&potionChargeReady(3,2));
+    assert(!potionChargeReady(1,0)&&!potionChargeReady(3,0)&&!potionChargeReady(1,-1));
+    for(int status:{0,2,4,5,6,7,8,9,-1})assert(!potionChargeReady(status,2));
+
     state.requested=MoveSpeed;maintainPlayer();assert(cachedRun==3.2f);
     multiplayer=true;maintainPlayer();assert(state.applied==0 && cachedRun==.8f && state.status==3);
     multiplayer=false;maintainPlayer();assert(cachedRun==3.2f);
     state.heartbeat=GetTickCount64()-4000;maintainPlayer();assert(state.applied==0 && cachedRun==.8f && !on(Life));
     state.heartbeat=GetTickCount64();state.requested=32|64;maintainPlayer();assert(state.applied==0); // Retired controls.
     assert(speedRefreshes>0 && sizeof(SharedState)==720 && offsetof(SharedState,hits)==632 && Protocol==5);
-    std::cout<<"PASS: resources/reserved mana; 2/4/8/16x movement and live selection; no compounding; dynamic baseline; independent speeds; cache restore; finite movement; merged Life; auto potions: >= threshold, usable mana, cooldown, pause, retry, dead/off; local-only/expiry/multiplayer; retired flags; v5 ABI ("<<sizeof(void*)*8<<" bit).\n";
+    std::cout<<"PASS: resources/reserved mana; 2/4/8/16x movement and live selection; no compounding; dynamic baseline; independent speeds; cache restore; finite movement; merged Life; auto potions: >= threshold, usable mana, cooldown, health/mana second charge during recharge, exhausted/replenished charges, unavailable states, pause, retry, dead/off; local-only/expiry/multiplayer; retired flags; v5 ABI ("<<sizeof(void*)*8<<" bit).\n";
 }

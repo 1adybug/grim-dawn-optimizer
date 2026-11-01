@@ -1,8 +1,9 @@
 # Cairn Companion native bridge
 
-Imported from the local Cairn Companion 0.6.0 project. The protocol v5 implementation
-is unchanged except for the MinHook include path. This directory contains the native
-bridge, architecture-specific symbol mappings, injector, and offline simulation tests.
+Imported from the local Cairn Companion 0.6.0 project, with charge-aware automatic
+health/mana potions added in 1.0.24. The shared-memory protocol remains v5.
+This directory contains the native bridge, architecture-specific symbol mappings,
+injector, and offline simulation tests.
 
 Build both x86 and x64 helpers with:
 

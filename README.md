@@ -67,7 +67,7 @@
 
 开关区分“已请求”和“游戏已确认”，未确认时显示待确认。多人模式、等待角色或游戏心跳过期会暂停当前效果请求，保留功能偏好，在有效单人角色恢复后重新应用；断开、游戏退出、运行时故障及关闭工具同样清除当前效果，不清除已保存偏好。已连接时 `Ctrl+Alt+F12` 不受角色可用状态限制；界面“全部关闭”也可随时关闭当前效果并清除记忆中的开启项，移动倍率保留。自动连接失败不会反复向同一游戏进程重试，可手动连接或重启游戏后重试。全局快捷键只在已连接时注册，冲突时仍可使用界面。
 
-实战组件针对已适配的 1.3.1.1 `Game.dll` 完整 SHA-256 白名单，并区分 x86/x64；不匹配时停止连接。已加载旧版组件时需完全重启游戏。自动药水按实际回复量、缺失资源和原生冷却判断；蓝量缺口扣除技能预留，只在游戏前台、未暂停且角色可用时触发。原项目 0.6.0 对药水已有二进制检查与 x86/x64 模拟回归，尚未完成真实游戏会话验证；本次迁移不会把模拟结果当作实战验证。
+实战组件针对已适配的 1.3.1.1 `Game.dll` 完整 SHA-256 白名单，并区分 x86/x64；不匹配时停止连接。已加载旧版组件时需完全重启游戏。自动药水按实际回复量、缺失资源、剩余充能和技能状态判断；蓝量缺口扣除技能预留，只在游戏前台、未暂停且角色可用时触发。1.0.24 修复血药、蓝药在恢复充能期间漏用剩余充能的问题，继续使用游戏原生 R/E 技能执行，并保留每 250 毫秒检查、每种药水至少间隔 500 毫秒尝试的限制。双架构接口依据与模拟验证见 [自动药水充能说明](docs/potion-charges.md)，尚未完成真实游戏会话验证。
 
 ## 安装版更新
 
@@ -104,7 +104,7 @@ npm --prefix src/GrimDawnOptimizer.Desktop run desktop:installer
 npm --prefix src/GrimDawnOptimizer.Desktop run desktop:portable
 ```
 
-安装版为 `artifacts/GrimDawnOptimizer-1.0.23-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.23-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
+安装版为 `artifacts/GrimDawnOptimizer-1.0.24-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.24-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
 
 首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以删除缓存并自动重建。优化方案、最近一次游戏/存档路径与 `ui-settings.json` 偏好也保存在该目录，清理时不要误删需要保留的配置。UI 偏好使用 `schemaVersion: 1` 并原子写入。
 
@@ -132,8 +132,8 @@ GitHub Actions 在提交到 `main`、创建或更新面向 `main` 的 Pull Reque
 先等待 `main` 上对应提交构建成功，再推送与程序版本一致的标签。标签任务直接复用该提交已验证的构建产物，GitHub Release 同时提供安装版、便携版，以及自动更新需要的 `latest.json` 和安装器签名。例如：
 
 ```powershell
-git tag v1.0.23
-git push origin v1.0.23
+git tag v1.0.24
+git push origin v1.0.24
 ```
 
 主分支将验证后的两种 EXE、签名和更新元数据一同暂存为 Release 草稿，避免依赖 Actions 产物存储配额；标签任务核对提交、版本、构建编号和 SHA-256 后才公开草稿。已有公开版本只校验，不覆盖不同文件。构建尚未完成或草稿缺失时会明确失败，处理后可重跑标签任务。缓存、暂存和重试细节见 [Actions 构建与发布说明](docs/github-actions.md)。

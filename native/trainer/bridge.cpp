@@ -62,7 +62,7 @@ using ModifierReadLevel=void(CALL*)(void*,void*,int,bool,bool,bool);
 using ModifierDestroy=void*(CALL*)(void*,unsigned);
 static Ptr getHotSlots,getHealthSlot,getManaSlot;
 static Id getSlotSkillId,getSkillLevel;
-static Int getSlotCooldown,getSlotStatus;
+static Int getSlotCooldown,getSlotStatus,getSkillCharges;
 static Action useHealthPotion,useManaPotion;
 static Singleton objectManager,potionClass;
 static SkillLookup lookupSkill;
@@ -127,7 +127,7 @@ static bool enginePotion(void* player,bool mana,PotionInfo& result){
     auto rtti=reinterpret_cast<Ptr>(at<void**>(skill,0)[0]);
     if(rtti(skill)!=potionClass())return false;
     result.cooldown=getSlotCooldown(slot);
-    result.ready=getSlotStatus(slot)==1&&result.cooldown<=0;
+    result.ready=potionChargeReady(getSlotStatus(slot),getSkillCharges(skill));
     result.recovery=potionRecovery(player,skill,mana);
     return result.recovery>0;
 }
@@ -290,6 +290,7 @@ static bool install(){
     getSlotSkillId=sym<Id>(game,"?GetSkillId@HotSlotOptionSkill@GAME@@UEBAIXZ");
     getSlotCooldown=sym<Int>(game,"?GetCooldownRemaining@HotSlotOptionSkill@GAME@@UEAAHXZ");
     getSlotStatus=sym<Int>(game,"?GetStatus@HotSlotOptionSkill@GAME@@UEAA?AW4HotSlotOptionStatus@2@XZ");
+    getSkillCharges=sym<Int>(game,"?GetCooldownCharges@Skill@GAME@@UEBAHXZ");
     useHealthPotion=sym<Action>(game,"?ActivateHealthPotionSlot@PlayerHotSlotCtrl@GAME@@QEAAXXZ");
     useManaPotion=sym<Action>(game,"?ActivateManaPotionSlot@PlayerHotSlotCtrl@GAME@@QEAAXXZ");
     objectManager=sym<Singleton>(engine,"?Get@?$Singleton@VObjectManager@GAME@@@GAME@@SAPEAVObjectManager@2@XZ");
@@ -300,7 +301,7 @@ static bool install(){
     readModifiersLevel=sym<ModifierReadLevel>(game,"?GetSkillModifierData@Skill@GAME@@UEBAXAEAVSkillProfile_Modifiers@2@H_N11@Z");
     lookupSkill=reinterpret_cast<SkillLookup>(reinterpret_cast<char*>(game)+LookupSkillRva);
     isGameTimePaused=sym<decltype(isGameTimePaused)>(engine,"?IsGameTimePaused@GAME@@YA_NXZ");
-    if(!getHotSlots||!getHealthSlot||!getManaSlot||!getSlotSkillId||!getSlotCooldown||!getSlotStatus||!useHealthPotion||!useManaPotion
+    if(!getHotSlots||!getHealthSlot||!getManaSlot||!getSlotSkillId||!getSlotCooldown||!getSlotStatus||!getSkillCharges||!useHealthPotion||!useManaPotion
        ||!objectManager||!potionClass||!potionSlotVtable||!getSkillLevel||!readModifiers||!readModifiersLevel||!isGameTimePaused)return false;
     if(!gameEngine||!rootEngine||!getMain||!getGameInfo||!isMultiplayer||!maxLife||!maxMana||!reserveMana||!defenseCap||!objectId||!getFactionMgr||!isFoe||!endCooldown||!refreshCooldown||!forceSpeed||!originalRun||!originalAbsoluteRun)return false;
     Hook hooks[]={

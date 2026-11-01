@@ -1,6 +1,12 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+inline bool potionChargeReady(int slotStatus,int remainingCharges){
+    // In both supported builds, status 3 also covers an idle skill whose spent
+    // charge is replenishing. Its other charges remain usable. Other statuses
+    // still block activation; the original R/E actions enforce game restrictions.
+    return remainingCharges>0&&(slotStatus==1||slotStatus==3);
+}
 // Use the same available-energy ceiling as the game's potion activation path.
 inline float availableMana(float total,float reserved){
     if(!std::isfinite(total)||!std::isfinite(reserved)||total<=0)return 0;
