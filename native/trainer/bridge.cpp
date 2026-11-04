@@ -26,7 +26,8 @@ constexpr size_t ModifierVtable=0x6164bc,ModifierRecovery=0x7c,ModifierConvert=0
 #endif
 
 // This profile is restricted to the locally inspected 1.3.1.1 x86/x64 builds.
-// No disk patches, save parsing, attribute increments, item changes, or quest writes.
+// No disk patches, save parsing, base-attribute, item or quest writes.
+// Lock-life deaths alone use the game's own statistic and pending-save request.
 static SharedState* shared=nullptr;
 static HMODULE game=nullptr, engine=nullptr;
 static void** gameEngine=nullptr;
@@ -75,6 +76,9 @@ static Ptr getMain, getGameInfo, getFactionMgr;
 static Bool isMultiplayer;
 static Float maxLife,maxMana,defenseCap,reserveMana;
 static Id objectId;
+static Ptr getPlayStats;
+static Id getDeaths;
+static Action incrementDeaths,forceSave;
 static IsFoe isFoe;
 static SkillEnd endCooldown;
 static SkillEnd refreshCooldown;
@@ -98,6 +102,24 @@ static float movementResult(void* p,float normal){
     return std::isfinite(boosted)?boosted:normal;
 }
 static void message(const wchar_t* t){if(shared)wcsncpy_s(shared->message,t,_TRUNCATE);}
+static void bridgeFault(DWORD code){
+    effects=0;shared->applied=0;shared->fault=code;
+    message(L"运行时检查失败，所有效果已关闭；请重启游戏。");
+}
+static void recordPreventedDeath(void* player){
+    // These exports only change the death statistic and queue a native save;
+    // they do not run the actual death/respawn/hardcore-death pipeline.
+    __try{
+        void* stats=getPlayStats(player);
+        if(!stats){bridgeFault(ERROR_INVALID_DATA);return;}
+        if(getDeaths(stats)!=UINT32_MAX){
+            incrementDeaths(stats);
+            forceSave(player);
+        }
+        shared->deathCount=getDeaths(stats); // Publish before the atomic trigger.
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER){bridgeFault(GetExceptionCode());}
+}
 struct ModifierBuffer {
     alignas(16) unsigned char data[256]{};
     ModifierBuffer(){at<void*>(data,0)=reinterpret_cast<char*>(game)+ModifierVtable;}
@@ -173,8 +195,9 @@ static void maintainPlayer(bool allowActions=true){
     // Recalculate the engine's movement cache on enable, disable, expiry and player changes.
     if(active && (((old^effects)&SpeedFeatures) || (changedPlayer&&(effects&SpeedFeatures)) || ((effects&MoveSpeed)&&oldMultiplier!=movementMultiplier)))forceSpeed(active);
     if(changedPlayer){lastPotionCheck=0;lastPotionAttempt[0]=lastPotionAttempt[1]=0;}
-    if(!player){shared->player=0;return;}
-    // Only current resource fields change. Base attributes and save data are never written.
+    if(!player){shared->player=0;shared->deathCount=0;return;}
+    // Resources remain temporary; only lock-life deaths request native persistence.
+    void* stats=getPlayStats(player);shared->deathCount=stats?getDeaths(stats):0;
     float hp=maxLife(player),mp=availableMana(maxMana(player),reserveMana(player));
     if(infiniteLife() && hp>0 && at<double>(player,Bio+0x20)>0){
         at<double>(player,Bio+0x20)=hp;at<float>(player,Bio+0x2c)=0;
@@ -202,7 +225,7 @@ static void DETOUR updateHook(void* self DUMMY,int ms){
         bool allowActions=ms>0&&foregroundProcess==GetCurrentProcessId()&&!isGameTimePaused();
         maintainPlayer(allowActions);shared->tick=GetTickCount64();memcpy(shared->hits,hits,sizeof(hits));
     }
-    __except(EXCEPTION_EXECUTE_HANDLER){effects=0;shared->applied=0;shared->fault=GetExceptionCode();message(L"运行时检查失败，所有效果已关闭；请重启游戏。");}
+    __except(EXCEPTION_EXECUTE_HANDLER){bridgeFault(GetExceptionCode());}
     InterlockedIncrement(&shared->sequence);
 }
 static float DETOUR getRunHook(void* p DUMMY,bool raw){
@@ -226,6 +249,7 @@ static void DETOUR lifeHook(void* p DUMMY,float damage,const void* type,bool a,b
             double allowed=std::max(0.0,current-1.0);
             float reduced=static_cast<float>(allowed);
             if(reduced>allowed)reduced=std::nextafter(reduced,0.f);
+            recordPreventedDeath(p);
             InterlockedIncrement(&shared->lifeTriggers);++hits[0];
             if(current<1.0)at<double>(p,Bio+0x20)=1.0;
             if(reduced<=0)return;
@@ -293,6 +317,10 @@ static bool install(){
     reserveMana=sym<Float>(game,"?GetReserveMana@Character@GAME@@QEBA?BMXZ");
     defenseCap=sym<Float>(game,"?GetDefenseAttributeCap@Player@GAME@@UEBAMXZ");
     objectId=sym<Id>(engine,"?GetObjectId@Object@GAME@@QEBAIXZ");
+    getPlayStats=sym<Ptr>(game,"?GetPlayStats@Character@GAME@@QEAAAEAVPlayStats@2@XZ");
+    getDeaths=sym<Id>(game,"?GetNumberOfDeaths@PlayStats@GAME@@QEBAIXZ");
+    incrementDeaths=sym<Action>(game,"?IncrementDeaths@PlayStats@GAME@@QEAAXXZ");
+    forceSave=sym<Action>(game,"?ForceSave@Player@GAME@@QEAAXXZ");
     getFactionMgr=sym<Ptr>(game,"?GetFactionManager@GameEngine@GAME@@QEAAPEAVFactionManager@2@XZ");
     isFoe=sym<IsFoe>(game,"?IsFoe@FactionManager@GAME@@QEAA_NPEAVCharacter@2@0_N@Z");
     endCooldown=sym<SkillEnd>(game,"?EndCooldown@Skill@GAME@@UEAAXH@Z");
@@ -319,6 +347,7 @@ static bool install(){
     isGameTimePaused=sym<decltype(isGameTimePaused)>(engine,"?IsGameTimePaused@GAME@@YA_NXZ");
     if(!getHotSlots||!getHealthSlot||!getManaSlot||!getSlotSkillId||!getSlotCooldown||!getSlotStatus||!getSkillCharges||!useHealthPotion||!useManaPotion
        ||!objectManager||!potionClass||!potionSlotVtable||!getSkillLevel||!readModifiers||!readModifiersLevel||!isGameTimePaused)return false;
+    if(!getPlayStats||!getDeaths||!incrementDeaths||!forceSave)return false;
     if(!gameEngine||!rootEngine||!getMain||!getGameInfo||!isMultiplayer||!maxLife||!maxMana||!reserveMana||!defenseCap||!objectId||!getFactionMgr||!isFoe||!endCooldown||!refreshCooldown||!forceSpeed||!originalRun||!originalAbsoluteRun)return false;
     Hook hooks[]={
         HOOK("?Update@GameEngine@GAME@@QEAAXH@Z",updateHook,originalUpdate),

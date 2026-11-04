@@ -33,7 +33,7 @@ $inputs = @(Get-ChildItem -LiteralPath $nativeRoot -File) +
     @(Get-ChildItem -LiteralPath $imguiRoot -File -Recurse) +
     @(Get-Item -LiteralPath $PSCommandPath,$vcvars)
 $inputFingerprint = (($inputs | Sort-Object FullName | ForEach-Object { $_.FullName + ':' + (Get-NativeHash $_.FullName) }) -join "`n")
-$expectedFiles = @('CairnBridge.v6.x86.dll', 'CairnBridge.v6.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
+$expectedFiles = @('CairnBridge.v7.x86.dll', 'CairnBridge.v7.x64.dll', 'CairnInject.x86.exe', 'CairnInject.x64.exe')
 if (-not $RunTests -and -not $RunOverlayTests -and -not $RunInputTests -and (Test-Path -LiteralPath $manifestPath)) {
     try {
         $previous = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -51,7 +51,7 @@ if (-not $RunTests -and -not $RunOverlayTests -and -not $RunInputTests -and (Tes
 foreach ($architecture in @('x86', 'x64')) {
     $architectureDirectory = Join-Path $buildRoot $architecture
     New-Item -ItemType Directory -Force -Path $architectureDirectory | Out-Null
-    $bridgeName = "CairnBridge.v6.$architecture.dll"
+    $bridgeName = "CairnBridge.v7.$architecture.dll"
     $injectorName = "CairnInject.$architecture.exe"
     $hookSources = @('buffer.c', 'hook.c', 'trampoline.c', 'hde/hde32.c', 'hde/hde64.c') | ForEach-Object { '"' + (Join-Path $minhookRoot "src/$_") + '"' }
     $hookArguments = $hookSources -join ' '

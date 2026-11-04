@@ -40,6 +40,7 @@ bool savedCursorClipValid=false,savedCursorUnclipped=false;
 int renderer=0;
 LONG lastToggle=0,lastTriggers=0;
 uint64_t noticeUntil=0;
+uint64_t noticePlayer=0;
 IDirect3DDevice9* device9=nullptr;
 ID3D11Device* device11=nullptr;
 ID3D11DeviceContext* context11=nullptr;
@@ -237,7 +238,7 @@ bool initialize(HWND window,int api,void* device){
     SetLastError(0);
     previousProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(windowProc)));
     if(!previousProc){ImGui_ImplWin32_Shutdown();if(api==9)ImGui_ImplDX9_Shutdown();else ImGui_ImplDX11_Shutdown();shutdownUi();state->overlayStatus=-2;return false;}
-    initialized=true;lastTriggers=state->lifeTriggers;lastToggle=state->overlayToggle;noticeUntil=0;
+    initialized=true;lastTriggers=state->lifeTriggers;lastToggle=state->overlayToggle;noticeUntil=0;noticePlayer=state->player;
     state->overlayStatus=inputReady?api:-3;
     return true;
 }
@@ -252,6 +253,7 @@ bool frame(){
         lastToggle=state->overlayToggle;togglePopup();
     }
     auto now=GetTickCount64();
+    if(noticePlayer!=state->player){noticePlayer=state->player;noticeUntil=0;lastTriggers=triggers;}
     if(triggers!=lastTriggers){if(state->lifeMode==PreventDeath&&(state->applied&Life))noticeUntil=now+3000;lastTriggers=triggers;}
     if(!opened&&noticeUntil<=now)return false;
     if(renderer==9)ImGui_ImplDX9_NewFrame();else ImGui_ImplDX11_NewFrame();
@@ -291,6 +293,7 @@ bool frame(){
                 if(feature.flag==Life){
                     if(ImGui::RadioButton("无限",state->lifeMode==Infinite))queue(SetLifeMode,0,Infinite);
                     ImGui::SameLine();if(ImGui::RadioButton("锁血",state->lifeMode==PreventDeath))queue(SetLifeMode,0,PreventDeath);
+                    if(state->lifeMode==PreventDeath)ImGui::TextDisabled("每次触发：存档死亡次数 +1");
                 }
                 if(feature.flag==MoveSpeed){
                     for(int value:{2,4,8,16}){if(value!=2)ImGui::SameLine();char label[12];sprintf_s(label,"%dx",value);if(ImGui::RadioButton(label,state->movementMultiplier==value))queue(SetMovement,0,value);}
@@ -315,7 +318,9 @@ bool frame(){
         ImGui::SetNextWindowPos({io.DisplaySize.x*.5f,36*uiScale},ImGuiCond_Always,{.5f,0});
         ImGui::SetNextWindowBgAlpha(.92f);
         ImGui::Begin("###gdo-life-notice",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing);
-        ImGui::TextColored({.4f,1.f,.6f,1},"锁血已触发");ImGui::TextUnformatted("已拦截致命伤害，保留至少 1 点生命");ImGui::End();
+        ImGui::TextColored({.4f,1.f,.6f,1},"锁血已触发");
+        ImGui::Text("你已经死亡了 %u 次",state->deathCount);
+        ImGui::TextUnformatted("已拦截致命伤害，保留至少 1 点生命");ImGui::End();
     }
     state->overlayVisible=opened?1:0;
     capture=opened;

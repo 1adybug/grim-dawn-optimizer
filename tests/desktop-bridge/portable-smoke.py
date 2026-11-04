@@ -44,7 +44,7 @@ def main():
     expected = fingerprint(options.staging)
     required = {
         "GrimDawnOptimizer.exe", "grim-dawn-engine.exe", "LICENSE", "THIRD-PARTY-NOTICES.md",
-        "trainer-native/CairnBridge.v6.x86.dll", "trainer-native/CairnBridge.v6.x64.dll",
+        "trainer-native/CairnBridge.v7.x86.dll", "trainer-native/CairnBridge.v7.x64.dll",
         "trainer-native/CairnInject.x86.exe", "trainer-native/CairnInject.x64.exe",
     }
     assert required <= expected.keys(), f"Missing staged runtime files: {required - expected.keys()}"

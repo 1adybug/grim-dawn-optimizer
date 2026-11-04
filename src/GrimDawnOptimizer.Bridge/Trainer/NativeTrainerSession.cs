@@ -11,8 +11,8 @@ namespace GrimDawnOptimizer.Bridge.Trainer;
 /// process discovery and construction do not load the trainer.</summary>
 public sealed class NativeTrainerSession : ITrainerSession
 {
-    public const int Capacity = 4096, StateSize = 1132;
-    public const uint Magic = 0x43444731, ProtocolVersion = 6;
+    public const int Capacity = 4096, StateSize = 1136;
+    public const uint Magic = 0x43444731, ProtocolVersion = 7;
     public static readonly string[] SupportedHashes =
     [
         "580ad41cc1c3e4cab6d29e71cb60d3a638079582eb3b5da6eec5ffea54627b7d",
@@ -264,7 +264,8 @@ public sealed class NativeTrainerSession : ITrainerSession
             BitConverter.ToUInt32(data[28..]), BitConverter.ToUInt64(data[48..]),
             BitConverter.ToDouble(data[56..]), BitConverter.ToSingle(data[64..]), BitConverter.ToSingle(data[68..]), BitConverter.ToSingle(data[72..]),
             BitConverter.ToSingle(data[704..]), BitConverter.ToSingle(data[708..]), BitConverter.ToInt32(data[712..]), BitConverter.ToInt32(data[716..]),
-            Encoding.Unicode.GetString(data.Slice(120, 512)).Split('\0')[0], BitConverter.ToUInt32(data[44..]), BitConverter.ToInt32(data[724..]));
+            Encoding.Unicode.GetString(data.Slice(120, 512)).Split('\0')[0], BitConverter.ToUInt32(data[44..]), BitConverter.ToInt32(data[724..]),
+            BitConverter.ToUInt32(data[1132..]));
     }
 
     private static string ReadMessage(MemoryMappedViewAccessor view)

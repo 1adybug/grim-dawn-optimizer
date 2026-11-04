@@ -46,6 +46,7 @@ export interface TrainerState {
   movementMultiplier: number;
   lifeMode: "infinite" | "lock";
   lifeTriggers: number;
+  deathCount: number | null;
   overlayRevision: number;
   overlayStatus: number;
   features: TrainerFeature[];

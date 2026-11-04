@@ -363,7 +363,7 @@ export default function App() {
           <span className="footer-note">
             {view === "combat" ? "当前游戏会话" : "只读存档"}
             <span>·</span>
-            {state?.version || "1.0.25"}
+            {state?.version || "1.0.26"}
           </span>
         </footer>
         {state?.isBusy && (

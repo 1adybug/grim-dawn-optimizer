@@ -64,7 +64,7 @@ function Read-TrainerSnapshot([int] $GameId, [int] $Protocol) {
     try {
         $map = [IO.MemoryMappedFiles.MemoryMappedFile]::OpenExisting("Local\GrimDawnCompanion.v$Protocol.$GameId",[IO.MemoryMappedFiles.MemoryMappedFileRights]::Read)
         $view = $map.CreateViewAccessor(0,4096,[IO.MemoryMappedFiles.MemoryMappedFileAccess]::Read)
-        $bytes = New-Object byte[] 1132; $coherent = $false
+        $bytes = New-Object byte[] 1136; $coherent = $false
         for ($attempt=0; $attempt -lt 3; $attempt++) {
             $sequence = $view.ReadInt32(32)
             if (($sequence -band 1) -ne 0) { continue }
@@ -80,6 +80,7 @@ function Read-TrainerSnapshot([int] $GameId, [int] $Protocol) {
             tick=[BitConverter]::ToUInt64($bytes,48)
             health=[BitConverter]::ToDouble($bytes,56)
             lifeMode=$(if($Protocol -ge 6){$view.ReadInt32(40)}else{$null})
+            deathCount=$(if($Protocol -ge 7){[BitConverter]::ToUInt32($bytes,1132)}else{$null})
             overlayStatus=$(if($Protocol -ge 6){$view.ReadInt32(724)}else{$null})
             overlayVisible=$(if($Protocol -ge 6){$view.ReadInt32(728)}else{$null})
             overlayToggle=$(if($Protocol -ge 6){$view.ReadInt32(720)}else{$null})
@@ -95,12 +96,13 @@ $knownFix = @{
     'CairnBridge.v6.x86.dll'='B76D258C7D7D55CBDE33E68FD2D88140802472CD3581DEC17D4841736726AF6B'
     'CairnBridge.v6.x64.dll'='1718D37F1B658DCFEFB32348795EC78FE94C3E98ED9C846BCFAE15E6BB9B1769'
 }
-$installed = @(foreach($name in ($knownFix.Keys | Sort-Object)){
+$helperNames = @('CairnBridge.v7.x86.dll','CairnBridge.v7.x64.dll') + @($knownFix.Keys)
+$installed = @(foreach($name in ($helperNames | Sort-Object -Unique)){
     $path = Join-Path (Join-Path $installationRoot 'trainer-native') $name
     $hash = Get-HashOrNull $path
     $referenceHash = Get-HashOrNull (Join-Path $ReferenceDirectory $name)
     [ordered]@{
-        name=$name;path=$path;sha256=$hash;matchesMouseFix=($hash -eq $knownFix[$name])
+        name=$name;path=$path;sha256=$hash;matchesMouseFix=($knownFix.ContainsKey($name) -and $null -ne $hash -and $hash -eq $knownFix[$name])
         referenceSha256=$referenceHash;matchesReference=($null -ne $referenceHash -and $hash -eq $referenceHash)
     }
 })
@@ -132,7 +134,7 @@ $gameReports = @(foreach($game in $games){
         [ordered]@{
             pid=$game.Id;path=$game.Path;started=$game.StartTime.ToString('o');mainWindow=$game.MainWindowHandle.ToInt64();foreground=($foregroundProcess -eq $game.Id)
             gui=$(if($guiRead){[ordered]@{thread=$thread;active=$gui.Active.ToInt64();focus=$gui.Focus.ToInt64();capture=$gui.Capture.ToInt64();flags=$gui.Flags}}else{$null})
-            modules=$modules;snapshots=@(foreach($version in @(6,5)){$snapshot=Read-TrainerSnapshot $game.Id $version;if($snapshot){$snapshot}})
+            modules=$modules;snapshots=@(foreach($version in @(7,6,5)){$snapshot=Read-TrainerSnapshot $game.Id $version;if($snapshot){$snapshot}})
         }
     } catch { [ordered]@{pid=$game.Id;error=$_.Exception.Message} }
     finally { if($handle -ne [IntPtr]::Zero){$null=[TrainerReadOnly.Native]::CloseHandle($handle)};$game.Dispose() }

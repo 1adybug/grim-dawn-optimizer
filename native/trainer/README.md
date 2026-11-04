@@ -1,12 +1,13 @@
 # Cairn Companion native bridge
 
 Imported from the local Cairn Companion 0.6.0 project, with charge-aware automatic
-health/mana potions added in 1.0.24. The shared-memory protocol is now v6:
+health/mana potions added in 1.0.24. The shared-memory protocol is now v7:
 offset 40 selects infinite life (0) or death protection (1), and offset 44 is
-an atomic trigger counter. The structure is 1132 bytes; offsets 720–743 contain
+an atomic trigger counter. The structure is 1136 bytes; offsets 720–743 contain
 overlay toggle/status and ring counters, followed by 32 UI actions and an
-independent emergency-off flag at 1128. Old loaded bridges
-require a game restart; v5 and v6 hooks must never coexist in one process.
+independent emergency-off flag at 1128 and the native uint32 death total at 1132.
+Old loaded bridges require a game restart; different versions must never install
+hooks together in one process.
 This directory contains the native bridge, architecture-specific symbol mappings,
 injector, and offline simulation tests.
 
@@ -19,13 +20,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File src/GrimDawnOptimizer.Deskto
 Append `-RunTests` to compile and run the native simulations. These tests use mock
 game objects and do not discover, launch, attach to, or inject into a game process.
 The build requires Visual Studio C++ tools and the Windows SDK. It uses the static
-MSVC runtime and produces the four current protocol v6 helper files under
+MSVC runtime and produces the four current protocol v7 helper files under
 `src/GrimDawnOptimizer.Desktop/src-tauri/binaries/trainer-native/`.
 
 The .NET trainer service owns the shared memory protocol and the heartbeat. Its
 game-version checks, single-player restrictions, and disable-on-disconnect behavior
 must remain intact when changing this code. The DLL remains loaded until game exit;
 an expired heartbeat makes its hooks pass-through. Do not unload active trampolines.
+
+Each lock-life trigger calls the game's `PlayStats::IncrementDeaths` and
+`Player::ForceSave`; infinite life and ordinary non-intercepted damage never count.
+The notice shows the active character's total, including existing real deaths.
+See `docs/lock-life-deaths.md` for the exact-build ABI and persistence limits.
 
 MinHook sources and their full license are in `vendor/minhook/` and the packaged
 license copy is `LICENSES/MinHook-BSD.txt`.

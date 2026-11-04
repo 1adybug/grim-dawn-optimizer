@@ -62,7 +62,7 @@
 | Ctrl+Alt+F9 | 自动回蓝，调用 E 对应蓝药技能 |
 | Ctrl+Alt+F10 | 显示 / 隐藏游戏弹窗（全屏 / 无边框 / 窗口化） |
 
-无限生命下方可选择“无限”或“锁血”，选择本身不会开启开关。无限持续补满可用生命并提供原有护甲、抗性防护；锁血允许正常扣血，致命伤害保留至少 1 点生命，触发时显示 3 秒文字提醒。模式自动保存，旧配置默认无限。连接后按 Ctrl+Alt+F10 呼出紧凑开关窗，再按一次或 Esc 关闭；锁血提醒不接管输入。弹窗和提醒通过 DirectX 9 / DirectX 11 在游戏画面内绘制，支持独占全屏、无边框和窗口化；打开弹窗时接管鼠标与键盘，关闭后恢复游戏操作。切到其他应用、断开或游戏状态失效时隐藏弹窗。首次使用 v6 组件前，需完全重启已加载旧组件的游戏。
+无限生命下方可选择“无限”或“锁血”，选择本身不会开启开关。无限持续补满可用生命并提供原有护甲、抗性防护；锁血允许正常扣血，致命伤害保留至少 1 点生命。每次锁血触发都会在角色已有死亡次数上 +1，通过游戏原生接口请求保存，并显示 3 秒提醒“你已经死亡了 XXX 次”；连续触发逐次计数并更新总数。无限模式不增加死亡次数。实现与验证范围见 [锁血死亡计数](docs/lock-life-deaths.md)。模式自动保存，旧配置默认无限。连接后按 Ctrl+Alt+F10 呼出紧凑开关窗，再按一次或 Esc 关闭；锁血提醒不接管输入。弹窗和提醒通过 DirectX 9 / DirectX 11 在游戏画面内绘制，支持独占全屏、无边框和窗口化；打开弹窗时接管鼠标与键盘，关闭后恢复游戏操作。切到其他应用、断开或游戏状态失效时隐藏弹窗。首次使用 v7 组件前，需完全重启已加载旧组件的游戏。
 
 1.0.25 同时修复弹窗关闭后的鼠标捕获清理和按键交接：游戏先收到按下的键始终能收到松开，弹窗内按下的键不会在关闭后继续触发游戏移动。快捷键、× 与 Esc 使用相同的清理流程；复现和验证范围见 [输入修复记录](docs/mouse-input-fix.md)。
 
@@ -109,7 +109,7 @@ npm --prefix src/GrimDawnOptimizer.Desktop run desktop:installer
 npm --prefix src/GrimDawnOptimizer.Desktop run desktop:portable
 ```
 
-安装版为 `artifacts/GrimDawnOptimizer-1.0.25-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.25-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
+安装版为 `artifacts/GrimDawnOptimizer-1.0.26-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.26-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
 
 首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以删除缓存并自动重建。优化方案、最近一次游戏/存档路径与 `ui-settings.json` 偏好也保存在该目录，清理时不要误删需要保留的配置。UI 偏好使用 `schemaVersion: 1` 并原子写入。
 
@@ -137,8 +137,8 @@ GitHub Actions 在提交到 `main`、创建或更新面向 `main` 的 Pull Reque
 先等待 `main` 上对应提交构建成功，再推送与程序版本一致的标签。标签任务直接复用该提交已验证的构建产物，GitHub Release 同时提供安装版、便携版，以及自动更新需要的 `latest.json` 和安装器签名。例如：
 
 ```powershell
-git tag v1.0.25
-git push origin v1.0.25
+git tag v1.0.26
+git push origin v1.0.26
 ```
 
 主分支将验证后的两种 EXE、签名和更新元数据一同暂存为 Release 草稿，避免依赖 Actions 产物存储配额；标签任务核对提交、版本、构建编号和 SHA-256 后才公开草稿。已有公开版本只校验，不覆盖不同文件。构建尚未完成或草稿缺失时会明确失败，处理后可重跑标签任务。缓存、暂存和重试细节见 [Actions 构建与发布说明](docs/github-actions.md)。

@@ -92,7 +92,7 @@ int wmain(int argc,wchar_t** argv){
         if(smokeFrame==200)Sleep(3100);
         smokeState.heartbeat=GetTickCount64();
         if(smokeFrame==20||smokeFrame==60)InterlockedIncrement(&smokeState.overlayToggle);
-        if(smokeFrame==80||smokeFrame==170)InterlockedIncrement(&smokeState.lifeTriggers);
+        if(smokeFrame==80||smokeFrame==170){smokeState.deathCount=smokeFrame==80?123:UINT32_MAX;InterlockedIncrement(&smokeState.lifeTriggers);}
         if(smokeFrame==160){
             if(api==9)assert(SUCCEEDED(d9->Reset(&params)));
             else assert(SUCCEEDED(swap->ResizeBuffers(0,width,height,DXGI_FORMAT_UNKNOWN,DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH)));

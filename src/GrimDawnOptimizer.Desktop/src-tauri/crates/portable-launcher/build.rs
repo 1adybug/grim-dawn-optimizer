@@ -15,8 +15,8 @@ fn main() {
             "LICENSE",
             "THIRD-PARTY-NOTICES.md",
             "LICENSES/MinHook-BSD.txt",
-            "trainer-native/CairnBridge.v6.x86.dll",
-            "trainer-native/CairnBridge.v6.x64.dll",
+            "trainer-native/CairnBridge.v7.x86.dll",
+            "trainer-native/CairnBridge.v7.x64.dll",
             "trainer-native/CairnInject.x86.exe",
             "trainer-native/CairnInject.x64.exe",
         ] {

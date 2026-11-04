@@ -84,6 +84,8 @@ def exercise(executable: Path):
             assert first["configuredExecutable"] is None, "Isolated storage must not import legacy paths"
             assert first["movementMultiplier"] == 2
             assert first["lifeMode"] == "infinite" and first["lifeTriggers"] == 0
+            assert first["deathCount"] is None
+            assert "存档死亡次数 +1" in first["features"][0]["description"]
             all_off(bridge.request("trainerSetLifeMode", {"value": "lock"})["state"])
             assert bridge.request("trainerSetLifeMode", {"value": "bad"}, ok=False)["state"]["lifeMode"] == "lock"
             all_off(bridge.request("trainerToggleOverlay", ok=False)["state"])

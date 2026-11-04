@@ -24,11 +24,12 @@ public sealed class TrainerControllerTests
         }
         var saved = new TrainerSettings(fixture.PreferencePath, false);
         Assert.Equal("lock", saved.LifeMode);
-        var session = new FakeSession { Runtime = Ready() with { LifeTriggers = 7 } };
+        var session = new FakeSession { Runtime = Ready() with { LifeTriggers = 7, DeathCount = 42 } };
         using var controller = new TrainerController(saved, action => action(), () => session, fixture.Hotkeys, clock: () => fixture.Now);
         await controller.ExecuteAsync("trainerConnect", Payload(new { }));
         Assert.Equal("lock", session.LifeMode);
         Assert.Equal(7u, controller.Snapshot().LifeTriggers);
+        Assert.Equal(42u, controller.Snapshot().DeathCount);
         fixture.Hotkeys.Trigger(10);
         var opened = controller.Snapshot();
         Assert.Equal(1, opened.OverlayRevision);
@@ -36,6 +37,7 @@ public sealed class TrainerControllerTests
         await controller.ExecuteAsync("trainerToggleOverlay", Payload(new { }));
         Assert.Equal(2, controller.Snapshot().OverlayRevision);
         await controller.ExecuteAsync("trainerDisconnect", Payload(new { }));
+        Assert.Null(controller.Snapshot().DeathCount);
         fixture.Hotkeys.Trigger(10);
         Assert.Equal(2, controller.Snapshot().OverlayRevision);
     }
@@ -157,7 +159,7 @@ public sealed class TrainerControllerTests
         using var controller = fixture.Controller(() => session);
         await controller.ExecuteAsync("trainerConnect", default);
         await controller.ExecuteAsync("trainerSetFeature", Payload(new { id = "moveSpeed", enabled = true }));
-        session.Runtime = session.Runtime with { Status = nativeStatus, Applied = 8 };
+        session.Runtime = session.Runtime with { Status = nativeStatus, Applied = 8, DeathCount = 18 };
         if (status == "stale") fixture.Now = 5000;
         controller.Poll();
         var paused = controller.Snapshot();
@@ -166,6 +168,7 @@ public sealed class TrainerControllerTests
         Assert.Equal(0, session.Requested);
         Assert.All(paused.Features, feature => Assert.False(feature.Requested || feature.Applied));
         Assert.Null(paused.Health);
+        Assert.Null(paused.DeathCount);
         fixture.Hotkeys.Trigger(4);
         Assert.Equal(0, session.Requested);
         session.Runtime = session.Runtime with { Status = 2, Applied = 0, Tick = fixture.Now };
@@ -322,16 +325,17 @@ public sealed class TrainerControllerTests
         Put(0, NativeTrainerSession.Magic); Put(4, NativeTrainerSession.ProtocolVersion);
         Put(12, TrainerFeatures.Mask | 32 | 64); Put(24, 2); Put(44, 123u); Put(48, 1234UL);
         Put(56, 120.5); Put(64, 150f); Put(68, 50f); Put(72, 90f);
-        Put(704, 15f); Put(708, 20f); Put(712, 321); Put(716, 123); Put(724, 11);
+        Put(704, 15f); Put(708, 20f); Put(712, 321); Put(716, 123); Put(724, 11); Put(1132, uint.MaxValue);
         var state = NativeTrainerSession.Decode(bytes);
         Assert.Equal(TrainerFeatures.Mask, state.Applied);
         Assert.Equal(120.5, state.Health);
         Assert.Equal(1234UL, state.Tick);
         Assert.Equal(123u, state.LifeTriggers);
         Assert.Equal(11, state.OverlayStatus);
+        Assert.Equal(uint.MaxValue, state.DeathCount);
         Assert.Equal(15f, state.HealthPotionRecovery);
         Assert.Equal(123, state.ManaPotionCooldown);
-        bytes[4] = 4;
+        bytes[4] = 6;
         Assert.Throws<InvalidDataException>(() => NativeTrainerSession.Decode(bytes));
         Assert.Throws<InvalidDataException>(() => NativeTrainerSession.Decode(new byte[20]));
         void Put<T>(int offset, T value) where T : struct

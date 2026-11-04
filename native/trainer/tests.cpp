@@ -12,6 +12,17 @@
 template<class T,class U> static T bindMock(U fn){return reinterpret_cast<T>(fn);}
 static unsigned char playerMemory[0x6000]{},enemyMemory[0x6000]{};
 static void* fakeEngine=reinterpret_cast<void*>(0x1234);
+static void* activePlayer=playerMemory;
+static uint32_t playerDeaths=12,otherDeaths=3;
+static int deathIncrements=0,saveRequests=0;
+static bool statsFault=false;
+static void* DETOUR mockPlayStats(void* self DUMMY){
+    if(statsFault)RaiseException(EXCEPTION_ACCESS_VIOLATION,0,0,nullptr);
+    return self==playerMemory?&playerDeaths:&otherDeaths;
+}
+static uint32_t DETOUR mockDeaths(void* self DUMMY){return *static_cast<uint32_t*>(self);}
+static void DETOUR mockIncrementDeaths(void* self DUMMY){++*static_cast<uint32_t*>(self);++deathIncrements;}
+static void DETOUR mockSave(void* self DUMMY){assert(self==activePlayer);++saveRequests;}
 static float receivedDamage=0,receivedMana=0,armorArgs[4]{};
 static float playerCap=1.35f,absoluteCap=1.5f,baseRun=.8f,cachedRun=.8f;
 static bool multiplayer=false,bypassCaps=false;
@@ -28,7 +39,7 @@ static bool mockPotion(void* player,bool mana,PotionInfo& result){
 }
 static void DETOUR mockUseHealth(void* self DUMMY){assert(potionCharges[0]>0);--potionCharges[0];++potionUses[0];potionCooldowns[0]=1000;}
 static void DETOUR mockUseMana(void* self DUMMY){assert(potionCharges[1]>0);--potionCharges[1];++potionUses[1];potionCooldowns[1]=1000;}
-static void* DETOUR mockMain(void* self DUMMY){return playerMemory;}
+static void* DETOUR mockMain(void* self DUMMY){return activePlayer;}
 static void* DETOUR mockInfo(void* self DUMMY){return fakeEngine;}
 static bool DETOUR mockMultiplayer(void* self DUMMY){return multiplayer;}
 static float DETOUR mockMaxLife(void* self DUMMY){return 10000.f;}
@@ -57,6 +68,8 @@ int main(){
     getMain=bindMock<Ptr>(mockMain);getGameInfo=bindMock<Ptr>(mockInfo);isMultiplayer=bindMock<Bool>(mockMultiplayer);
     maxLife=bindMock<Float>(mockMaxLife);maxMana=bindMock<Float>(mockMaxMana);reserveMana=bindMock<Float>(mockReserve);
     defenseCap=bindMock<Float>(mockDefense);objectId=bindMock<Id>(mockId);
+    getPlayStats=bindMock<Ptr>(mockPlayStats);getDeaths=bindMock<Id>(mockDeaths);
+    incrementDeaths=bindMock<Action>(mockIncrementDeaths);forceSave=bindMock<Action>(mockSave);
     originalRun=bindMock<Cap>(mockCap);originalAbsoluteRun=bindMock<Cap>(mockAbsoluteCap);originalGetRun=bindMock<RunGetter>(mockRun);
     originalAttack=bindMock<Cap>(mockCap);originalCast=bindMock<Cap>(mockCap);
     forceSpeed=bindMock<decltype(forceSpeed)>(mockForce);refreshCooldown=bindMock<SkillEnd>(mockEnd);endCooldown=bindMock<SkillEnd>(mockEnd);
@@ -75,6 +88,7 @@ int main(){
         assert(current || before[i]==playerMemory[i]); // No base-stat or item memory writes.
     }
     receivedDamage=-1;lifeHook(playerMemory TEST_EDX,50,nullptr,false,false);assert(receivedDamage==-1);
+    assert(state.deathCount==12&&playerDeaths==12&&deathIncrements==0&&saveRequests==0); // Infinite never counts.
     lifeHook(enemyMemory TEST_EDX,50,nullptr,false,false);assert(receivedDamage==50);
     receivedMana=-1;manaHook(playerMemory TEST_EDX,20);assert(receivedMana==-1);
     manaHook(enemyMemory TEST_EDX,20);assert(receivedMana==20);
@@ -147,7 +161,9 @@ int main(){
     LONG triggers=state.lifeTriggers;
     lifeHook(playerMemory TEST_EDX,10,nullptr,false,false);assert(receivedDamage==10&&state.lifeTriggers==triggers);
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+1);
+    assert(playerDeaths==13&&state.deathCount==13&&deathIncrements==1&&saveRequests==1);
     lifeHook(playerMemory TEST_EDX,99,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+2);
+    assert(playerDeaths==14&&state.deathCount==14&&deathIncrements==2&&saveRequests==2); // Same update: no lost events.
     lifeHook(enemyMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&state.lifeTriggers==triggers+2);
     lifeHook(playerMemory TEST_EDX,-20,nullptr,false,false);assert(receivedDamage==-20);
     at<double>(playerMemory,Bio+0x20)=1;receivedDamage=-1;
@@ -156,6 +172,11 @@ int main(){
     lifeHook(playerMemory TEST_EDX,2,nullptr,false,false);assert(at<double>(playerMemory,Bio+0x20)==1);
     at<double>(playerMemory,Bio+0x20)=100.000001;
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(static_cast<double>(receivedDamage)<=99.000001);
+    assert(playerDeaths==17&&state.deathCount==17&&deathIncrements==5&&saveRequests==5);
+    LONG countedTriggers=state.lifeTriggers;
+    for(float damage:{0.f,-20.f,10.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
+        lifeHook(playerMemory TEST_EDX,damage,nullptr,false,false);
+    assert(playerDeaths==17&&saveRequests==5&&state.lifeTriggers==countedTriggers);
     at<float>(attr,Attr)=15;absHook(attr TEST_EDX,playerMemory,nullptr,nullptr,0);assert(at<float>(attr,Attr)==15);
     armorHook(cm TEST_EDX,1000,100,70,0);assert(armorArgs[1]==100&&armorArgs[2]==70);
     at<double>(playerMemory,Bio+0x20)=0;maintainPlayer();assert(at<double>(playerMemory,Bio+0x20)==0);
@@ -166,7 +187,23 @@ int main(){
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
     multiplayer=false;state.requested=0;maintainPlayer();
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
+    assert(playerDeaths==17&&saveRequests==5);
     state.lifeMode=Infinite;
+
+    // Totals come from the active character, including real deaths and switches.
+    playerDeaths=23;maintainPlayer();assert(state.deathCount==23);
+    activePlayer=enemyMemory;maintainPlayer();assert(state.deathCount==3&&state.player==reinterpret_cast<uint64_t>(enemyMemory));
+    activePlayer=nullptr;maintainPlayer();assert(state.deathCount==0&&state.player==0);
+    activePlayer=playerMemory;state.lifeMode=PreventDeath;state.requested=Life;
+    at<double>(playerMemory,Bio+0x20)=100;maintainPlayer();assert(state.deathCount==23);
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(playerDeaths==24&&state.deathCount==24&&saveRequests==6);
+    playerDeaths=UINT32_MAX;maintainPlayer();
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(playerDeaths==UINT32_MAX&&state.deathCount==UINT32_MAX&&saveRequests==6);
+    playerDeaths=24;maintainPlayer();statsFault=true;
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);
+    assert(state.fault==EXCEPTION_ACCESS_VIOLATION&&state.applied==0&&effects==0&&playerDeaths==24&&saveRequests==6);
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&saveRequests==6);
+    statsFault=false;state.fault=0;state.lifeMode=Infinite;state.requested=0;maintainPlayer();
 
     assert(availableMana(300,40)==260 && availableMana(300,400)==0 && availableMana(300,-1)==300);
     assert(availableMana(300,std::numeric_limits<float>::quiet_NaN())==0);
@@ -244,11 +281,11 @@ int main(){
     multiplayer=false;maintainPlayer();assert(cachedRun==3.2f);
     state.heartbeat=GetTickCount64()-4000;maintainPlayer();assert(state.applied==0 && cachedRun==.8f && !on(Life));
     state.heartbeat=GetTickCount64();state.requested=32|64;maintainPlayer();assert(state.applied==0); // Retired controls.
-    assert(speedRefreshes>0 && sizeof(SharedState)==1132 && offsetof(SharedState,hits)==632 && Protocol==6);
+    assert(speedRefreshes>0 && sizeof(SharedState)==1136 && offsetof(SharedState,hits)==632 && offsetof(SharedState,deathCount)==1132 && Protocol==7);
     state.uiWrite=state.uiRead=0;
     for(int i=0;i<32;++i)assert(enqueueOverlayAction(&state,SetMovement,0,4));
     assert(!enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiDropped==1);
     assert(state.uiActions[0].type==SetMovement&&state.uiActions[31].value==4);
     state.uiRead=32;assert(enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiActions[0].type==DisableAll);
-    std::cout<<"PASS: resources/reserved mana; movement multipliers; independent speeds/cache restore; infinite/lock life, lethal clamp and trigger counts; normal damage/healing; no revival; auto potions and charges; local-only/expiry/multiplayer; retired flags; v6 ABI ("<<sizeof(void*)*8<<" bit).\n";
+    std::cout<<"PASS: resources/reserved mana; movement multipliers; independent speeds/cache restore; infinite/lock life, lethal clamp, native death totals/save requests, bursts/switches/overflow/fault; normal damage/healing; no revival; auto potions and charges; local-only/expiry/multiplayer; retired flags; v7 ABI ("<<sizeof(void*)*8<<" bit).\n";
 }

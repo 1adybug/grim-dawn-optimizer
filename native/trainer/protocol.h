@@ -28,6 +28,7 @@ struct SharedState {
     volatile LONG uiWrite, uiRead, uiDropped;
     OverlayAction uiActions[OverlayQueueSize];
     volatile LONG overlayEmergency;
+    uint32_t deathCount;
 };
 #pragma pack(pop)
 static_assert(offsetof(SharedState, heartbeat)==16);
@@ -39,10 +40,11 @@ static_assert(offsetof(SharedState,overlayToggle)==720);
 static_assert(offsetof(SharedState,uiWrite)==732);
 static_assert(offsetof(SharedState,uiActions)==744);
 static_assert(offsetof(SharedState,overlayEmergency)==1128);
-static_assert(sizeof(SharedState)==1132);
+static_assert(offsetof(SharedState,deathCount)==1132);
+static_assert(sizeof(SharedState)==1136);
 static_assert(offsetof(SharedState,lifeMode)==40);
 static_assert(offsetof(SharedState,lifeTriggers)==44);
-constexpr uint32_t Magic=0x43444731, Protocol=6;
+constexpr uint32_t Magic=0x43444731, Protocol=7;
 constexpr size_t MappingSize=4096;
 // Bits 32 and 64 are retired. Life now owns health, armor and resistance protection.
 enum Feature { Life=1, Mana=2, Kill=4, MoveSpeed=8, Cooldown=16, AttackSpeed=128, CastSpeed=256, AutoHealth=512, AutoMana=1024 };

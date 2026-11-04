@@ -351,7 +351,7 @@ public sealed class TrainerController : IDisposable
             Finite(telemetry?.Health), Finite(telemetry?.MaxHealth), Finite(telemetry?.Mana), Finite(telemetry?.MaxMana),
             Finite(telemetry?.HealthPotionRecovery), Finite(telemetry?.ManaPotionRecovery),
             telemetry?.HealthPotionCooldown, telemetry?.ManaPotionCooldown,
-            _settings.LifeMode, _runtime?.LifeTriggers ?? 0, _overlayRevision, _runtime?.OverlayStatus ?? 0);
+            _settings.LifeMode, _runtime?.LifeTriggers ?? 0, _overlayRevision, _runtime?.OverlayStatus ?? 0, telemetry?.DeathCount);
     }
 
     public void Dispose()
