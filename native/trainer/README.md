@@ -28,9 +28,9 @@ game-version checks, single-player restrictions, and disable-on-disconnect behav
 must remain intact when changing this code. The DLL remains loaded until game exit;
 an expired heartbeat makes its hooks pass-through. Do not unload active trampolines.
 
-Each lock-life trigger calls the game's `PlayStats::IncrementDeaths` and
-`Player::ForceSave`; infinite life and ordinary non-intercepted damage never count.
-The notice shows the active character's total, including existing real deaths.
+Lock life restores full health immediately when intercepting lethal damage.
+The first lethal packet in each game update calls `PlayStats::IncrementDeaths`
+and `Player::ForceSave` once. The notice shows the active character's death total.
 See `docs/lock-life-deaths.md` for the exact-build ABI and persistence limits.
 
 MinHook sources and their full license are in `vendor/minhook/` and the packaged

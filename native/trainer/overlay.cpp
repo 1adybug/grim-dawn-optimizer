@@ -293,7 +293,7 @@ bool frame(){
                 if(feature.flag==Life){
                     if(ImGui::RadioButton("无限",state->lifeMode==Infinite))queue(SetLifeMode,0,Infinite);
                     ImGui::SameLine();if(ImGui::RadioButton("锁血",state->lifeMode==PreventDeath))queue(SetLifeMode,0,PreventDeath);
-                    if(state->lifeMode==PreventDeath)ImGui::TextDisabled("每次触发：存档死亡次数 +1");
+                    if(state->lifeMode==PreventDeath)ImGui::TextDisabled("触发后回满生命，死亡次数 +1");
                 }
                 if(feature.flag==MoveSpeed){
                     for(int value:{2,4,8,16}){if(value!=2)ImGui::SameLine();char label[12];sprintf_s(label,"%dx",value);if(ImGui::RadioButton(label,state->movementMultiplier==value))queue(SetMovement,0,value);}
@@ -320,7 +320,7 @@ bool frame(){
         ImGui::Begin("###gdo-life-notice",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoInputs|ImGuiWindowFlags_NoNav|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing);
         ImGui::TextColored({.4f,1.f,.6f,1},"锁血已触发");
         ImGui::Text("你已经死亡了 %u 次",state->deathCount);
-        ImGui::TextUnformatted("已拦截致命伤害，保留至少 1 点生命");ImGui::End();
+        ImGui::TextUnformatted("已拦截致命伤害并回满生命");ImGui::End();
     }
     state->overlayVisible=opened?1:0;
     capture=opened;

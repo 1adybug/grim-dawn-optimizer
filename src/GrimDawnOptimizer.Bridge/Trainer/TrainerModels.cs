@@ -9,7 +9,7 @@ public static class TrainerFeatures
     public static readonly string[] LifeModes = ["infinite", "lock"];
     public static readonly TrainerFeatureDefinition[] All =
     [
-        new("life", 1, "无限生命", "无限：持续补满生命，并启用护甲与抗性防护。锁血：正常扣血，致命伤害保留至少 1 点生命；每次触发使角色存档死亡次数 +1，并提醒死亡总次数。选择模式不会自动开启。", "Ctrl+Alt+F1"),
+        new("life", 1, "无限生命", "无限：持续补满生命，并启用护甲与抗性防护。锁血：受到致命伤害时立即回满生命，同一次触发只将角色存档死亡次数 +1，并显示死亡总次数。选择模式不会自动开启。", "Ctrl+Alt+F1"),
         new("mana", 2, "无限蓝量", "锁定可用蓝量；保留光环等技能的预留。", "Ctrl+Alt+F2"),
         new("kill", 4, "一击必杀", "当前角色命中敌人时造成致命伤害。", "Ctrl+Alt+F3"),
         new("moveSpeed", 8, "移动速度", "按所选倍率提高当前角色的移动速度；选择倍率不会自动开启。", "Ctrl+Alt+F4"),

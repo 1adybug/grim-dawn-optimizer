@@ -34,6 +34,7 @@ static void** gameEngine=nullptr;
 static void** rootEngine=nullptr;
 static void* localPlayer=nullptr;
 static LONG effects=0,movementMultiplier=2,lifeMode=Infinite;
+static volatile LONG lifeLockTriggeredThisUpdate=0;
 template<class T> T sym(HMODULE m,const char* name){
 #ifndef _WIN64
     for(auto& pair:ExportNames32)if(strcmp(pair.x64,name)==0){name=pair.x86;break;}
@@ -106,10 +107,18 @@ static void bridgeFault(DWORD code){
     effects=0;shared->applied=0;shared->fault=code;
     message(L"运行时检查失败，所有效果已关闭；请重启游戏。");
 }
-static void recordPreventedDeath(void* player){
-    // These exports only change the death statistic and queue a native save;
-    // they do not run the actual death/respawn/hardcore-death pipeline.
+static void restoreFullLife(void* player,float limit){
+    at<double>(player,Bio+0x20)=limit;
+    at<float>(player,Bio+0x2c)=0;
+}
+static void triggerLifeLock(void* player){
     __try{
+        float limit=maxLife(player);
+        if(!std::isfinite(limit)||limit<=0){bridgeFault(ERROR_INVALID_DATA);return;}
+        restoreFullLife(player,limit);
+        ++hits[0];
+        // One game update can apply several lethal damage components.
+        if(InterlockedExchange(&lifeLockTriggeredThisUpdate,1)!=0)return;
         void* stats=getPlayStats(player);
         if(!stats){bridgeFault(ERROR_INVALID_DATA);return;}
         if(getDeaths(stats)!=UINT32_MAX){
@@ -117,6 +126,7 @@ static void recordPreventedDeath(void* player){
             forceSave(player);
         }
         shared->deathCount=getDeaths(stats); // Publish before the atomic trigger.
+        InterlockedIncrement(&shared->lifeTriggers);
     }
     __except(EXCEPTION_EXECUTE_HANDLER){bridgeFault(GetExceptionCode());}
 }
@@ -199,9 +209,7 @@ static void maintainPlayer(bool allowActions=true){
     // Resources remain temporary; only lock-life deaths request native persistence.
     void* stats=getPlayStats(player);shared->deathCount=stats?getDeaths(stats):0;
     float hp=maxLife(player),mp=availableMana(maxMana(player),reserveMana(player));
-    if(infiniteLife() && hp>0 && at<double>(player,Bio+0x20)>0){
-        at<double>(player,Bio+0x20)=hp;at<float>(player,Bio+0x2c)=0;
-    }
+    if(infiniteLife() && hp>0 && at<double>(player,Bio+0x20)>0)restoreFullLife(player,hp);
     if(on(Mana) && mp>0){at<float>(player,Bio+0x3c)=mp;at<float>(player,Bio+0x44)=0;}
     if(on(Cooldown))refreshCooldown(static_cast<char*>(player)+SkillManager,0);
     servicePotions(player,hp,mp,allowActions,GetTickCount64());
@@ -217,6 +225,7 @@ static void maintainPlayer(bool allowActions=true){
 }
 static void DETOUR updateHook(void* self DUMMY,int ms){
     // No exceptions cross the engine ABI. A fault disables every effect for this session.
+    InterlockedExchange(&lifeLockTriggeredThisUpdate,0);
     originalUpdate(self,ms);
     if(!shared)return;
     InterlockedIncrement(&shared->sequence);
@@ -244,16 +253,9 @@ static void DETOUR lifeHook(void* p DUMMY,float damage,const void* type,bool a,b
     if(p==localPlayer&&on(Life)&&damage>0){
         if(lifeMode==Infinite){++hits[0];return;}
         double current=at<double>(p,Bio+0x20);
-        if(std::isfinite(current)&&current>0&&std::isfinite(damage)&&damage>=current-1.0){
-            // Round down so a float conversion cannot cross the one-health floor.
-            double allowed=std::max(0.0,current-1.0);
-            float reduced=static_cast<float>(allowed);
-            if(reduced>allowed)reduced=std::nextafter(reduced,0.f);
-            recordPreventedDeath(p);
-            InterlockedIncrement(&shared->lifeTriggers);++hits[0];
-            if(current<1.0)at<double>(p,Bio+0x20)=1.0;
-            if(reduced<=0)return;
-            damage=reduced;
+        if(std::isfinite(current)&&current>0&&std::isfinite(damage)&&damage>=current){
+            triggerLifeLock(p);
+            return;
         }
     }
     if(p!=localPlayer&&localPlayer&&on(Kill)&&damage>0){

@@ -2,6 +2,7 @@
 #define TRAINER_SIMULATION
 #include "bridge.cpp"
 #include <cassert>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #ifdef _WIN64
@@ -56,6 +57,15 @@ static float DETOUR mockRun(void* self DUMMY,bool raw){
 }
 static void DETOUR mockForce(void* self DUMMY){++speedRefreshes;cachedRun=getRunHook(self TEST_EDX,false);}
 static void DETOUR mockLife(void* self DUMMY,float amount,const void*,bool,bool){receivedDamage=amount;}
+static std::initializer_list<float> updateDamagePackets;
+static void DETOUR mockUpdate(void* self DUMMY,int){
+    for(float damage:updateDamagePackets)lifeHook(activePlayer TEST_EDX,damage,nullptr,false,false);
+}
+static void simulateDamageUpdate(std::initializer_list<float> packets){
+    updateDamagePackets=packets;
+    updateHook(fakeEngine TEST_EDX,16);
+    updateDamagePackets={};
+}
 static void DETOUR mockMana(void* self DUMMY,float amount){receivedMana=amount;}
 static void* DETOUR mockFaction(void* self DUMMY){return fakeEngine;}
 static bool DETOUR mockFoe(void* self DUMMY,void*,void*,bool){return true;}
@@ -74,6 +84,7 @@ int main(){
     originalAttack=bindMock<Cap>(mockCap);originalCast=bindMock<Cap>(mockCap);
     forceSpeed=bindMock<decltype(forceSpeed)>(mockForce);refreshCooldown=bindMock<SkillEnd>(mockEnd);endCooldown=bindMock<SkillEnd>(mockEnd);
     originalLife=bindMock<SubLife>(mockLife);originalMana=bindMock<SubMana>(mockMana);
+    originalUpdate=bindMock<Update>(mockUpdate);isGameTimePaused=[](){return false;};
     getFactionMgr=bindMock<Ptr>(mockFaction);isFoe=bindMock<IsFoe>(mockFoe);
     originalAbs=bindMock<DefProcess>(mockProcess);originalDur=bindMock<DefProcess>(mockProcess);originalArmor=bindMock<ArmorCalc>(mockArmor);
     at<double>(playerMemory,Bio+0x20)=1000;at<float>(playerMemory,Bio+0x2c)=20;
@@ -153,30 +164,43 @@ int main(){
     at<float>(attr,Attr)=15;absHook(attr TEST_EDX,playerMemory,nullptr,nullptr,0);assert(at<float>(attr,Attr)==15);
     armorHook(cm TEST_EDX,1000,100,70,0);assert(armorArgs[1]==100 && armorArgs[2]==70);
 
-    // Death protection preserves normal damage/healing and never grants the
-    // infinite mode's armor/resistances. Only lethal local-player hits notify.
+    // Normal damage still reaches the engine, including a hit that leaves 1 HP.
     state.lifeMode=PreventDeath;state.requested=Life;
     at<double>(playerMemory,Bio+0x20)=100;maintainPlayer();
     assert(at<double>(playerMemory,Bio+0x20)==100);
     LONG triggers=state.lifeTriggers;
-    lifeHook(playerMemory TEST_EDX,10,nullptr,false,false);assert(receivedDamage==10&&state.lifeTriggers==triggers);
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+1);
+    lifeHook(playerMemory TEST_EDX,99,nullptr,false,false);
+    assert(receivedDamage==99&&state.lifeTriggers==triggers&&playerDeaths==12);
+
+    // The exact lethal boundary restores life before another game update runs.
+    at<float>(playerMemory,Bio+0x2c)=42;
+    receivedDamage=-1;
+    lifeHook(playerMemory TEST_EDX,100,nullptr,false,false);
+    assert(receivedDamage==-1&&at<double>(playerMemory,Bio+0x20)==10000);
+    assert(at<float>(playerMemory,Bio+0x2c)==0&&state.lifeTriggers==triggers+1);
     assert(playerDeaths==13&&state.deathCount==13&&deathIncrements==1&&saveRequests==1);
-    lifeHook(playerMemory TEST_EDX,99,nullptr,false,false);assert(receivedDamage==99&&state.lifeTriggers==triggers+2);
-    assert(playerDeaths==14&&state.deathCount==14&&deathIncrements==2&&saveRequests==2); // Same update: no lost events.
+
+    // Even five individually lethal packets in one update create one death.
+    simulateDamageUpdate({20000,20000,20000,20000,20000});
+    assert(receivedDamage==-1&&at<double>(playerMemory,Bio+0x20)==10000);
+    assert(playerDeaths==14&&state.deathCount==14&&deathIncrements==2&&saveRequests==2);
+    assert(state.lifeTriggers==triggers+2);
+
+    // Ordinary follow-up hits in later updates still pass through without counting.
+    simulateDamageUpdate({10,10,10,10});
+    assert(receivedDamage==10&&state.lifeTriggers==triggers+2&&playerDeaths==14);
     lifeHook(enemyMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&state.lifeTriggers==triggers+2);
     lifeHook(playerMemory TEST_EDX,-20,nullptr,false,false);assert(receivedDamage==-20);
-    at<double>(playerMemory,Bio+0x20)=1;receivedDamage=-1;
-    lifeHook(playerMemory TEST_EDX,2,nullptr,false,false);assert(receivedDamage==-1&&state.lifeTriggers==triggers+3);
+
+    // A new lethal event can trigger from fractional but still positive life.
     at<double>(playerMemory,Bio+0x20)=.5;
-    lifeHook(playerMemory TEST_EDX,2,nullptr,false,false);assert(at<double>(playerMemory,Bio+0x20)==1);
-    at<double>(playerMemory,Bio+0x20)=100.000001;
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(static_cast<double>(receivedDamage)<=99.000001);
-    assert(playerDeaths==17&&state.deathCount==17&&deathIncrements==5&&saveRequests==5);
+    simulateDamageUpdate({1});
+    assert(at<double>(playerMemory,Bio+0x20)==10000&&state.lifeTriggers==triggers+3);
+    assert(playerDeaths==15&&state.deathCount==15&&deathIncrements==3&&saveRequests==3);
     LONG countedTriggers=state.lifeTriggers;
     for(float damage:{0.f,-20.f,10.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
         lifeHook(playerMemory TEST_EDX,damage,nullptr,false,false);
-    assert(playerDeaths==17&&saveRequests==5&&state.lifeTriggers==countedTriggers);
+    assert(playerDeaths==15&&saveRequests==3&&state.lifeTriggers==countedTriggers);
     at<float>(attr,Attr)=15;absHook(attr TEST_EDX,playerMemory,nullptr,nullptr,0);assert(at<float>(attr,Attr)==15);
     armorHook(cm TEST_EDX,1000,100,70,0);assert(armorArgs[1]==100&&armorArgs[2]==70);
     at<double>(playerMemory,Bio+0x20)=0;maintainPlayer();assert(at<double>(playerMemory,Bio+0x20)==0);
@@ -187,7 +211,7 @@ int main(){
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
     multiplayer=false;state.requested=0;maintainPlayer();
     lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200);
-    assert(playerDeaths==17&&saveRequests==5);
+    assert(playerDeaths==15&&saveRequests==3);
     state.lifeMode=Infinite;
 
     // Totals come from the active character, including real deaths and switches.
@@ -196,13 +220,13 @@ int main(){
     activePlayer=nullptr;maintainPlayer();assert(state.deathCount==0&&state.player==0);
     activePlayer=playerMemory;state.lifeMode=PreventDeath;state.requested=Life;
     at<double>(playerMemory,Bio+0x20)=100;maintainPlayer();assert(state.deathCount==23);
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(playerDeaths==24&&state.deathCount==24&&saveRequests==6);
-    playerDeaths=UINT32_MAX;maintainPlayer();
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(playerDeaths==UINT32_MAX&&state.deathCount==UINT32_MAX&&saveRequests==6);
+    simulateDamageUpdate({200});assert(playerDeaths==24&&state.deathCount==24&&saveRequests==4);
+    playerDeaths=UINT32_MAX;
+    simulateDamageUpdate({20000});assert(playerDeaths==UINT32_MAX&&state.deathCount==UINT32_MAX&&saveRequests==4);
     playerDeaths=24;maintainPlayer();statsFault=true;
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);
-    assert(state.fault==EXCEPTION_ACCESS_VIOLATION&&state.applied==0&&effects==0&&playerDeaths==24&&saveRequests==6);
-    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&saveRequests==6);
+    simulateDamageUpdate({20000});
+    assert(state.fault==EXCEPTION_ACCESS_VIOLATION&&state.applied==0&&effects==0&&playerDeaths==24&&saveRequests==4);
+    lifeHook(playerMemory TEST_EDX,200,nullptr,false,false);assert(receivedDamage==200&&saveRequests==4);
     statsFault=false;state.fault=0;state.lifeMode=Infinite;state.requested=0;maintainPlayer();
 
     assert(availableMana(300,40)==260 && availableMana(300,400)==0 && availableMana(300,-1)==300);
@@ -287,5 +311,5 @@ int main(){
     assert(!enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiDropped==1);
     assert(state.uiActions[0].type==SetMovement&&state.uiActions[31].value==4);
     state.uiRead=32;assert(enqueueOverlayAction(&state,DisableAll,0,0)&&state.uiActions[0].type==DisableAll);
-    std::cout<<"PASS: resources/reserved mana; movement multipliers; independent speeds/cache restore; infinite/lock life, lethal clamp, native death totals/save requests, bursts/switches/overflow/fault; normal damage/healing; no revival; auto potions and charges; local-only/expiry/multiplayer; retired flags; v7 ABI ("<<sizeof(void*)*8<<" bit).\n";
+    std::cout<<"PASS: resources/reserved mana; movement multipliers; independent speeds/cache restore; lock life instant refill, one death per update, native totals/save requests, switches/overflow/fault; normal damage/healing; no revival; auto potions and charges; local-only/expiry/multiplayer; retired flags; v7 ABI ("<<sizeof(void*)*8<<" bit).\n";
 }

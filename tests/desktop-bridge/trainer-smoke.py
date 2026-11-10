@@ -86,6 +86,7 @@ def exercise(executable: Path):
             assert first["lifeMode"] == "infinite" and first["lifeTriggers"] == 0
             assert first["deathCount"] is None
             assert "存档死亡次数 +1" in first["features"][0]["description"]
+            assert "立即回满生命" in first["features"][0]["description"]
             all_off(bridge.request("trainerSetLifeMode", {"value": "lock"})["state"])
             assert bridge.request("trainerSetLifeMode", {"value": "bad"}, ok=False)["state"]["lifeMode"] == "lock"
             all_off(bridge.request("trainerToggleOverlay", ok=False)["state"])
