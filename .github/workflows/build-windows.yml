@@ -132,6 +132,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify installer checks occupied trainer components
+        run: python tests/desktop-bridge/installer-hooks.py
+
       - name: Package portable application
         working-directory: src/GrimDawnOptimizer.Desktop
         run: npm run desktop:portable

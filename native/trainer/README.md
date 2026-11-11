@@ -27,6 +27,13 @@ The .NET trainer service owns the shared memory protocol and the heartbeat. Its
 game-version checks, single-player restrictions, and disable-on-disconnect behavior
 must remain intact when changing this code. The DLL remains loaded until game exit;
 an expired heartbeat makes its hooks pass-through. Do not unload active trampolines.
+The host injects a SHA-256-addressed copy under
+`%LOCALAPPDATA%\GrimDawnOptimizer\trainer-native`, so a running game never locks
+the packaged DLL needed by an update. These cached DLLs are not removed while a
+game may still have them mapped. Reconnecting checks the loaded DLL's bytes as
+well as its protocol; changed components require a game restart. For older
+installations that loaded the packaged DLL directly, the installer checks access
+before copying files and asks the user to save and exit the game before retrying.
 
 Lock life restores full health immediately when intercepting lethal damage.
 The first lethal packet in each game update calls `PlayStats::IncrementDeaths`

@@ -82,7 +82,9 @@ public sealed class NativeTrainerSession : ITrainerSession
             }
             if (!IsWow64Process2(target.Handle, out var machine, out _)) throw new Win32Exception(Marshal.GetLastWin32Error());
             Architecture = machine == 0x14c ? "x86" : machine == 0 ? "x64" : throw new InvalidOperationException("不支持这个处理器架构。");
-            if (target.Modules.Cast<ProcessModule>().Any(m => m.ModuleName.StartsWith("CairnBridge.", StringComparison.OrdinalIgnoreCase) &&
+            var loadedBridges = target.Modules.Cast<ProcessModule>()
+                .Where(m => m.ModuleName.StartsWith("CairnBridge.", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (loadedBridges.Any(m =>
                 !m.ModuleName.Equals($"CairnBridge.v{ProtocolVersion}.{Architecture}.dll", StringComparison.OrdinalIgnoreCase)))
                 throw new InvalidOperationException("游戏中仍有旧版组件，请重启游戏后再连接新版工具。");
             string hash;
@@ -94,6 +96,11 @@ public sealed class NativeTrainerSession : ITrainerSession
             var dll = Path.GetFullPath(Path.Combine(_nativeDirectory, $"CairnBridge.v{ProtocolVersion}.{Architecture}.dll"));
             if (!File.Exists(helper) || !File.Exists(dll))
                 throw new FileNotFoundException("实战组件缺失，请保留程序目录内完整的 trainer-native 文件夹。");
+            // The protocol filename can stay the same across native bug fixes.
+            // The injector reuses an already-loaded module, so check its bytes too.
+            foreach (var loaded in loadedBridges)
+                TrainerBridgeCache.RequireMatchingLoadedBridge(loaded.FileName, dll);
+            dll = await TrainerBridgeCache.PrepareAsync(dll, cancellationToken);
 
             Process injection;
             lock (_gate)
