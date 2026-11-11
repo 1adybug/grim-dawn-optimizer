@@ -576,13 +576,11 @@ public sealed class CombatSimulator : ICombatSimulator
                 "bleeding" => incoming.BleedingPerHit,
                 _ => 0
             };
-            var cap = 80 + stats[StatKeys.MaxResistance(type)];
             var resistance = DifficultyRules.EffectiveResistance(stats, scenario, type);
             var afterResistance = raw * (1 - resistance / 100d);
             if (type == "physical")
             {
-                var absorption = Math.Clamp(stats["armorAbsorption"] / 100d, 0, 1);
-                afterResistance = Math.Max(0, afterResistance - stats["armor"] * absorption);
+                afterResistance = ArmorRules.MitigatePhysicalHit(stats, afterResistance);
             }
             total += afterResistance;
         }

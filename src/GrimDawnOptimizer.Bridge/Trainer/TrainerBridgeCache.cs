@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 
 namespace GrimDawnOptimizer.Bridge.Trainer;
 
@@ -16,19 +17,40 @@ internal static class TrainerBridgeCache
         var directory = Path.Combine(cacheDirectory, Convert.ToHexString(hash).ToLowerInvariant());
         var cachedDll = Path.Combine(directory, Path.GetFileName(bundledDll));
         Directory.CreateDirectory(directory);
-        if (Matches(cachedDll, hash)) return cachedDll;
-
-        var temporary = Path.Combine(directory, $"{Guid.NewGuid():N}.tmp");
+        // Serialize both validation and publication across application instances.
+        // Concurrent replacements can otherwise fail with ACCESS_DENIED while
+        // the old corrupt target is still present, so verifying a winner only
+        // in a catch filter is insufficient.
+        var identity = Path.GetFullPath(cachedDll).ToUpperInvariant();
+        var mutexName = @"Local\GrimDawnOptimizer.TrainerBridgeCache." +
+                        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+        using var publication = new Mutex(false, mutexName);
         try
         {
-            await File.WriteAllBytesAsync(temporary, bytes, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            try { File.Move(temporary, cachedDll, overwrite: true); }
-            // Another instance may have published (and loaded) the same bytes.
-            catch (IOException) when (Matches(cachedDll, hash)) { }
+            if (WaitHandle.WaitAny([publication, cancellationToken.WaitHandle]) == 1)
+                cancellationToken.ThrowIfCancellationRequested();
         }
-        finally { File.Delete(temporary); }
-        return cachedDll;
+        // An exited publisher may have left a temporary or corrupt entry. The
+        // abandoned mutex is now owned by us; validate/repair the entry normally.
+        catch (AbandonedMutexException) { }
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Matches(cachedDll, hash)) return cachedDll;
+
+            var temporary = Path.Combine(directory, $"{Guid.NewGuid():N}.tmp");
+            try
+            {
+                // A Mutex is thread-affine: keep this short publication section
+                // synchronous, including release, with no await while it is held.
+                File.WriteAllBytes(temporary, bytes);
+                cancellationToken.ThrowIfCancellationRequested();
+                File.Move(temporary, cachedDll, overwrite: true);
+            }
+            finally { File.Delete(temporary); }
+            return cachedDll;
+        }
+        finally { publication.ReleaseMutex(); }
     }
 
     internal static void RequireMatchingLoadedBridge(string loadedDll, string bundledDll)

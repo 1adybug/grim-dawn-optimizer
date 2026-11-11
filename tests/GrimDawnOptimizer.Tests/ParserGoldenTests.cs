@@ -454,7 +454,7 @@ public sealed class ParserGoldenTests
         var verify = verifyConnection.CreateCommand();
         verify.CommandText = "SELECT payload FROM catalog_cache";
         var rewritten = Assert.IsType<byte[]>(await verify.ExecuteScalarAsync());
-        Assert.Equal("GDOC31", Encoding.ASCII.GetString(rewritten, 0, 6));
+        Assert.Equal("GDOC32", Encoding.ASCII.GetString(rewritten, 0, 6));
     }
 
     [Fact]

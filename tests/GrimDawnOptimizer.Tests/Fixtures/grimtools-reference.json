@@ -1,0 +1,72 @@
+{
+  "source": {
+    "version": "1.3.1.0",
+    "page": {
+      "url": "https://www.grimtools.com/calc/",
+      "sha256": "69211D87D387B50528362C62908293D9341E55F90475BE483D8BED3DC4356DAD"
+    },
+    "calculator": {
+      "url": "https://www.grimtools.com/calc/calc.js?1794027643",
+      "sha256": "4ED417E8A7D97AAD66065EF4238BC08BE9F98C0015E889AD243CC08C46C2D5CE"
+    },
+    "database": {
+      "url": "https://www.grimtools.com/db/itemdb/itemdb.js?1794027643",
+      "sha256": "06D0883E9EF1D512153072ADA7B2CE3077D1DC467B6B9745E242A968299E8AFE"
+    }
+  },
+  "armorChances": {
+    "combatRegionHeadChance": 15,
+    "combatRegionTorsoChance": 26,
+    "combatRegionFeetChance": 12,
+    "combatRegionLegsChance": 20,
+    "combatRegionArmsChance": 12,
+    "combatRegionShouldersChance": 15
+  },
+  "armorAbsorption": 70,
+  "formulas": {
+    "offensiveAbilityEquation": "(offensiveAbilityDV + (characterLevelDV * 12) + ((dexterityDV + bonusDV) *0.5)) * (1 + (offensiveAbilityModifierDV / 100))+53",
+    "defensiveAbilityEquation": "(defensiveAbilityDV + (characterLevelDV * 12) + ((strengthDV + bonusDV) *0.5)) * (1 + (defensiveAbilityModifierDV / 100))+53",
+    "physicalDamageEquation": "(physicalDamageDV*((dexterityDV/245)+1))",
+    "pierceDamageEquation": "pierceDamageDV*((dexterityDV/245)+1)",
+    "physicalDurationDamageEquation": "(physicalDamageDV*((dexterityDV/215)+1))",
+    "magicalDamageEquation": "magicalDamageDV*((intelligenceDV/215)+1)",
+    "magicalDurationDamageEquation": "magicalDamageDV*((intelligenceDV/200)+1)",
+    "meleeBlockEquation": "(blockChanceDV + blockChanceModifierDV)",
+    "physicalDamageDefenseEquationDGP": "(sumProtectionDV * (1 - sumAbsorptionDV)) + (physicalDamageDV - sumProtectionDV)",
+    "physcialDamageDefenseEquationDLEP": "physicalDamageDV * (1 - sumAbsorptionDV)"
+  },
+  "attributeIncrements": {
+    "strengthIncrement": 8,
+    "cunningIncrement": 8,
+    "spiritIncrement": 8,
+    "healthIncrement": 20,
+    "energyIncrement": 16,
+    "healthIncrementCunning": 8,
+    "healthIncrementSpirit": 12
+  },
+  "scarsOfBattle": {
+    "sourceId": "sk1133",
+    "skillMaxLevel": 8,
+    "skillUltimateLevel": 18,
+    "defensiveAbsorptionModifier": [
+      5,
+      9,
+      12,
+      15,
+      18,
+      21,
+      23,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35
+    ]
+  }
+}

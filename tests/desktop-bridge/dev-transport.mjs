@@ -2,7 +2,7 @@
 // Uses a real, already-built .NET bridge and an isolated temporary data directory.
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { request as httpRequest } from 'node:http'
+import { Agent, request as httpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -22,19 +22,27 @@ const server = await createServer({
 })
 // An isolated listener avoids competing with the developer's real port 1420.
 // Its HTTP Host stays the exact application host enforced by the middleware.
+const requestAgent = new Agent({ keepAlive: true, maxSockets: 1 })
 const request = (path, method, body, headers = {}, streaming = false) => new Promise((resolve, reject) => {
   const message = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)
-  const client = httpRequest({ hostname: '127.0.0.1', port: 1421, path, method,
+  const client = httpRequest({ hostname: '127.0.0.1', port: 1421, path, method, agent: streaming ? false : requestAgent,
     headers: { Host: '127.0.0.1:1420', 'Content-Type': 'application/json', ...headers } }, response => {
-    if (streaming) { resolve(response); return }
+    response.on('error', error => { clearTimeout(timeout); reject(error) })
+    if (streaming) { clearTimeout(timeout); resolve(response); return }
     const chunks = []
     response.on('data', chunk => chunks.push(chunk))
     response.on('end', () => {
+      clearTimeout(timeout)
       const text = Buffer.concat(chunks).toString('utf8')
       resolve({ status: response.statusCode, json: async () => JSON.parse(text) })
     })
   })
-  client.on('error', reject)
+  const timeout = setTimeout(() => {
+    const error = new Error(`HTTP ${method} ${path} timed out`)
+    client.destroy(error)
+    reject(error)
+  }, 30_000)
+  client.on('error', error => { clearTimeout(timeout); reject(error) })
   client.end(message)
 })
 const post = (body, headers = {}) => request('/__engine/request', 'POST', body, headers)
@@ -48,7 +56,18 @@ try {
   assert.equal((await post({ command: 'state' }, { 'Content-Type': 'text/plain' })).status, 415)
   assert.equal((await post('{')).status, 400)
   assert.equal((await post({})).status, 400)
-  assert.equal((await post({ command: 'state', payload: 'x'.repeat(70_000) })).status, 413)
+  // Exercise multiple chunks and immediate keep-alive reuse. Returning early
+  // from req's async iterator destroys the socket and can truncate the 413.
+  for (const size of [70_000, 1_000_000]) {
+    for (let round = 0; round < 4; round++) {
+      const oversized = await post({ command: 'state', payload: 'x'.repeat(size) })
+      assert.equal(oversized.status, 413)
+      assert.equal(typeof (await oversized.json()).error, 'string')
+      const following = await post({ command: 'state' })
+      assert.equal(following.status, 200)
+      assert.equal((await following.json()).protocolVersion, 1)
+    }
+  }
   assert.equal((await request('/__engine/request', 'GET')).status, 405)
 
   stream = await request('/__engine/events', 'GET', undefined, {}, true)
@@ -130,6 +149,7 @@ try {
 } finally {
   stream?.destroy()
   replayStream?.destroy()
+  requestAgent.destroy()
   await server.close()
   // The plugin permits 5s engine cancellation plus a bounded flush window.
   await new Promise(resolve => setTimeout(resolve, 500))

@@ -187,7 +187,8 @@ public sealed class SaveReader : ISaveReader
         baseline.Set("defensiveAbility", playerRecord?.NumericValues["characterDefensiveAbility"] ?? 65);
         baseline.Set("characterLevel", raw.Level);
         baseline.Set("usePlayerAbilityFormula", 1);
-        baseline.Set("armorAbsorption", 70);
+        baseline.Set("armorAbsorption", catalog.Records.GetValueOrDefault("records/game/gameengine.dbr")?
+            .NumericValues.Values.GetValueOrDefault("armorDefensiveAbsorption", 70) ?? 70);
 
         // level == 0 entries can still carry a non-zero devotionLevel in the save;
         // they are not allocated passive constellation nodes and must not affect stats.

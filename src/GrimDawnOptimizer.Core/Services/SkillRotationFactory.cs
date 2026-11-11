@@ -51,7 +51,8 @@ public static class SkillRotationFactory
         var itemSkillBonus = selectedGrant is not null && !isLearnedMasterySkill
             ? 0 : ResolveCurrentSkillBonus(character, catalog, selectedSkill.Record, equippedVariants);
         var level = baseLevel + itemSkillBonus;
-        var records = ResolveDamageRecords(mainRecord, catalog)
+        var mainRecords = ResolveDamageRecords(mainRecord, catalog);
+        var records = mainRecords
             .Select(x => (Record: x, Level: level))
             .ToList();
         var childRecords = ResolveAllocatedChildRecords(character, catalog, selectedSkill.Record)
@@ -71,20 +72,33 @@ public static class SkillRotationFactory
         foreach (var entry in records)
             flatDamage.Add(GameStatTranslator.TranslateAtLevel(entry.Record, entry.Level));
 
-        var weaponDamage = FirstPositive(records.Select(x => x.Record), "weaponDamagePct", level);
-        var energy = FirstPositive(records.Select(x => x.Record), "skillManaCost", level);
-        if (energy <= 0) energy = FirstPositive(records.Select(x => x.Record), "skillActiveManaCost", level);
-        foreach (var child in childRecords)
-            energy += Math.Max(0, GameStatTranslator.NumericAtLevel(child.Record, "skillManaCost", child.Level));
-        var cooldown = FirstPositive(records.Select(x => x.Record), "skillCooldownTime", level);
         var usesAttackSpeed = UsesWeaponAttackSpeed(mainRecord);
+        var weaponDamage = FirstPositive(mainRecords, "weaponDamagePct", level);
+        if (weaponDamage <= 0 && usesAttackSpeed) weaponDamage = 100;
+        var energy = FirstPositive(mainRecords, "skillManaCost", level);
+        if (energy <= 0) energy = FirstPositive(mainRecords, "skillActiveManaCost", level);
+        foreach (var child in childRecords)
+            energy += GameStatTranslator.NumericAtLevel(child.Record, "skillManaCost", child.Level);
+        var cooldown = FirstPositive(mainRecords, "skillCooldownTime", level);
+        // Modifiers add to the target skill's fields. In particular, a negative
+        // cooldown/cost and an added weapon-damage percentage must not disappear
+        // behind the first positive base value. Each child uses its own level;
+        // equipment modifier records are evaluated at level 1.
+        foreach (var modifier in childRecords.Where(x => !IsSecondaryAttack(x.Record))
+                     .Concat(itemModifierRecords.Select(x => (Record: x, Level: 1))))
+        {
+            weaponDamage += GameStatTranslator.NumericAtLevel(modifier.Record, "weaponDamagePct", modifier.Level);
+            cooldown += GameStatTranslator.NumericAtLevel(modifier.Record, "skillCooldownTime", modifier.Level);
+        }
+        foreach (var modifier in itemModifierRecords)
+            energy += GameStatTranslator.NumericAtLevel(modifier, "skillManaCost", 1);
+        weaponDamage = Math.Max(0, weaponDamage);
+        cooldown = Math.Max(0, cooldown);
+        energy = Math.Max(0, energy);
         var activationRate = ResolveActivationRate(mainRecord, level);
         var hasDamage = weaponDamage > 0 || secondaryAttacks.Count > 0 || StatKeys.DamageTypes.Any(x =>
-            Math.Abs(flatDamage[StatKeys.DamageFlat(x)]) > 1e-9);
-
-        // A weapon-pool/default attack record with no explicit percentage inherits
-        // the normal 100% weapon hit. Pure spells intentionally remain at 0%.
-        if (weaponDamage <= 0 && usesAttackSpeed) weaponDamage = 100;
+            Math.Abs(flatDamage[StatKeys.DamageFlat(x)]) > 1e-9 ||
+            Math.Abs(flatDamage[StatKeys.DamageDot(x)]) > 1e-9);
 
         var (weaponPoolChance, weaponPoolMultiplier, weaponPoolFlat, weaponPoolAttacks) = usesAttackSpeed
             ? ResolveWeaponPool(character, catalog, selectedSkill.Record, equippedVariants)
@@ -555,10 +569,10 @@ public static class SkillRotationFactory
         foreach (var (item, variant) in equipped)
             foreach (var name in ResolveEquippedRecordNames(item, variant).Distinct(StringComparer.OrdinalIgnoreCase))
                 if (catalog.Records.TryGetValue(name, out var record)) yield return record;
-        foreach (var group in equipped.Where(x => !string.IsNullOrWhiteSpace(x.Item.SetId)).GroupBy(x => x.Item.SetId, StringComparer.OrdinalIgnoreCase))
+        foreach (var (setId, count) in ItemSetRules.CountPieces(equipped.Select(x => x.Item)))
         {
-            if (!catalog.Records.TryGetValue(group.Key, out var set)) continue;
-            for (var pieces = 2; pieces <= group.Count(); pieces++)
+            if (!catalog.Records.TryGetValue(setId, out var set)) continue;
+            for (var pieces = 2; pieces <= count; pieces++)
                 if (catalog.Records.TryGetValue(set.Text($"setBonus{pieces}"), out var bonus)) yield return bonus;
         }
     }
@@ -762,6 +776,11 @@ public static class SkillRotationFactory
         IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>? equippedVariants)
     {
         if (string.IsNullOrWhiteSpace(skillRecord)) return 0;
+        catalog.Records.TryGetValue(skillRecord, out var skill);
+        var skillClass = skill is null ? string.Empty : RecordClass(skill);
+        if (skillClass.Contains("Mastery", StringComparison.OrdinalIgnoreCase) ||
+            skillClass.Contains("Transmuter", StringComparison.OrdinalIgnoreCase) ||
+            skillRecord.StartsWith("records/skills/devotion/", StringComparison.OrdinalIgnoreCase)) return 0;
         var bonus = 0d;
         var masteryRecord = ResolveMasteryRecord(character, skillRecord);
         foreach (var record in ResolveSkillSourceRecords(character, catalog, equippedVariants))
@@ -776,7 +795,13 @@ public static class SkillRotationFactory
                     bonus += record.NumericValues[$"augmentMasteryLevel{index}"];
             }
         }
-        return Math.Max(0, (int)Math.Round(bonus));
+        var result = Math.Max(0, (int)Math.Round(bonus));
+        var limit = skill?.NumericValues["skillUltimateLevel"] ?? 0;
+        if (limit <= 0) limit = skill?.NumericValues["skillMaxLevel"] ?? 0;
+        var learned = character.Skills.FirstOrDefault(x => x.Record.Equals(skillRecord, StringComparison.OrdinalIgnoreCase));
+        if (limit > 0 && learned is not null)
+            result = Math.Min(result, Math.Max(0, (int)limit - Math.Max(learned.Level, learned.DevotionLevel)));
+        return result;
     }
 
     private static string ResolveMasteryRecord(CharacterSnapshot character, string skillRecord)
@@ -796,9 +821,11 @@ public static class SkillRotationFactory
         IReadOnlyDictionary<EquipmentSlot, LoadoutVariant>? equippedVariants)
     {
         var result = new List<GameRecord>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var owner in ResolveSkillSourceRecords(character, catalog, equippedVariants))
         {
+            // A repeated reference within one source is one modifier; two
+            // separately equipped sources must both contribute (e.g. two rings).
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var index = 1; index <= 32; index++)
             {
                 if (!owner.Text($"modifiedSkillName{index}").Equals(skillRecord, StringComparison.OrdinalIgnoreCase))

@@ -35,7 +35,9 @@ internal static class GameStatTranslator
         ["characterWeaponStrengthReqReduction"] = "requirementReduction.weaponPhysique",
         ["characterWeaponIntelligenceReqReduction"] = "requirementReduction.weaponSpirit",
         ["characterLifeModifier"] = "health.percent",
-        ["characterLifeMultModifier"] = "health.percent",
+        // characterLifeMultModifier is a separate multiplier in newer content.
+        // Its player stacking rule is not verified; retain an unsupported-field
+        // diagnostic instead of silently treating it as ordinary +% health.
         ["characterManaModifier"] = "energy.percent",
         ["characterOffensiveAbilityModifier"] = "offensiveAbility.percent",
         ["characterAttackSpeed"] = "attackSpeed",
@@ -49,12 +51,12 @@ internal static class GameStatTranslator
         ["defensiveBonusProtection"] = "armor",
         ["defensiveProtectionModifier"] = "armor.percent",
         ["defensiveAbsorption"] = "armorAbsorption",
-        ["defensiveAbsorptionModifier"] = "armorAbsorption",
+        ["defensiveAbsorptionModifier"] = "armorAbsorption.percent",
         ["defensiveBlock"] = "blockAmount",
         ["defensiveBlockChance"] = "blockChance",
         ["defensiveBlockAmount"] = "blockAmount",
         ["defensiveBlockAmountModifier"] = "blockAmount.percent",
-        ["defensiveBlockModifier"] = "blockChance.percent",
+        ["defensiveBlockModifier"] = "blockChance.bonus",
         ["blockAbsorption"] = "blockAbsorption",
         ["blockRecoveryTime"] = "blockRecoverySeconds",
         ["characterDefensiveBlockRecoveryReduction"] = "blockRecoveryReduction",
@@ -104,7 +106,7 @@ internal static class GameStatTranslator
     public static StatBlock TranslateAtLevel(GameRecord record, int level)
     {
         if (record.NumericSeries.Count == 0) return Translate([record]);
-        var selected = new StatBlock();
+        var selected = record.NumericValues.Clone();
         foreach (var (key, values) in record.NumericSeries)
         {
             if (values.Count == 0) continue;
@@ -143,8 +145,13 @@ internal static class GameStatTranslator
             var key = rawKey;
             if (Simple.TryGetValue(key, out var canonical))
             {
-                var chance = ChanceFactor(record, ChanceKeyFor(key));
+                // defensiveBlockChance is the shield's block probability, not
+                // a proc chance that scales its defensiveBlock damage amount.
+                var chance = key.Equals("defensiveBlock", StringComparison.OrdinalIgnoreCase)
+                    ? 1 : ChanceFactor(record, ChanceKeyFor(key));
                 result.Add(canonical, rawValue * chance);
+                if (key.Equals("defensiveBonusProtection", StringComparison.OrdinalIgnoreCase))
+                    result.Add("armor.localBonus", rawValue * chance);
             }
 
             foreach (var (gameType, type) in DamageTypeMap)
@@ -200,11 +207,7 @@ internal static class GameStatTranslator
             result.Add("retaliation.percentProxy", retaliationDotModifier);
         }
 
-        var elementalMinimum = record.NumericValues["offensiveElementalMin"];
-        var elementalMaximum = record.NumericValues["offensiveElementalMax"];
-        var elementalAverage = Math.Abs(elementalMinimum) > 1e-9 && Math.Abs(elementalMaximum) > 1e-9
-            ? (elementalMinimum + elementalMaximum) / 2d
-            : elementalMinimum + elementalMaximum;
+        var elementalAverage = Average(record, "offensiveElemental");
         elementalAverage *= ChanceFactor(record, "offensiveElementalChance");
         var elementalModifier = record.NumericValues["offensiveElementalModifier"] *
                                 ChanceFactor(record, "offensiveElementalModifierChance");
@@ -213,8 +216,10 @@ internal static class GameStatTranslator
         foreach (var type in new[] { "fire", "cold", "lightning" })
         {
             result.Add(StatKeys.DamageFlat(type), elementalAverage / 3d);
+            result.Add(StatKeys.WeaponDamage(type), Average(record, "offensiveBaseElemental") / 3d);
             result.Add(StatKeys.DamagePercent(type), elementalModifier);
             result.Add(StatKeys.Resistance(type), elementalResistance * elementalResistanceChance);
+            result.Add(StatKeys.MaxResistance(type), record.NumericValues["defensiveElementalMaxResist"]);
         }
 
         var retaliationElemental = Average(record, "retaliationElemental") *
@@ -280,9 +285,9 @@ internal static class GameStatTranslator
     {
         var minimum = record.NumericValues[prefix + "Min"];
         var maximum = record.NumericValues[prefix + "Max"];
-        return Math.Abs(minimum) > 1e-9 && Math.Abs(maximum) > 1e-9
-            ? (minimum + maximum) / 2d
-            : minimum + maximum;
+        // A missing/zero maximum denotes a fixed value. A zero minimum with a
+        // nonzero maximum is a real range (e.g. 0-100), not a fixed maximum.
+        return Math.Abs(maximum) > 1e-9 ? (minimum + maximum) / 2d : minimum;
     }
 
     private static double ChanceFactor(GameRecord record, string key)
@@ -302,8 +307,13 @@ internal static class GameStatTranslator
         var input = NormalizeDamageType(record.Text("conversionInType" + suffix));
         var output = NormalizeDamageType(record.Text("conversionOutType" + suffix));
         var percentage = record.NumericValues["conversionPercentage" + suffix];
-        if (!string.IsNullOrWhiteSpace(input) && !string.IsNullOrWhiteSpace(output) && percentage > 0)
-            result.Add($"conversion.{input}.{output}", percentage);
+        if (string.IsNullOrWhiteSpace(input) || string.IsNullOrWhiteSpace(output) || input == output || percentage <= 0) return;
+        var sources = input == "elemental" ? new[] { "fire", "cold", "lightning" } : [input];
+        var targets = output == "elemental" ? new[] { "fire", "cold", "lightning" } : [output];
+        foreach (var source in sources)
+        foreach (var target in targets)
+            if (source != target)
+                result.Add($"conversion.{source}.{target}", percentage / targets.Length);
     }
 
     private static void AddResistanceReduction(
@@ -330,6 +340,15 @@ internal static class GameStatTranslator
         {
             if (Math.Abs(rawValue) < 1e-9 || rawKey.EndsWith(".min", StringComparison.OrdinalIgnoreCase) ||
                 rawKey.EndsWith(".max", StringComparison.OrdinalIgnoreCase)) continue;
+            if (rawKey.StartsWith("conversionPercentage", StringComparison.OrdinalIgnoreCase))
+            {
+                var suffix = rawKey["conversionPercentage".Length..];
+                if (suffix is not ("" or "2") ||
+                    string.IsNullOrEmpty(NormalizeDamageType(record.Text("conversionInType" + suffix))) ||
+                    string.IsNullOrEmpty(NormalizeDamageType(record.Text("conversionOutType" + suffix))))
+                    result.Add(rawKey);
+                continue;
+            }
             if (!IsCombatField(rawKey) || IsHandledCombatField(rawKey) || NonScoringFields.Contains(rawKey)) continue;
             result.Add(rawKey);
         }
@@ -411,6 +430,7 @@ internal static class GameStatTranslator
 
     private static string NormalizeDamageType(string input)
     {
+        if (input.Equals("Elemental", StringComparison.OrdinalIgnoreCase)) return "elemental";
         foreach (var (game, canonical) in DamageTypeMap)
             if (input.Contains(game, StringComparison.OrdinalIgnoreCase)) return canonical;
         return string.Empty;

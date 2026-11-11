@@ -351,15 +351,23 @@ export function devEngine(): Plugin {
   ) {
     try {
       let size = 0;
+      let oversized = false;
       const chunks: Buffer[] = [];
       for await (const chunk of req) {
         size += chunk.length;
         if (size > bodyLimit) {
-          json(response, 413, { error: "请求内容过大。" });
-          return;
+          if (!oversized) {
+            oversized = true;
+            chunks.length = 0;
+            json(response, 413, { error: "请求内容过大。" });
+          }
+          // Drain without buffering. Returning from this async iterator would
+          // destroy the request/socket before the 413 is reliably delivered.
+          continue;
         }
         chunks.push(Buffer.from(chunk));
       }
+      if (oversized) return;
       let message: { command?: unknown; payload?: unknown };
       try {
         message = JSON.parse(Buffer.concat(chunks).toString("utf8"));

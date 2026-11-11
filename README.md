@@ -36,6 +36,8 @@
 
 ## 自动分析与单件对照
 
+装备、技能与属性计算已增加 GrimTools 1.3.1.0 参考核对，修正护甲部位/吸收、格挡、元素转换、重复套装部件和装备技能修正等差异；实际装备继续按本机数据库与 Seed 计算，DPS 继续按游戏面板观察值验收。逐项结果、参考来源和未验证范围见 [计算核对记录](docs/grimtools-calculation-audit.md)。
+
 1. 在“角色库”确认游戏与存档目录，载入并选择实际角色。
 2. 在“配装工坊”查看当前主攻、默认攻击 DPS 和生命，选择主攻技能、实际难度及“均衡／输出优先／生存优先”目标。
 3. 需要时展开“临时增益”或“特殊战斗场景”；临时增益默认关闭，离线存档不能判断游戏当前的短时效果。
@@ -123,12 +125,15 @@ npm run build:web
 dotnet test .\GrimDawnOptimizer.sln
 python .\tests\desktop-bridge\smoke.py
 python .\tests\desktop-bridge\trainer-smoke.py
+python .\tests\desktop-bridge\cache-concurrency.py
 python .\tests\desktop-bridge\portable-smoke.py
 node .\tests\desktop-bridge\dev-transport.mjs
 node .\tests\desktop-bridge\sse-backpressure.mjs
 ```
 
 `python .\tests\desktop-bridge\smoke.py --complete` 还会等待完整的演示配装分析。协议测试使用临时配置目录，不改写实际用户偏好。`trainer-smoke.py` 明确禁止连接和启动命令，只验证离线状态、路径校验/持久化、分析并发与关闭恢复，不加载或执行测试路径中的占位文件。架构、对齐清单和已执行验证见 [Tauri 迁移说明](docs/tauri-migration.md)。
+
+实战组件缓存的校验、发布与损坏修复使用按目标路径区分的跨进程互斥，正确的已加载DLL直接复用。缓存并发压力、四进程发布与完整测试结果见 [实战缓存并发修复](docs/trainer-cache-concurrency.md)。`cache-concurrency.py` 需要 PowerShell 7，仅操作临时目录和标记文件。
 
 旧 WPF 工程与此前界面修改保留在 `src/GrimDawnOptimizer.App`，用于工作流回归与比较；共享视图模型由两个入口复用。需要运行旧入口时使用 `dotnet run --project .\src\GrimDawnOptimizer.App`。旧界面的设计与验收记录保存在 [WPF 设计存档](docs/legacy-wpf-design.md) 和 [WPF 交互存档](docs/legacy-wpf-ux.md)。
 

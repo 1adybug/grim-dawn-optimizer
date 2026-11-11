@@ -615,9 +615,9 @@ public sealed class GameDataSource : IGameDataSource
 
     private sealed class CatalogCache(string path)
     {
-        // GDOC31 rebuilds derived skill stats with flat energy reservations;
-        // older cached payloads must not retain stale stats or diagnostics.
-        private static readonly byte[] PayloadHeader = "GDOC31"u8.ToArray();
+        // Rebuild translated armor absorption, local attachment armor, block
+        // chance and elemental conversion after the GrimTools reference audit.
+        private static readonly byte[] PayloadHeader = "GDOC32"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNameCaseInsensitive = true,

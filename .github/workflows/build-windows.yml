@@ -135,6 +135,9 @@ jobs:
       - name: Verify installer checks occupied trainer components
         run: python tests/desktop-bridge/installer-hooks.py
 
+      - name: Verify trainer cache publication across processes
+        run: python tests/desktop-bridge/cache-concurrency.py
+
       - name: Package portable application
         working-directory: src/GrimDawnOptimizer.Desktop
         run: npm run desktop:portable

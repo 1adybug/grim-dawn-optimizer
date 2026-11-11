@@ -39,7 +39,6 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         var unsupported = new List<UnsupportedEffect>(character.ImportDiagnostics);
         var errors = new List<string>();
         var itemIds = new HashSet<string>(StringComparer.Ordinal);
-        var setCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var canDualWield = SkillRotationFactory.ResolveCanDualWield(character, catalog, slots);
 
         foreach (var (targetSlot, variant) in slots)
@@ -54,12 +53,9 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
             stats.Add(variant.CombinedStats);
             effects.AddRange(variant.Effects);
             unsupported.AddRange(variant.UnsupportedEffects);
-
-            if (!string.IsNullOrWhiteSpace(variant.Item.SetId))
-                setCounts[variant.Item.SetId] = setCounts.GetValueOrDefault(variant.Item.SetId) + 1;
         }
 
-        foreach (var (setId, count) in setCounts)
+        foreach (var (setId, count) in ItemSetRules.CountPieces(slots.Values.Select(variant => variant.Item)))
         {
             if (!catalog.SetBonuses.TryGetValue(setId, out var bonuses)) continue;
             foreach (var (requiredPieces, bonus) in bonuses)
@@ -88,9 +84,8 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         ApplyPercentModifier(stats, "healthRegen");
         ApplyPercentModifier(stats, "energyRegen");
         PlayerAttributeRules.ApplyRegeneration(stats, catalog, unsupported);
-        ApplyPercentModifier(stats, "armor");
-        ApplyPercentModifier(stats, "blockChance");
-        ApplyPercentModifier(stats, "blockAmount");
+        ArmorRules.Apply(stats, slots, catalog);
+        ResolveShieldStats(stats, slots, catalog);
         if (stats["usePlayerAbilityFormula"] > 0)
             ApplyPlayerAbilityFormula(stats);
         else
@@ -342,17 +337,15 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         GameDataCatalog catalog)
     {
         var stats = character.BaselineStats.Clone();
-        var setCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var variant in variants.Where(x => activeItemIds.Contains(x.Item.Id)))
+        var activeVariants = variants.Where(x => activeItemIds.Contains(x.Item.Id)).ToArray();
+        foreach (var variant in activeVariants)
         {
             // Deliberately use only the physical item's stats. Components,
             // augments and completion bonuses cannot unlock equipment.
             stats.Add(variant.Item.Stats);
-            if (!string.IsNullOrWhiteSpace(variant.Item.SetId))
-                setCounts[variant.Item.SetId] = setCounts.GetValueOrDefault(variant.Item.SetId) + 1;
         }
 
-        foreach (var (setId, count) in setCounts)
+        foreach (var (setId, count) in ItemSetRules.CountPieces(activeVariants.Select(variant => variant.Item)))
         {
             if (!catalog.SetBonuses.TryGetValue(setId, out var bonuses)) continue;
             foreach (var (requiredPieces, bonus) in bonuses)
@@ -496,6 +489,24 @@ public sealed class CharacterStatEngine : ICharacterStatEngine
         var percent = stats[$"{key}.percent"];
         if (Math.Abs(percent) > 1e-9)
             stats.Set(key, stats[key] * Math.Max(0, 1 + percent / 100d));
+    }
+
+    private static void ResolveShieldStats(StatBlock stats,
+        IReadOnlyDictionary<EquipmentSlot, LoadoutVariant> slots, GameDataCatalog catalog)
+    {
+        var hasShield = slots.TryGetValue(EquipmentSlot.OffHand, out var offHand) &&
+                        offHand.Item.Slot == EquipmentSlot.OffHand &&
+                        (offHand.Item.AttachmentQualifier.Equals("shield", StringComparison.OrdinalIgnoreCase) ||
+                         catalog.Records.GetValueOrDefault(offHand.Item.BaseRecord)?.Text("Class") == "WeaponArmor_Shield" ||
+                         offHand.Item.Stats["blockChance"] > 0 && offHand.Item.Stats["blockAmount"] > 0);
+        if (!hasShield)
+        {
+            stats.Set("blockChance", 0);
+            stats.Set("blockAmount", 0);
+            return;
+        }
+        stats.Set("blockChance", Math.Clamp(stats["blockChance"] + stats["blockChance.bonus"], 0, 100));
+        ApplyPercentModifier(stats, "blockAmount");
     }
 
     private static void ApplyPlayerAbilityFormula(StatBlock stats)

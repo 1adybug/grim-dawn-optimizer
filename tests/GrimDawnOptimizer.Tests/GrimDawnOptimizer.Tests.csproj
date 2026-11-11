@@ -23,5 +23,6 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Fixtures\panel-dps-game-observations.json" />
+    <EmbeddedResource Include="Fixtures\grimtools-reference.json" />
   </ItemGroup>
 </Project>

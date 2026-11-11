@@ -1172,10 +1172,9 @@ public sealed class BeamSearchOptimizer : ILoadoutOptimizer
     {
         var weapons = string.Join(',', new[] { EquipmentSlot.MainHand, EquipmentSlot.OffHand }
             .Where(slots.ContainsKey).Select(x => slots[x].Item.Id));
-        var sets = string.Join(',', slots.Values.Where(x => !string.IsNullOrWhiteSpace(x.Item.SetId))
-            .GroupBy(x => x.Item.SetId, StringComparer.OrdinalIgnoreCase)
+        var sets = string.Join(',', ItemSetRules.CountPieces(slots.Values.Select(x => x.Item))
             .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(x => $"{x.Key}:{x.Count()}"));
+            .Select(x => $"{x.Key}:{x.Value}"));
         var interactions = string.Join(',', slots.Values.Select(InteractionSignature)
             .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
         return $"{weapons}|{sets}|{interactions}";
