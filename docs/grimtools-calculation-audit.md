@@ -2,6 +2,8 @@
 
 核对日期：2026-11-11。参考页面当时标注 **1.3.1.0**；本项目仍从用户选择的本机游戏数据库读取装备和技能，不将这个网页版本当作所有本机安装的版本。DPS 的验收依据继续采用游戏面板观察值。
 
+2026-11-12 补齐第二轮发现的七类实战机制，新增 67 项机制测试；最终验收及模型边界见本文末的“实战机制补充”。上文原有的首轮数据保留为历史记录。
+
 ## 参考与复现
 
 参考 [GrimTools 计算器](https://www.grimtools.com/calc/) 及其公开的 [计算器脚本](https://www.grimtools.com/calc/calc.js?1794027643)、[数据库脚本](https://www.grimtools.com/db/itemdb/itemdb.js?1794027643)。仅核对数据、公式和行为，没有在项目内复制或执行其应用代码。
@@ -71,3 +73,56 @@ dotnet test tests/GrimDawnOptimizer.Tests/GrimDawnOptimizer.Tests.csproj --confi
 ## 尚不能宣称全面精确的部分
 
 这次核对覆盖上述规则及回归输入，不构成所有职业、所有 DLC 词条和所有技能的全量认证。新内容中的独立生命倍率、专属预留减免、部分持续耗能、治疗/控制、触发覆盖率与特殊武器池回调仍需要游戏证据；未支持项继续显示诊断。GrimTools 自己也说明装备平均值可能不同于实物，且双持远程 APS 存在边界，见 [作者 FAQ](https://forums.crateentertainment.com/t/grimtools-build-calculator/38040)。本项目已有游戏面板依据的动画攻速和双枪规则继续保留。
+
+## 实战机制补充（2026-11-12）
+
+复查仍采用同一份 GrimTools 1.3.1.0 参考，并交叉核对 [Crate 官方战斗指南](https://www.grimdawn.com/guide/gameplay/combat/)。实战计算从面板采集器中独立出来，避免目标抗性、护甲、命中和触发率改动污染游戏面板回归。
+
+| 类别 | 修正后的行为 | 独立数值与机制验证 |
+| --- | --- | --- |
+| 伤害吸收 | 区分护甲吸收与伤害吸收；先抗性、护甲，再百分比吸收和固定吸收。同一 Buff 的修正先相加，独立百分比层相乘；固定层相加，逐伤害类型封底为零 | 1000 物理经 20% 抗性、200 护甲/70% 护甲吸收、20% 与25%吸收、40固定吸收后为356；概率吸收保留原始幅度，按各分支截断 |
+| 命中和暴击 | 按 PTH 的90/105/120/130/135区间分段；低于70时命中伤害还按 PTH/70缩小。全局和技能暴伤相加；敌方使用相同命中规则。暴击在护甲之前结算 | PTH55到150的11组独立预期值；高于90、低于100已经可暴击；普通伤害被护甲全部挡住时，较大暴击仍能穿透；提高DA减少敌方暴击承伤 |
+| 攻击伤害转生命 | 装备 ADCTH 按 min(武器伤害百分比,100%) 缩放；0%武器伤害的纯法术不继承。技能自带ADCTH作用于该技能直接伤害。主攻击、二次攻击、武器池和触发技能分别保留来源；持续伤害不吸血 | 0/25/50/100/200%武器伤害、Boss吸血抗性、法术自身吸血、独立二次攻击、触发技能、直接与持续伤害混合；ADCTH数值本身不冒充概率封顶100% |
+| 敌方护甲与盾牌格挡 | 敌方物理伤害使用 D−min(D,A)×吸收率；持续物理伤害不检查护甲。格挡在抗性和护甲前，逐类型结算；命中、格挡及护甲部位逐分支处理。允许100%格挡与100%恢复缩减，跨攻击共享盾牌恢复时间线 | 100伤害遇1000护甲/70%吸收仍剩30；多次武器池命中分别检查护甲；1000火伤、80%火抗、50%概率格挡500，期望150；完整与部分格挡恢复 |
+| 降抗 | 保留记录、原字段、施加者、幅度、概率和持续时间。不同特定抗性减益叠加，同名减益取最强；固定降抗和百分比降低各取最强。先特定减益，再百分比降低，最后固定降低；负抗也按方向正确放大。敌方 Buff 的负抗不再写到玩家身上 | 同类强弱竞争、同记录全抗/元素降抗、同名不同等级、负抗、纯法术不继承装备武器降抗、低武器百分比缩小降抗幅度、首次等待与失效。相同装备伤害触发保留独立概率和冷却 |
+| 来袭攻击类型与反击 | 情境支持 Melee/Projectile/Spell，分别使用近战闪避、投射物偏斜或法术默认规则；可显式指定OA判定和可否格挡。多组来袭攻击共同使用盾牌恢复时间线。被动反击只由近战接触触发，格挡不取消该反击 | 100%闪避/偏斜交叉验证、法术默认与显式OA、独立持续伤害、近战/投射物/法术混合情境；远程与法术不再凭空制造被动反击 |
+| 反击伤害附加攻击（RATA） | 识别retaliationDamagePct，主技能、二次技能和触发攻击分别使用自身比例。按反击伤害加成及转换结果计算，避免普通伤害加成和普通总伤倍率重复放大；可命中/暴击。仅技能自身ADCTH可以从RATA直接伤害吸血，持续部分不吸血 | 400反击×25%=100附加伤害，不受普通+900%伤害和×3总伤倍率放大；技能转换、暴击、0%武器伤害、技能吸血和持续部分不随攻速叠加 |
+
+非叠加降抗的顺序及同名来源规则参见 [降抗机制讨论](https://forums.crateentertainment.com/t/how-does-resistance-reduction-stack/125025)；独立物品触发和冷却参见 [相同物品触发的验证](https://forums.crateentertainment.com/t/2x-same-item-proc/47094)。百分比与固定吸收的组合参见 [吸收机制讨论](https://forums.crateentertainment.com/t/damage-absorption-and-mechanics/115363)，混合伤害格挡参见 [逐类型格挡验证](https://forums.crateentertainment.com/t/shield-block-amount-distribution-on-a-multi-type-hit/148736)。RATA吸血另以 [开发者说明](https://forums.crateentertainment.com/t/forthcoming-forgotten-gods-expac-what-we-know-so-far-part-ii/46489) 和 [发布后的实战讨论](https://forums.crateentertainment.com/t/1-1-8-0-captain-turrion-post-nerf-retal-commando-5-30-average-cruci-sr-90/102851) 交叉核对。
+
+### 来源、缓存与模拟边界
+
+`StatBlock.CombatModifiers` 随合并、Clone、技能加级增量和JSON缓存保留。附件和装备实物具有独立来源，技能本体与其修正仍可合并为同一吸收层。缓存头升级为 **GDOC33**；旧缓存重建，避免从旧的预先加总数值中恢复错误的降抗与吸收。
+
+固定攻击频率生成有限战斗时间线，触发成功才进入冷却；盾牌恢复由同一时间线上的所有来袭攻击共同占用。单个来源的覆盖率包含初次触发等待、概率、到期和冷却。降抗进入伤害模型时采用时间平均覆盖率，多来源之间按独立覆盖组合；Monte Carlo 使用相同分布。它不是对具体Boss技能循环的逐帧回放，来源相关性和持续伤害的最强暴击刷新等仍不宜宣称全面精确。
+
+来袭情境的 `IncomingDamage.Kind` 默认是近战；`AdditionalIncomingDamage` 可添加独立的投射物、法术或持续伤害。难度缩放保留类型、OA判定、格挡和持续伤害标记，情境说明也标明模板类型；没有捏造Boss的近战/远程占比。伤害输入沿用已解析区间的均值，随机模拟抽样命中、暴击、格挡、护甲部位、触发和降抗状态，不额外加入无来源的±10%伤害抖动。
+
+有限吸收池（例如 `Skill_BuffSelfShield`）不会被当作永久逐击固定吸收；该类记录继续给出生存诊断。未知吸收字段、缺少降抗持续时间等也保留警告。RATA已纳入实战，但没有对应的新游戏面板实测值，相关技能会显示面板验收不足的诊断；不以理论值补写实测fixture。
+
+### 本轮验收
+
+新增 **67项** `CombatMechanismTests`，包括两万次来袭抽样与独立期望对照、一万次含暴击/护甲/RATA/吸血的实战对照，以及独立触发冷却抽样。旧的“触发技能吸血尚未支持”“深层技能伤害未读取”测试改为验证新能力，未知治疗和未知词条的诊断测试继续保留。
+
+完整复跑另暴露一次目录缓存测试清理时的SQLite文件占用。目录缓存和测试查询现在显式释放SQL命令；新增1项句柄释放回归，逐次写入、重建、读取后立即以 `FileShare.None` 独占打开数据库。五个独立测试进程连续完成150轮该检查，无需强制GC或清理重试。
+
+| 检查 | 结果 |
+| --- | --- |
+| 完整Release .NET | 578/578，零跳过：计算/应用520，桥接58 |
+| Node CI | 75/75 |
+| Rust协议与便携启动器 | 15/15 |
+| TypeScript检查 | 通过 |
+| x86/x64原生模拟与输入测试 | 全部通过 |
+| Tauri生产构建与便携包验证 | 构建通过；便携包哈希、Unicode路径、重用、损坏修复、并发解包及包内引擎协议通过 |
+| JSONL完整配装、离线实战、四进程缓存、安装钩子 | 全部通过 |
+| 状态顺序、装备表、HTTP/SSE传输与背压 | 全部通过 |
+| 原有8组游戏面板DPS | 全部通过，观察值fixture未修改 |
+
+发布版本统一升级为 **1.0.28** 后再次通过578项.NET测试、75项发布脚本测试、15项Rust测试及前端类型检查。最终Core SHA-256：`8D5AD41FDC9B4E79DD9FEFA4D728371643E72C2D58A44FDBAFFF1D72B69A0201`。冻结真实存档以独立冷、热缓存进程完整导入、计算，证据目录为 `artifacts/panel-dps-validation/regeneration-probe/runs/combat-v1.0.28-20261112/`。比较结果为 `Passed: true`、差异列表为空，游戏与存档源文件哈希未变。八组面板观察继续为23478、4374、21821、22157、19441、22817、22756、15362；精神不足的虚空雕像仍正确判为不可穿戴，没有计入八组有效观察。
+
+```powershell
+dotnet test GrimDawnOptimizer.sln --configuration Release --no-restore --nologo
+dotnet test tests/GrimDawnOptimizer.Tests/GrimDawnOptimizer.Tests.csproj --configuration Release --filter FullyQualifiedName~CombatMechanismTests
+python tests/desktop-bridge/smoke.py --complete
+python tests/desktop-bridge/cache-concurrency.py
+```

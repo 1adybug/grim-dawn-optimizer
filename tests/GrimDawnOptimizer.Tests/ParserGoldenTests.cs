@@ -280,7 +280,7 @@ public sealed class ParserGoldenTests
         await using (var connection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Mode=ReadOnly;Pooling=False"))
         {
             await connection.OpenAsync();
-            var command = connection.CreateCommand();
+            using var command = connection.CreateCommand();
             command.CommandText = "SELECT typeof(payload), length(payload) FROM catalog_cache";
             await using var reader = await command.ExecuteReaderAsync();
             Assert.True(await reader.ReadAsync());
@@ -308,6 +308,28 @@ public sealed class ParserGoldenTests
         var catalog = await source.LoadCatalogAsync(install);
 
         Assert.Equal(789, catalog.Records["records/items/test.dbr"].NumericValues["characterLife"]);
+    }
+
+    [Fact]
+    public async Task CatalogCacheReleasesItsFileAfterEveryReadWriteAndRebuild()
+    {
+        using var fixture = new TemporaryFixture();
+        var arzPath = fixture.Write("database.arz", BuildArz(123));
+        var cacheRoot = Path.Combine(fixture.Root, "cache");
+        var cachePath = Path.Combine(cacheRoot, "catalog.db");
+        var installation = new GameInstallation(fixture.Root, "test", "1.3-test", [arzPath]);
+        for (var iteration = 0; iteration < 30; iteration++)
+        {
+            var expected = iteration % 2 == 0 ? 123u : 456u;
+            await File.WriteAllBytesAsync(arzPath, BuildArz(expected));
+            var source = new GameDataSource(cacheRoot);
+            Assert.Equal(expected, (await source.LoadCatalogAsync(installation)).Records["records/items/test.dbr"].NumericValues["characterLife"]);
+            Assert.Equal(expected, (await source.LoadCatalogAsync(installation)).Records["records/items/test.dbr"].NumericValues["characterLife"]);
+            // An undisposed native statement/connection must not be masked by
+            // cleanup retries or forced garbage collection.
+            using var exclusive = new FileStream(cachePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            Assert.True(exclusive.Length > 0);
+        }
     }
 
     [Fact]
@@ -408,7 +430,7 @@ public sealed class ParserGoldenTests
         await using (var connection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Pooling=False"))
         {
             await connection.OpenAsync();
-            var command = connection.CreateCommand();
+            using var command = connection.CreateCommand();
             command.CommandText = "UPDATE catalog_cache SET payload='{}'";
             await command.ExecuteNonQueryAsync();
         }
@@ -418,7 +440,7 @@ public sealed class ParserGoldenTests
         Assert.Equal(321, rebuilt.Records["records/items/test.dbr"].NumericValues["characterLife"]);
         await using var verifyConnection = new SqliteConnection($"Data Source={Path.Combine(cacheRoot, "catalog.db")};Mode=ReadOnly;Pooling=False");
         await verifyConnection.OpenAsync();
-        var verify = verifyConnection.CreateCommand();
+        using var verify = verifyConnection.CreateCommand();
         verify.CommandText = "SELECT typeof(payload) FROM catalog_cache";
         Assert.Equal("blob", await verify.ExecuteScalarAsync());
     }
@@ -436,11 +458,11 @@ public sealed class ParserGoldenTests
         await using (var connection = new SqliteConnection(connectionString))
         {
             await connection.OpenAsync();
-            var read = connection.CreateCommand();
+            using var read = connection.CreateCommand();
             read.CommandText = "SELECT payload FROM catalog_cache";
             var payload = Assert.IsType<byte[]>(await read.ExecuteScalarAsync());
             "GDOC26"u8.CopyTo(payload);
-            var write = connection.CreateCommand();
+            using var write = connection.CreateCommand();
             write.CommandText = "UPDATE catalog_cache SET payload=$payload";
             write.Parameters.Add("$payload", SqliteType.Blob).Value = payload;
             await write.ExecuteNonQueryAsync();
@@ -451,10 +473,10 @@ public sealed class ParserGoldenTests
         Assert.Equal(321, restarted.Records["records/items/test.dbr"].NumericValues["characterLife"]);
         await using var verifyConnection = new SqliteConnection(connectionString);
         await verifyConnection.OpenAsync();
-        var verify = verifyConnection.CreateCommand();
+        using var verify = verifyConnection.CreateCommand();
         verify.CommandText = "SELECT payload FROM catalog_cache";
         var rewritten = Assert.IsType<byte[]>(await verify.ExecuteScalarAsync());
-        Assert.Equal("GDOC32", Encoding.ASCII.GetString(rewritten, 0, 6));
+        Assert.Equal("GDOC33", Encoding.ASCII.GetString(rewritten, 0, 6));
     }
 
     [Fact]

@@ -17,6 +17,7 @@ public static class SkillRotationFactory
         "Skill_Modifier", "Skill_ProjectileModifier", "Skill_Transmuter",
         "Skill_BuffSelfToggled", "Skill_BuffRadiusToggled", "Skill_BuffAttackRadiusToggled",
         "Skill_BuffSelfDuration", "Skill_BuffRadius", "Skill_OnHitAttackRadius",
+        "Skill_BuffEnemy", "Skill_BuffEnemyRadius",
         "Skill_PassiveOnCritBuffSelf", "Skill_PassiveOnLifeBuffSelf", "Skill_PassiveOnHitBuffSelf",
         "Skill_WeaponPool_Default", "Skill_WeaponPool_BasicAttack", "Skill_WeaponPool_ChargedFinale", "Skill_WPAttack_BasicAttack",
         "Skill_AttackProjectile", "Skill_AttackRadius", "Skill_AttackWave", "Skill_AttackSpell",
@@ -98,7 +99,7 @@ public static class SkillRotationFactory
         var activationRate = ResolveActivationRate(mainRecord, level);
         var hasDamage = weaponDamage > 0 || secondaryAttacks.Count > 0 || StatKeys.DamageTypes.Any(x =>
             Math.Abs(flatDamage[StatKeys.DamageFlat(x)]) > 1e-9 ||
-            Math.Abs(flatDamage[StatKeys.DamageDot(x)]) > 1e-9);
+            Math.Abs(flatDamage[StatKeys.DamageDot(x)]) > 1e-9) || flatDamage["retaliation.addedToAttackPercent"] > 0;
 
         var (weaponPoolChance, weaponPoolMultiplier, weaponPoolFlat, weaponPoolAttacks) = usesAttackSpeed
             ? ResolveWeaponPool(character, catalog, selectedSkill.Record, equippedVariants)
@@ -240,7 +241,7 @@ public static class SkillRotationFactory
         var attackAura = IsAttackAura(record) ||
             (IsAttackAura(owner ?? record) && (RecordClass(record).Contains("Modifier", StringComparison.OrdinalIgnoreCase) ||
                 RecordClass(record).Contains("Transmuter", StringComparison.OrdinalIgnoreCase)));
-        if (!reactiveAura && !attackAura) return GameStatTranslator.TranslateAtLevel(record, level);
+        if (!reactiveAura && !attackAura) return Persistent(GameStatTranslator.TranslateAtLevel(record, level));
 
         // Reactive auras such as Vindictive Flame combine always-on character
         // bonuses with a separate on-hit attack in the same DBR. Only the
@@ -248,7 +249,8 @@ public static class SkillRotationFactory
         // must not become flat weapon damage or permanent retaliation.
         bool AllowedField(string field) => field.StartsWith("character", StringComparison.OrdinalIgnoreCase) ||
             attackAura && (field.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
-                           field.StartsWith("retaliation", StringComparison.OrdinalIgnoreCase));
+                           field.StartsWith("retaliation", StringComparison.OrdinalIgnoreCase) ||
+                           field.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase));
         var characterFields = new GameRecord
         {
             RecordName = record.RecordName,
@@ -261,7 +263,13 @@ public static class SkillRotationFactory
                 .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
             TextValues = record.TextValues
         };
-        return GameStatTranslator.TranslateAtLevel(characterFields, level);
+        return Persistent(GameStatTranslator.TranslateAtLevel(characterFields, level));
+
+        StatBlock Persistent(StatBlock translated) => new(translated.Values, translated.CombatModifiers.Select(x =>
+            x.Kind is CombatModifierKind.PercentAbsorption or CombatModifierKind.FlatAbsorption
+                ? x with { Source = (owner ?? record).RecordName }
+                : x with { IsPersistent = GameStatTranslator.IsEnemyDebuff(record),
+                    Source = (owner ?? record).RecordName + "/" + record.RecordName }).ToArray());
     }
 
     private static bool IsReactiveAura(GameRecord record) =>
@@ -468,7 +476,8 @@ public static class SkillRotationFactory
                     x.StartsWith("character", StringComparison.OrdinalIgnoreCase) || x.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
                     x.StartsWith("retaliation", StringComparison.OrdinalIgnoreCase)).ToArray();
             if (fields.Length > 0)
-                diagnostics.Add(new(record.RecordName, $"技能词条尚未完整计入：{string.Join(", ", fields.Take(6))}", CalculationDiagnostics.AffectedMetrics(fields)));
+                diagnostics.Add(new(record.RecordName, $"技能词条尚未完整计入：{string.Join(", ", fields.Take(6))}",
+                    GameStatTranslator.IsEnemyDebuff(record) ? ["dps", "effectiveHealth"] : CalculationDiagnostics.AffectedMetrics(fields)));
             foreach (var link in DamageRecordLinks)
             {
                 var name = record.Text(link);
@@ -637,12 +646,18 @@ public static class SkillRotationFactory
     {
         var result = new List<GameRecord> { main };
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { main.RecordName };
+        var pending = new Queue<GameRecord>();
+        pending.Enqueue(main);
+        while (pending.TryDequeue(out var current))
         foreach (var link in DamageRecordLinks)
         {
-            var recordName = main.Text(link);
+            var recordName = current.Text(link);
             if (!string.IsNullOrWhiteSpace(recordName) && seen.Add(recordName) &&
                 catalog.Records.TryGetValue(recordName, out var linked))
+            {
                 result.Add(linked);
+                pending.Enqueue(linked);
+            }
         }
         return result;
     }

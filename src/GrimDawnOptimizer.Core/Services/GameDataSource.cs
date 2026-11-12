@@ -617,7 +617,7 @@ public sealed class GameDataSource : IGameDataSource
     {
         // Rebuild translated armor absorption, local attachment armor, block
         // chance and elemental conversion after the GrimTools reference audit.
-        private static readonly byte[] PayloadHeader = "GDOC32"u8.ToArray();
+        private static readonly byte[] PayloadHeader = "GDOC33"u8.ToArray();
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNameCaseInsensitive = true,
@@ -672,7 +672,7 @@ public sealed class GameDataSource : IGameDataSource
         public async Task<GameDataCatalog?> TryGetAsync(string key, string hash, CancellationToken cancellationToken)
         {
             await using var connection = await OpenAsync(cancellationToken);
-            var command = connection.CreateCommand();
+            using var command = connection.CreateCommand();
             command.CommandText = "SELECT payload FROM catalog_cache WHERE cache_key=$key AND source_hash=$hash";
             command.Parameters.AddWithValue("$key", key);
             command.Parameters.AddWithValue("$hash", hash);
@@ -690,7 +690,7 @@ public sealed class GameDataSource : IGameDataSource
         {
             await using var connection = await OpenAsync(cancellationToken);
             var payload = SerializeCompressed(catalog);
-            var command = connection.CreateCommand();
+            using var command = connection.CreateCommand();
             command.CommandText = """
                 INSERT INTO catalog_cache(cache_key,source_hash,payload,created_at)
                 VALUES($key,$hash,$payload,$now)
@@ -738,7 +738,7 @@ public sealed class GameDataSource : IGameDataSource
             try
             {
                 await connection.OpenAsync(cancellationToken);
-                var command = connection.CreateCommand();
+                using var command = connection.CreateCommand();
                 command.CommandText = "CREATE TABLE IF NOT EXISTS catalog_cache(cache_key TEXT PRIMARY KEY, source_hash TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL)";
                 await command.ExecuteNonQueryAsync(cancellationToken);
                 return connection;

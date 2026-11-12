@@ -31,6 +31,13 @@ public enum MetricDirection { Maximize, Minimize }
 public enum ConfidenceLevel { High, Medium, Low }
 public enum DpsCalibrationMode { None, SingleAnchor, DualAnchor, SingleAnchorFallback }
 public enum GameDifficulty { Normal, Veteran, Elite, Ultimate }
+public enum IncomingAttackKind { Melee, Projectile, Spell }
+public enum CombatModifierKind { PercentAbsorption, FlatAbsorption, FlatResistanceReduction, PercentResistanceReduction, StackingResistanceReduction }
+
+// Keep magnitude, probability, duration and identity separate. In particular,
+// averaging a proc's magnitude before selecting the strongest debuff is wrong.
+public sealed record CombatModifier(string Source, CombatModifierKind Kind, double Value,
+    string DamageType = "", double Chance = 1, double DurationSeconds = 0, bool IsPersistent = false, string Field = "");
 
 public sealed record ItemSourceLocation(
     ItemSourceKind Kind,
@@ -53,14 +60,20 @@ public sealed record ItemSourceLocation(
 public sealed class StatBlock
 {
     private readonly Dictionary<string, double> _values;
+    private readonly List<CombatModifier> _combatModifiers;
 
     [JsonConstructor]
-    public StatBlock(IReadOnlyDictionary<string, double>? values = null) =>
+    public StatBlock(IReadOnlyDictionary<string, double>? values = null,
+        IReadOnlyList<CombatModifier>? combatModifiers = null)
+    {
         _values = values is null
             ? new(StringComparer.OrdinalIgnoreCase)
             : new(values, StringComparer.OrdinalIgnoreCase);
+        _combatModifiers = combatModifiers?.ToList() ?? [];
+    }
 
     public IReadOnlyDictionary<string, double> Values => _values;
+    public IReadOnlyList<CombatModifier> CombatModifiers => _combatModifiers;
     public double this[string key] => _values.TryGetValue(key, out var value) ? value : 0d;
 
     public void Set(string key, double value) => _values[key] = value;
@@ -73,9 +86,22 @@ public sealed class StatBlock
     public void Add(StatBlock other, double scale = 1d)
     {
         foreach (var (key, value) in other.Values) Add(key, value * scale);
+        foreach (var modifier in other.CombatModifiers)
+            AddCombatModifier(modifier with { Value = modifier.Value * scale });
     }
 
-    public StatBlock Clone() => new(_values);
+    public void AddCombatModifier(CombatModifier modifier)
+    {
+        var index = _combatModifiers.FindIndex(x => x with { Value = 0 } == modifier with { Value = 0 });
+        if (index < 0) _combatModifiers.Add(modifier);
+        else _combatModifiers[index] = modifier with { Value = _combatModifiers[index].Value + modifier.Value };
+    }
+
+    public StatBlock WithProcChance(double chance)
+        => new(_values.ToDictionary(x => x.Key, x => x.Value * chance, StringComparer.OrdinalIgnoreCase),
+            _combatModifiers.Select(x => x with { Chance = x.Chance * chance }).ToArray());
+
+    public StatBlock Clone() => new(_values, _combatModifiers);
     public static StatBlock operator +(StatBlock left, StatBlock right)
     {
         var result = left.Clone();
@@ -231,7 +257,12 @@ public sealed record IncomingDamageProfile(
     double VitalityPerHit = 100,
     double AetherPerHit = 100,
     double ChaosPerHit = 100,
-    double BleedingPerHit = 100);
+    double BleedingPerHit = 100,
+    IncomingAttackKind Kind = IncomingAttackKind.Melee,
+    bool? UsesOffensiveAbility = null,
+    bool CanBeBlocked = true,
+    double CriticalDamagePercent = 0,
+    bool IsDamageOverTime = false);
 
 public sealed class CombatScenario
 {
@@ -258,6 +289,7 @@ public sealed class CombatScenario
         ["lightning"] = 25, ["acid"] = 25, ["vitality"] = 25, ["aether"] = 25, ["chaos"] = 25
     };
     public IncomingDamageProfile IncomingDamage { get; set; } = new();
+    public List<IncomingDamageProfile> AdditionalIncomingDamage { get; set; } = [];
 }
 
 public sealed class SkillRotationDefinition
@@ -365,10 +397,13 @@ public sealed class LoadoutVariant(ItemInstance item, AttachmentDefinition? comp
 
     private StatBlock BuildCombinedStats()
     {
-        var result = Item.Stats.Clone();
-        if (Component is not null) result.Add(Component.Stats);
-        if (Augment is not null) result.Add(Augment.Stats);
+        var result = Scope(Item.Stats, "item");
+        if (Component is not null) result.Add(Scope(Component.Stats, "component"));
+        if (Augment is not null) result.Add(Scope(Augment.Stats, "augment"));
         return result;
+
+        StatBlock Scope(StatBlock block, string part) => new(block.Values,
+            block.CombatModifiers.Select(x => x with { Source = $"{Item.Id}/{part}/{x.Source}" }).ToArray());
     }
 
     public IReadOnlyList<TriggeredEffect> Effects => _effects ??=

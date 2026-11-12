@@ -63,6 +63,7 @@ internal static class GameStatTranslator
         ["characterDodgePercent"] = "dodgeChance",
         ["characterDeflectProjectile"] = "projectileAvoidance",
         ["offensiveLifeLeechMin"] = "lifeSteal",
+        ["retaliationDamagePct"] = "retaliation.addedToAttackPercent",
         ["offensiveCritDamage"] = "criticalDamage",
         ["offensiveCritDamageModifier"] = "criticalDamage",
         ["offensiveCriticalModifier"] = "criticalDamage",
@@ -132,6 +133,12 @@ internal static class GameStatTranslator
 
     private static void TranslateInto(GameRecord record, StatBlock result)
     {
+        var enemyDebuff = IsEnemyDebuff(record);
+        if (!enemyDebuff && !IsLimitedAbsorption(record))
+        {
+            AddAbsorption("damageAbsorptionPercent", CombatModifierKind.PercentAbsorption);
+            AddAbsorption("damageAbsorption", CombatModifierKind.FlatAbsorption);
+        }
         // Armor piercing belongs to the weapon that supplies this range. Keep
         // it on that variant; the simulator applies it after normal conversion.
         result.Add(StatKeys.WeaponArmorPiercing, Average(record, "offensivePierceRatio"));
@@ -145,6 +152,9 @@ internal static class GameStatTranslator
             var key = rawKey;
             if (Simple.TryGetValue(key, out var canonical))
             {
+                // BuffEnemy records describe the target, never the player.
+                if (enemyDebuff && (key.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith("character", StringComparison.OrdinalIgnoreCase))) continue;
                 // defensiveBlockChance is the shield's block probability, not
                 // a proc chance that scales its defensiveBlock damage amount.
                 var chance = key.Equals("defensiveBlock", StringComparison.OrdinalIgnoreCase)
@@ -160,9 +170,12 @@ internal static class GameStatTranslator
                     result.Add(StatKeys.DamagePercent(type), rawValue * ChanceFactor(record, key + "Chance"));
                 else if (key.Equals($"defensive{gameType}", StringComparison.OrdinalIgnoreCase) ||
                          key.Equals($"defensive{gameType}Resistance", StringComparison.OrdinalIgnoreCase))
-                    result.Add(StatKeys.Resistance(type), rawValue * ChanceFactor(record, key + "Chance"));
+                {
+                    if (enemyDebuff) AddSpecificReduction(type, -rawValue, key);
+                    else result.Add(StatKeys.Resistance(type), rawValue * ChanceFactor(record, key + "Chance"));
+                }
                 else if (key.Equals($"defensive{gameType}MaxResist", StringComparison.OrdinalIgnoreCase))
-                    result.Add(StatKeys.MaxResistance(type), rawValue);
+                { if (!enemyDebuff) result.Add(StatKeys.MaxResistance(type), rawValue); }
             }
         }
 
@@ -218,8 +231,12 @@ internal static class GameStatTranslator
             result.Add(StatKeys.DamageFlat(type), elementalAverage / 3d);
             result.Add(StatKeys.WeaponDamage(type), Average(record, "offensiveBaseElemental") / 3d);
             result.Add(StatKeys.DamagePercent(type), elementalModifier);
-            result.Add(StatKeys.Resistance(type), elementalResistance * elementalResistanceChance);
-            result.Add(StatKeys.MaxResistance(type), record.NumericValues["defensiveElementalMaxResist"]);
+            if (enemyDebuff) AddSpecificReduction(type, -elementalResistance, "defensiveElementalResistance");
+            else
+            {
+                result.Add(StatKeys.Resistance(type), elementalResistance * elementalResistanceChance);
+                result.Add(StatKeys.MaxResistance(type), record.NumericValues["defensiveElementalMaxResist"]);
+            }
         }
 
         var retaliationElemental = Average(record, "retaliationElemental") *
@@ -253,13 +270,17 @@ internal static class GameStatTranslator
         var allResistance = record.NumericValues["defensiveAllResistance"] *
                             ChanceFactor(record, "defensiveAllResistanceChance");
         if (Math.Abs(allResistance) > 1e-9)
-            foreach (var type in StatKeys.DamageTypes) result.Add(StatKeys.Resistance(type), allResistance);
+            foreach (var type in StatKeys.DamageTypes)
+                if (enemyDebuff) AddSpecificReduction(type, -record.NumericValues["defensiveAllResistance"], "defensiveAllResistance");
+                else result.Add(StatKeys.Resistance(type), allResistance);
 
         AddResistanceReduction(record, result, "Total", StatKeys.DamageTypes);
         AddResistanceReduction(record, result, "Physical", ["physical"]);
         AddResistanceReduction(record, result, "Elemental", ["fire", "cold", "lightning"]);
+        foreach (var (gameType, type) in DamageTypeMap.Where(x => x.Key != "Physical"))
+            AddResistanceReduction(record, result, gameType, [type]);
 
-        if (record.NumericValues["defensiveAllMaxResist"] is var allMax && Math.Abs(allMax) > 1e-9)
+        if (!enemyDebuff && record.NumericValues["defensiveAllMaxResist"] is var allMax && Math.Abs(allMax) > 1e-9)
             foreach (var type in StatKeys.DamageTypes) result.Add(StatKeys.MaxResistance(type), allMax);
 
         AddConversion(record, result, string.Empty);
@@ -277,7 +298,36 @@ internal static class GameStatTranslator
             if (!string.IsNullOrWhiteSpace(modifiedSkillName))
                 result.Set($"skillModifier.{modifiedSkillName}", 1);
         }
+
+        void AddAbsorption(string field, CombatModifierKind kind)
+        {
+            var value = record.NumericValues[field];
+            if (Math.Abs(value) > 1e-9)
+                result.AddCombatModifier(new(record.RecordName, kind, value,
+                    Chance: ChanceFactor(record, field + "Chance"), IsPersistent: true));
+        }
+
+        void AddSpecificReduction(string type, double value, string field)
+        {
+            if (value <= 0) return;
+            result.AddCombatModifier(new(record.RecordName, CombatModifierKind.StackingResistanceReduction,
+                value, type, ChanceFactor(record, field + "Chance"), DebuffDuration(record, field), Field: field));
+        }
     }
+
+    internal static bool IsEnemyDebuff(GameRecord record)
+    {
+        var type = string.IsNullOrWhiteSpace(record.Text("Class")) ? record.RecordType : record.Text("Class");
+        return type.Contains("BuffEnemy", StringComparison.OrdinalIgnoreCase) ||
+               type.Contains("Debuff", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsLimitedAbsorption(GameRecord record) =>
+        (record.Text("Class") + record.RecordType).Contains("BuffSelfShield", StringComparison.OrdinalIgnoreCase);
+
+    private static double DebuffDuration(GameRecord record, string prefix) => Math.Max(0,
+        new[] { Average(record, prefix + "Duration"), record.NumericValues["skillActiveDuration"],
+            record.NumericValues["skillBuffDuration"] }.Max());
 
     internal static double LegacyPhysicalWeaponDamage(GameRecord record) => Average(record, "offensivePhysical");
 
@@ -324,12 +374,16 @@ internal static class GameStatTranslator
     {
         var flatKey = $"offensive{gameType}ResistanceReductionAbsolute";
         var percentKey = $"offensive{gameType}ResistanceReductionPercent";
-        var flat = Average(record, flatKey) * ChanceFactor(record, flatKey + "Chance");
-        var percent = Average(record, percentKey) * ChanceFactor(record, percentKey + "Chance");
+        var flat = Average(record, flatKey);
+        var percent = Average(record, percentKey);
         foreach (var type in damageTypes)
         {
-            result.Add($"rr.{type}.flat", flat);
-            result.Add($"rr.{type}.percent", percent);
+            if (Math.Abs(flat) > 1e-9) result.AddCombatModifier(new(record.RecordName,
+                CombatModifierKind.FlatResistanceReduction, flat, type,
+                ChanceFactor(record, flatKey + "Chance"), DebuffDuration(record, flatKey), Field: flatKey));
+            if (Math.Abs(percent) > 1e-9) result.AddCombatModifier(new(record.RecordName,
+                CombatModifierKind.PercentResistanceReduction, percent, type,
+                ChanceFactor(record, percentKey + "Chance"), DebuffDuration(record, percentKey), Field: percentKey));
         }
     }
 
@@ -340,6 +394,15 @@ internal static class GameStatTranslator
         {
             if (Math.Abs(rawValue) < 1e-9 || rawKey.EndsWith(".min", StringComparison.OrdinalIgnoreCase) ||
                 rawKey.EndsWith(".max", StringComparison.OrdinalIgnoreCase)) continue;
+            if (IsEnemyDebuff(record) &&
+                (rawKey.StartsWith("character", StringComparison.OrdinalIgnoreCase) ||
+                 rawKey.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase) ||
+                 rawKey.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) &&
+                    (Simple.ContainsKey(rawKey) || rawValue > 0 && !rawKey.EndsWith("Chance", StringComparison.OrdinalIgnoreCase))))
+            { result.Add(rawKey); continue; }
+            // Finite shields consume a pool, unlike per-packet flat absorption.
+            if (IsLimitedAbsorption(record) && rawKey.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase))
+            { result.Add(rawKey); continue; }
             if (rawKey.StartsWith("conversionPercentage", StringComparison.OrdinalIgnoreCase))
             {
                 var suffix = rawKey["conversionPercentage".Length..];
@@ -360,6 +423,7 @@ internal static class GameStatTranslator
         key.StartsWith("offensive", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("retaliation", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("skill", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("conversion", StringComparison.OrdinalIgnoreCase) ||
         key.StartsWith("blockAbsorption", StringComparison.OrdinalIgnoreCase) ||
@@ -368,6 +432,7 @@ internal static class GameStatTranslator
     private static bool IsHandledCombatField(string key)
     {
         if (Simple.ContainsKey(key) || key is "characterTotalSpeedModifier" or "defensiveAllResistance" or
+            "damageAbsorption" or "damageAbsorptionPercent" or "damageAbsorptionChance" or "damageAbsorptionPercentChance" or
             "offensivePierceRatioMin" or "offensivePierceRatioMax" or
             "defensiveAllMaxResist" or "offensiveTotalDamageModifier" or
             "offensiveTotalDamageModifierChance" or "defensiveElementalResistance" or
@@ -381,12 +446,14 @@ internal static class GameStatTranslator
             key.Equals("retaliationTotalDamageModifierChance", StringComparison.OrdinalIgnoreCase) ||
             key.Equals("retaliationDamageMultModifier", StringComparison.OrdinalIgnoreCase) ||
             key.Equals("retaliationDamageMultModifierChance", StringComparison.OrdinalIgnoreCase)) return true;
-        foreach (var gameType in new[] { "Total", "Physical", "Elemental" })
+        foreach (var gameType in DamageTypeMap.Keys.Append("Total").Append("Elemental"))
         foreach (var reductionType in new[] { "Absolute", "Percent" })
         {
             var prefix = $"offensive{gameType}ResistanceReduction{reductionType}";
             if (key.Equals(prefix + "Min", StringComparison.OrdinalIgnoreCase) ||
                 key.Equals(prefix + "Max", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals(prefix + "DurationMin", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals(prefix + "DurationMax", StringComparison.OrdinalIgnoreCase) ||
                 key.Equals(prefix + "Chance", StringComparison.OrdinalIgnoreCase)) return true;
         }
 

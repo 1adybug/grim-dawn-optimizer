@@ -12,7 +12,7 @@ internal static class SeededItemStatResolver
     private static readonly string[] SeedStatPrefixes =
     [
         "offensive", "defensive", "retaliation", "character", "skill",
-        "conversion", "blockAbsorption", "blockRecovery"
+        "conversion", "blockAbsorption", "blockRecovery", "damageAbsorption"
     ];
 
     public static SeededItemStatResolution Resolve(
@@ -41,6 +41,7 @@ internal static class SeededItemStatResolver
         // The seed engine separates chance-bearing affixes from ordinary damage.
         // Translate each line independently so its Chance and Duration cannot leak
         // onto an ordinary contribution of the same type from another affix.
+        var procIndex = 0;
         foreach (var proc in result.ProcLines ?? [])
         {
             if (proc.Min is not { } minimum) continue;
@@ -57,11 +58,11 @@ internal static class SeededItemStatResolver
             }
             var procRecord = new GameRecord
             {
-                RecordName = baseRecord.RecordName + "#seed-proc",
+                RecordName = baseRecord.RecordName + "#seed-proc" + procIndex++,
                 RecordType = baseRecord.RecordType,
                 NumericValues = procValues
             };
-            stats.Add(GameStatTranslator.Translate([procRecord]), chance);
+            stats.Add(GameStatTranslator.Translate([procRecord]).WithProcChance(chance));
             // Fixed-field echo may carry the split affix's Chance into result.Stats.
             // Remaining normal damage was already separated and has no such chance.
             rolledValues.Set(proc.Field + "Chance", 0);

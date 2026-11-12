@@ -61,7 +61,9 @@ public static class DifficultyRules
             $"活力/虚化/混乱/流血 {PlayerPenalty(scenario, "vitality"):0}；物理 0（百分点）。\n" +
             $"掉落质量 +{preset.LootPercent:0}%、额外经验 +{preset.ExperiencePercent:0}% 仅展示，不参与配装评分。" +
             (enemy is null ? "未读取到怪物其他难度属性，OA/DA 等不含该项修正。" : "怪物 OA/DA、护甲及抗性仍读取本机数据库。") +
-            "来袭伤害使用混合模板，未还原具体 BOSS 技能循环。";
+            $"来袭伤害使用{IncomingKindName(scenario.IncomingDamage.Kind)}混合伤害模板" +
+            (scenario.AdditionalIncomingDamage.Count > 0 ? $"及 {scenario.AdditionalIncomingDamage.Count} 组独立攻击" : "") +
+            "，未还原具体 BOSS 技能循环。";
     }
 
     public static double PlayerPenalty(CombatScenario scenario, string type)
@@ -83,17 +85,29 @@ public static class DifficultyRules
             -100, Math.Clamp(80 + stats[StatKeys.MaxResistance(type)], 0, 100));
 
     public static IncomingDamageProfile Incoming(CombatScenario scenario)
+        => ScaleIncoming(scenario, scenario.IncomingDamage);
+
+    internal static IEnumerable<IncomingDamageProfile> IncomingProfiles(CombatScenario scenario) =>
+        new[] { scenario.IncomingDamage }.Concat(scenario.AdditionalIncomingDamage).Select(x => ScaleIncoming(scenario, x));
+
+    private static string IncomingKindName(IncomingAttackKind kind) => kind switch
     {
-        var baseline = scenario.IncomingDamage;
+        IncomingAttackKind.Projectile => "投射物", IncomingAttackKind.Spell => "法术", _ => "近战"
+    };
+
+    private static IncomingDamageProfile ScaleIncoming(CombatScenario scenario, IncomingDamageProfile baseline)
+    {
         var factor = (1 + Settings(scenario.Difficulty).DamagePercent / 100d) *
                      (1 + Math.Clamp(scenario.EnemyDamageIncreasePercent, 0, 1000) / 100d);
         double Damage(double value) => Math.Max(0, value) * factor;
-        return new IncomingDamageProfile(
-            Math.Max(0, baseline.HitsPerSecond),
-            Damage(baseline.PhysicalPerHit), Damage(baseline.FirePerHit),
-            Damage(baseline.ColdPerHit), Damage(baseline.LightningPerHit),
-            Damage(baseline.AcidPerHit), Damage(baseline.PiercePerHit),
-            Damage(baseline.VitalityPerHit), Damage(baseline.AetherPerHit),
-            Damage(baseline.ChaosPerHit), Damage(baseline.BleedingPerHit));
+        return baseline with
+        {
+            HitsPerSecond = Math.Max(0, baseline.HitsPerSecond),
+            PhysicalPerHit = Damage(baseline.PhysicalPerHit), FirePerHit = Damage(baseline.FirePerHit),
+            ColdPerHit = Damage(baseline.ColdPerHit), LightningPerHit = Damage(baseline.LightningPerHit),
+            AcidPerHit = Damage(baseline.AcidPerHit), PiercePerHit = Damage(baseline.PiercePerHit),
+            VitalityPerHit = Damage(baseline.VitalityPerHit), AetherPerHit = Damage(baseline.AetherPerHit),
+            ChaosPerHit = Damage(baseline.ChaosPerHit), BleedingPerHit = Damage(baseline.BleedingPerHit)
+        };
     }
 }

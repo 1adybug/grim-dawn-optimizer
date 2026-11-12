@@ -52,15 +52,24 @@ internal static class ArmorRules
     }
 
     internal static double MitigatePhysicalHit(StatBlock stats, double damage)
+        => EvaluatePhysicalHit(stats, damage, x => x);
+
+    internal static double EvaluatePhysicalHit(StatBlock stats, double damage, Func<double, double> afterArmor)
     {
         if (damage <= 0) return 0;
         if (stats["armor.regionModel"] <= 0)
-            return AfterArmor(damage, stats["armor"], stats["armorAbsorption"]);
+            return afterArmor(AfterArmor(damage, stats["armor"], stats["armorAbsorption"]));
 
         // Average the mitigated hits, not the armor: min(hit, armor) is nonlinear.
         return Regions.Sum(region => stats[$"armor.chance.{region.Slot}"] *
-            AfterArmor(damage, stats[$"armor.region.{region.Slot}"], stats[$"armor.absorption.{region.Slot}"]));
+            afterArmor(AfterArmor(damage, stats[$"armor.region.{region.Slot}"], stats[$"armor.absorption.{region.Slot}"])));
     }
+
+    internal static IReadOnlyList<(double Probability, double Damage)> PhysicalOutcomes(StatBlock stats, double damage)
+        => stats["armor.regionModel"] <= 0
+            ? [(1, AfterArmor(damage, stats["armor"], stats["armorAbsorption"]))]
+            : Regions.Select(region => (stats[$"armor.chance.{region.Slot}"],
+                AfterArmor(damage, stats[$"armor.region.{region.Slot}"], stats[$"armor.absorption.{region.Slot}"]))).ToArray();
 
     private static double AfterArmor(double damage, double armor, double absorption) =>
         damage - Math.Min(damage, Math.Max(0, armor)) * Math.Clamp(absorption / 100d, 0, 1);

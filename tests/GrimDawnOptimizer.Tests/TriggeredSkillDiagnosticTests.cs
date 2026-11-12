@@ -39,8 +39,7 @@ public sealed class TriggeredSkillDiagnosticTests
     [Theory]
     [InlineData("characterLife")]
     [InlineData("characterLifeRegen")]
-    [InlineData("offensiveLifeLeechMin")]
-    public void DamageDoesNotHideUnsimulatedHealingOrLifeSteal(string survivalField)
+    public void DamageDoesNotHideUnsimulatedHealing(string survivalField)
     {
         var owner = Owner(controller: "controller");
         var skill = Record("skill", "Skill_AttackRadius", new() { ["offensiveFireMin"] = 100, [survivalField] = 20 });
@@ -64,18 +63,31 @@ public sealed class TriggeredSkillDiagnosticTests
     }
 
     [Fact]
-    public void DeepProcPayloadNotConsumedByTheDamageTranslatorKeepsACombatWarning()
+    public void DeepProcPayloadIsConsumedAndNoLongerAdvertisedAsMissing()
     {
         var owner = Owner(controller: "controller");
         var skill = Record("skill", "Skill_AttackRadius", new() { ["offensiveFireMin"] = 100 }, new() { ["buffSkillName"] = "middle" });
         var middle = Record("middle", "SkillBuff_Passive", text: new() { ["buffSelfSkillName"] = "leaf" });
         var leaf = Record("leaf", "SkillBuff_Passive", new() { ["offensiveColdMin"] = 50 });
 
-        var diagnostics = SaveReader.FindUnsupportedItemSkillEffects([owner], Catalog(owner, skill, middle, leaf, Controller()), "fixture");
+        var catalog = Catalog(owner, skill, middle, leaf, Controller());
+        var diagnostics = SaveReader.FindUnsupportedItemSkillEffects([owner], catalog, "fixture");
+        var effect = Assert.Single(SaveReader.BuildTriggeredEffects([owner], catalog));
 
-        Assert.Contains(diagnostics, x => x.Severity == DiagnosticSeverity.Warning &&
-            x.AffectedMetrics.Contains(CalculationDiagnostics.CombatDps));
-        Assert.DoesNotContain(diagnostics, CalculationDiagnostics.AffectsPanel);
+        Assert.Equal(100, effect.Damage[StatKeys.DamageFlat("fire")]);
+        Assert.Equal(50, effect.Damage[StatKeys.DamageFlat("cold")]);
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public void SkillLocalAdcthIsTranslatedAndNoLongerAdvertisedAsMissing()
+    {
+        var owner = Owner(controller: "controller");
+        var skill = Record("skill", "Skill_AttackRadius", new() { ["offensiveFireMin"] = 100, ["offensiveLifeLeechMin"] = 20 });
+        var catalog = Catalog(owner, skill, Controller());
+        var effect = Assert.Single(SaveReader.BuildTriggeredEffects([owner], catalog));
+        Assert.Equal(20, effect.Damage["lifeSteal"]);
+        Assert.Empty(SaveReader.FindUnsupportedItemSkillEffects([owner], catalog, "fixture"));
     }
 
     [Theory]

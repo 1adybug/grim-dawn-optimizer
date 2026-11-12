@@ -30,6 +30,7 @@ public static class CalculationDiagnostics
                 result.Add(CombatDps);
             else if (field.StartsWith("defensive", StringComparison.OrdinalIgnoreCase) ||
                 field.StartsWith("block", StringComparison.OrdinalIgnoreCase) ||
+                field.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase) ||
                 field.StartsWith("characterLife", StringComparison.OrdinalIgnoreCase) ||
                 field.StartsWith("skillLife", StringComparison.OrdinalIgnoreCase))
                 result.Add(Survival);
@@ -57,6 +58,10 @@ public static class CalculationDiagnostics
         CalculatedLoadout loadout, SkillRotationDefinition rotation)
     {
         var diagnostics = rotation.UnsupportedEffects.ToList();
+        if (rotation.FlatDamage["retaliation.addedToAttackPercent"] > 0 ||
+            rotation.SecondaryAttacks.Any(x => x.FlatDamage["retaliation.addedToAttackPercent"] > 0))
+            diagnostics.Add(new(rotation.MainSkillRecord,
+                "反击伤害附加攻击已计入实战；该技能的面板 DPS 尚缺游戏实测回归。", [PanelDps]));
         var weapons = new[] { EquipmentSlot.MainHand, EquipmentSlot.OffHand }
             .Where(loadout.Slots.ContainsKey)
             .Select(slot => loadout.Slots[slot])
@@ -82,7 +87,7 @@ public static class CalculationDiagnostics
 
     public static ConfidenceLevel PanelConfidence(CalculatedLoadout loadout, SkillRotationDefinition rotation)
     {
-        if (!loadout.IsValid || loadout.UnsupportedEffects.Concat(rotation.UnsupportedEffects).Any(AffectsPanel)) return ConfidenceLevel.Low;
+        if (!loadout.IsValid || loadout.UnsupportedEffects.Concat(RotationDiagnostics(loadout, rotation)).Any(AffectsPanel)) return ConfidenceLevel.Low;
         if (rotation.IsFallback || loadout.Slots.Values.Any(x => x.Item.Seed != 0 && !x.Item.SeedStatsResolved))
             return ConfidenceLevel.Medium;
         // Coverage is not a numerical accuracy guarantee or an empirical certificate.

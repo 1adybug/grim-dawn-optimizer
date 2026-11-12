@@ -744,26 +744,27 @@ public sealed class SaveReader : ISaveReader
                 var ignoredStats = linked.SelectMany(x => GameStatTranslator.TranslateAtLevel(x, level).Values)
                     .Where(x => Math.Abs(x.Value) > 1e-9 &&
                         !x.Key.StartsWith("damage.", StringComparison.OrdinalIgnoreCase) &&
+                        !x.Key.StartsWith("conversion.", StringComparison.OrdinalIgnoreCase) &&
+                        !x.Key.StartsWith("rr.", StringComparison.OrdinalIgnoreCase) &&
+                        x.Key is not ("lifeSteal" or "retaliation.addedToAttackPercent") &&
                         !StatKeys.DamageTypes.Contains(x.Key, StringComparer.OrdinalIgnoreCase))
                     .Select(x => x.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (effect.Damage.CombatModifiers.Any(x => x.Kind is CombatModifierKind.PercentAbsorption or CombatModifierKind.FlatAbsorption))
+                    ignoredStats = ignoredStats.Append("damageAbsorption").ToArray();
                 var hasDamage = effect.WeaponDamagePercent > 0 || StatKeys.DamageTypes.Any(type =>
                     Math.Abs(effect.Damage[StatKeys.DamageFlat(type)]) > 1e-9 ||
-                    Math.Abs(effect.Damage[$"damage.{type}.dotTotal"]) > 1e-9);
+                    Math.Abs(effect.Damage[$"damage.{type}.dotTotal"]) > 1e-9) ||
+                    effect.Damage["retaliation.addedToAttackPercent"] > 0 || effect.Damage.CombatModifiers.Any(x =>
+                        x.Kind is CombatModifierKind.FlatResistanceReduction or CombatModifierKind.PercentResistanceReduction or CombatModifierKind.StackingResistanceReduction);
                 if (!hasDamage || ignoredStats.Length > 0)
                 {
                     var onlySustain = ignoredStats.All(x => x.StartsWith("health", StringComparison.OrdinalIgnoreCase) ||
+                        x.StartsWith("damageAbsorption", StringComparison.OrdinalIgnoreCase) ||
                         x.Equals("lifeSteal", StringComparison.OrdinalIgnoreCase));
                     result.Add(new UnsupportedEffect(skillName,
-                        "触发的治疗、吸血或其他非伤害属性尚未完整模拟。",
+                        "触发的治疗或其他非伤害属性尚未完整模拟。",
                         onlySustain ? ["effectiveHealth"] : ["dps", "effectiveHealth"]));
                 }
-                // TranslateTriggeredSkillDamage currently consumes the root and
-                // its immediate links. Preserve a warning for deeper payloads.
-                var immediate = linkFields.Select(field => skill.Text(field)).Append(skillName).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                if (linked.Any(x => !immediate.Contains(x.RecordName) &&
-                        GameStatTranslator.TranslateAtLevel(x, level).Values.Any(y => Math.Abs(y.Value) > 1e-9)))
-                    result.Add(new UnsupportedEffect(skillName,
-                        "多层关联的触发技能属性尚未完整计入实战。", ["dps", "effectiveHealth"]));
             }
             var unsupportedFields = linked.SelectMany(GameStatTranslator.FindUnsupportedCombatFields)
                 .Where(x => !(isBuff && x.Equals("skillActiveDuration", StringComparison.OrdinalIgnoreCase)))
@@ -783,16 +784,19 @@ public sealed class SaveReader : ISaveReader
 
     private static StatBlock TranslateTriggeredSkillDamage(GameRecord skill, GameDataCatalog catalog, int level)
     {
-        var result = GameStatTranslator.TranslateAtLevel(skill, level);
+        var result = new StatBlock();
         result.Set("proc.weaponDamagePercent", Math.Max(0,
             GameStatTranslator.NumericAtLevel(skill, "weaponDamagePct", level)));
-        foreach (var link in new[]
-                 {
-                     skill.Text("skillProjectileName"), skill.Text("buffSkillName"),
-                     skill.Text("buffSelfSkillName"), skill.Text("buffSelf2SkillName")
-                 }.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase))
-            if (catalog.Records.TryGetValue(link, out var linked))
-                result.Add(GameStatTranslator.TranslateAtLevel(linked, level));
+        var pending = new Queue<GameRecord>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        pending.Enqueue(skill);
+        while (pending.TryDequeue(out var record))
+        {
+            if (!seen.Add(record.RecordName)) continue;
+            result.Add(GameStatTranslator.TranslateAtLevel(record, level));
+            foreach (var field in new[] { "skillProjectileName", "buffSkillName", "buffSelfSkillName", "buffSelf2SkillName" })
+                if (catalog.Records.TryGetValue(record.Text(field), out var child)) pending.Enqueue(child);
+        }
         return result;
     }
 

@@ -38,6 +38,8 @@
 
 装备、技能与属性计算已增加 GrimTools 1.3.1.0 参考核对，修正护甲部位/吸收、格挡、元素转换、重复套装部件和装备技能修正等差异；实际装备继续按本机数据库与 Seed 计算，DPS 继续按游戏面板观察值验收。逐项结果、参考来源和未验证范围见 [计算核对记录](docs/grimtools-calculation-audit.md)。
 
+1.0.28 补齐伤害吸收、命中与暴击、吸血、敌方护甲与格挡、降抗来源和覆盖率、来袭攻击分类及反击伤害附加攻击（RATA）的实战计算，增加67项机制测试与1项目录缓存释放回归。原有8组游戏面板DPS观察值保持通过，未知或尚缺实测的部分继续显示诊断。
+
 1. 在“角色库”确认游戏与存档目录，载入并选择实际角色。
 2. 在“配装工坊”查看当前主攻、默认攻击 DPS 和生命，选择主攻技能、实际难度及“均衡／输出优先／生存优先”目标。
 3. 需要时展开“临时增益”或“特殊战斗场景”；临时增益默认关闭，离线存档不能判断游戏当前的短时效果。
@@ -113,7 +115,7 @@ npm --prefix src/GrimDawnOptimizer.Desktop run desktop:installer
 npm --prefix src/GrimDawnOptimizer.Desktop run desktop:portable
 ```
 
-安装版为 `artifacts/GrimDawnOptimizer-1.0.27-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.27-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
+安装版为 `artifacts/GrimDawnOptimizer-1.0.28-win-x64-setup.exe`。便携产物为 `artifacts/GrimDawnOptimizer-1.0.28-win-x64.exe`，下载后直接运行，无需安装或手动解压。启动器内嵌 Tauri 主程序、自包含 .NET 计算引擎、完整实战组件和许可证，校验后自动释放到 `%LOCALAPPDATA%\GrimDawnOptimizer\portable` 下的版本缓存目录；完整缓存会复用，损坏文件会修复。系统仍需具备 WebView2 运行时，计算与分析保持离线。
 
 首次解析游戏数据库会较慢；缓存位于 `%LOCALAPPDATA%\GrimDawnOptimizer`，可以删除缓存并自动重建。优化方案、最近一次游戏/存档路径与 `ui-settings.json` 偏好也保存在该目录，清理时不要误删需要保留的配置。UI 偏好使用 `schemaVersion: 1` 并原子写入。
 
@@ -144,8 +146,8 @@ GitHub Actions 在提交到 `main`、创建或更新面向 `main` 的 Pull Reque
 先等待 `main` 上对应提交构建成功，再推送与程序版本一致的标签。标签任务直接复用该提交已验证的构建产物，GitHub Release 同时提供安装版、便携版，以及自动更新需要的 `latest.json` 和安装器签名。例如：
 
 ```powershell
-git tag v1.0.27
-git push origin v1.0.27
+git tag v1.0.28
+git push origin v1.0.28
 ```
 
 主分支将验证后的两种 EXE、签名和更新元数据一同暂存为 Release 草稿，避免依赖 Actions 产物存储配额；标签任务核对提交、版本、构建编号和 SHA-256 后才公开草稿。已有公开版本只校验，不覆盖不同文件。构建尚未完成或草稿缺失时会明确失败，处理后可重跑标签任务。缓存、暂存和重试细节见 [Actions 构建与发布说明](docs/github-actions.md)。
